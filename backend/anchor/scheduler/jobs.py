@@ -202,16 +202,20 @@ def run_signal_scan(self):
 
         redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
 
+        def to_df(rows):
+            return pd.DataFrame([{
+                "time": r.time, "open": float(r.open), "high": float(r.high),
+                "low": float(r.low), "close": float(r.close),
+            } for r in rows]).set_index("time")
+
+        news_filter = NewsFilter(calendar_repo=None)
+        engine = ConfluenceEngine(news_filter=news_filter)
+
+        # Build correlation matrix + open positions in a short-lived session
         async with _db_engine.AsyncSessionFactory() as session:
             market_repo   = MarketDataRepository(session)
-            order_repo    = OrderRepository(session)
             position_repo = PositionRepository(session)
-            order_manager = OrderManager(order_repo, broker, redis=redis_client)
 
-            news_filter = NewsFilter(calendar_repo=None)
-            engine = ConfluenceEngine(news_filter=news_filter)
-
-            # Build correlation matrix from daily closes
             daily_closes = {}
             for inst in settings.instruments:
                 rows = await market_repo.get_latest_n_candles(inst, "D", 50)
@@ -221,17 +225,17 @@ def run_signal_scan(self):
                         index=[r.time for r in rows],
                     )
             await correlation_mgr.update(daily_closes)
-
             open_positions = await position_repo.get_open()
 
-            def to_df(rows):
-                return pd.DataFrame([{
-                    "time": r.time, "open": float(r.open), "high": float(r.high),
-                    "low": float(r.low), "close": float(r.close),
-                } for r in rows]).set_index("time")
+        # Evaluate + persist each instrument in its own isolated session
+        # so one DB error doesn't poison the others
+        for instrument in settings.instruments:
+            try:
+                async with _db_engine.AsyncSessionFactory() as session:
+                    market_repo   = MarketDataRepository(session)
+                    order_repo    = OrderRepository(session)
+                    order_manager = OrderManager(order_repo, broker, redis=redis_client)
 
-            for instrument in settings.instruments:
-                try:
                     h1 = await market_repo.get_latest_n_candles(instrument, "H1", 200)
                     h4 = await market_repo.get_latest_n_candles(instrument, "H4", 100)
                     d1 = await market_repo.get_latest_n_candles(instrument, "D", 50)
@@ -268,6 +272,7 @@ def run_signal_scan(self):
                     await session.flush()  # get row.id assigned
 
                     if result.suppressed:
+                        await session.commit()
                         continue
 
                     # ── Execution gate ────────────────────────────────────────
@@ -276,17 +281,20 @@ def run_signal_scan(self):
                     dd_ok, dd_reason = drawdown_monitor.check()
                     if not dd_ok:
                         logger.warning("trade_blocked_drawdown", instrument=instrument, reason=dd_reason)
+                        await session.commit()
                         continue
 
                     # 2. Daily loss limit
                     if daily_limiter.is_halted(balance):
                         logger.warning("trade_blocked_daily_limit", instrument=instrument)
+                        await session.commit()
                         continue
 
                     # 3. Already have an open position in this instrument?
                     already_open = any(p.instrument == instrument for p in open_positions)
                     if already_open:
                         logger.info("trade_skipped_already_open", instrument=instrument)
+                        await session.commit()
                         continue
 
                     # 4. Correlation check
@@ -295,6 +303,7 @@ def run_signal_scan(self):
                     )
                     if not corr_ok:
                         logger.warning("trade_blocked_correlation", instrument=instrument, reason=corr_reason)
+                        await session.commit()
                         continue
 
                     # 5. Compute ATR-based stop loss & take profit
@@ -344,11 +353,10 @@ def run_signal_scan(self):
                         confluence=result.confluence_score,
                         order_id=str(order_id),
                     )
+                    await session.commit()
 
-                except Exception as exc:
-                    logger.error("signal_scan_instrument_failed", instrument=instrument, error=str(exc))
-
-            await session.commit()
+            except Exception as exc:
+                logger.error("signal_scan_instrument_failed", instrument=instrument, error=str(exc))
 
         await redis_client.aclose()
 
