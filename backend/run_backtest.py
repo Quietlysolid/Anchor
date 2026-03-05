@@ -35,26 +35,34 @@ INITIAL_BALANCE     = 10_000.0             # backtest starting capital
 # ── OANDA candle fetcher ───────────────────────────────────────────────────────
 
 def fetch_candles(client, instrument: str, granularity: str, start: datetime, end: datetime) -> pd.DataFrame:
-    """Pull all candles between start and end, handling pagination."""
+    """Pull all candles between start and end, handling pagination.
+
+    Uses from+count pagination (not from+to) — OANDA rejects requests with
+    all three params set simultaneously.
+    """
     all_rows = []
     current = start
 
-    tf_hours = {"H1": 1, "H4": 4, "D": 24}
-    step_hours = tf_hours.get(granularity, 1) * CANDLES_PER_REQUEST
-
     while current < end:
-        chunk_end = min(current + timedelta(hours=step_hours), end)
         params = {
             "granularity": granularity,
             "from": current.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "to":   chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "count": CANDLES_PER_REQUEST,
             "price": "M",   # midpoint
         }
         try:
             ep = instruments_ep.InstrumentsCandles(instrument, params=params)
             client.request(ep)
             candles = ep.response.get("candles", [])
+            if not candles:
+                break
+            last_time_str = candles[-1]["time"]
             for c in candles:
+                # Parse candle time; skip anything beyond our end date
+                c_time = datetime.fromisoformat(last_time_str.replace("Z", "+00:00"))
+                c_this = datetime.fromisoformat(c["time"].replace("Z", "+00:00"))
+                if c_this > end:
+                    break
                 if c.get("complete"):
                     mid = c["mid"]
                     all_rows.append({
@@ -65,10 +73,15 @@ def fetch_candles(client, instrument: str, granularity: str, start: datetime, en
                         "close":  float(mid["c"]),
                         "volume": int(c.get("volume", 0)),
                     })
+            # Advance past the last candle received
+            last_dt = datetime.fromisoformat(last_time_str.replace("Z", "+00:00"))
+            if last_dt <= current:
+                break  # no progress, stop
+            current = last_dt
         except Exception as exc:
             print(f"  [warn] {instrument} {granularity} chunk failed: {exc}")
+            break
 
-        current = chunk_end
         time.sleep(0.3)  # rate limit respect
 
     if not all_rows:
