@@ -1,0 +1,32 @@
+# Development overrides — hot reload, exposed ports, volume mounts
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+
+  engine:
+    volumes:
+      - ./backend:/app     # live code reload
+      - mlflow_artifacts:/app/mlflow_artifacts
+    command: uvicorn anchor.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"        # expose directly in dev
+
+  celery_worker:
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"        # Vite dev server port
+
+  db:
+    ports:
+      - "5432:5432"        # expose for local DB tools in dev
+
+  redis:
+    ports:
+      - "6379:6379"

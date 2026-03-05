@@ -1,0 +1,136 @@
+"""
+Position sizer.
+
+Method: Fixed fractional (1% account risk per trade).
+Optional: Kelly Criterion overlay (half-Kelly for safety).
+
+Pip value calculation covers all 8 major instruments correctly:
+
+  For USD-quoted pairs (EUR_USD, GBP_USD, AUD_USD, NZD_USD):
+      1 pip move = pip_size USD per unit (direct)
+      pip_value_per_unit = pip_size
+
+  For USD-base pairs (USD_JPY, USD_CHF, USD_CAD):
+      1 pip move = (pip_size / current_price) USD per unit
+      pip_value_per_unit = pip_size / entry_price
+
+  For cross pairs (EUR_JPY):
+      1 pip move = (pip_size / entry_price) * 1 unit of quote
+      Approximate in USD: pip_size / entry_price * usd_per_quote
+      We approximate usd_per_quote ≈ 1.0 for JPY crosses
+      (conservative over-estimate keeps us below true risk)
+
+Formula:
+  risk_amount = account_balance * risk_pct
+  stop_pips = |entry - stop_loss| / pip_size
+  units = risk_amount / (stop_pips * pip_value_per_unit)
+"""
+from anchor.config import get_settings
+from anchor.utils.math_utils import get_pip_size
+
+settings = get_settings()
+MICRO_LOT = 1_000   # OANDA minimum unit
+
+# Instruments where USD is the base currency (not the quote)
+USD_BASE_PAIRS = {"USD_JPY", "USD_CHF", "USD_CAD"}
+
+# Instruments quoted in JPY (need extra conversion approximation)
+JPY_QUOTE_PAIRS = {"EUR_JPY", "GBP_JPY", "AUD_JPY", "NZD_JPY"}
+
+# Approximate USD/JPY to convert JPY-pip values to USD (updated at runtime if possible)
+_APPROX_USDJPY = 150.0
+
+
+def set_usdjpy_rate(rate: float) -> None:
+    """Update the live USD/JPY rate for accurate cross-pair sizing."""
+    global _APPROX_USDJPY
+    if rate > 0:
+        _APPROX_USDJPY = rate
+
+
+def _pip_value_per_unit(instrument: str, entry_price: float, pip_size: float) -> float:
+    """Return USD value of one pip per one unit of the instrument."""
+    if instrument in USD_BASE_PAIRS:
+        # e.g. USD_JPY: 1 pip = pip_size / entry_price USD
+        return pip_size / entry_price if entry_price > 0 else pip_size
+
+    if instrument in JPY_QUOTE_PAIRS:
+        # e.g. EUR_JPY: 1 pip in JPY, convert to USD
+        return (pip_size / _APPROX_USDJPY) if _APPROX_USDJPY > 0 else pip_size
+
+    # Default: USD is the quote currency (EUR_USD, GBP_USD, AUD_USD, NZD_USD, USD_CHF treated above)
+    return pip_size
+
+
+class PositionSizer:
+    def compute(
+        self,
+        account_balance:   float,
+        instrument:        str,
+        entry_price:       float,
+        stop_loss:         float,
+        kelly_fraction:    float | None = None,
+        correlation_scale: float = 1.0,
+        drawdown_scale:    float = 1.0,
+    ) -> int:
+        """
+        Returns position size in units (OANDA native).
+        Always a multiple of MICRO_LOT (1,000 units).
+        """
+        pip_size = get_pip_size(instrument)
+        stop_distance = abs(entry_price - stop_loss)
+
+        if stop_distance < 1e-10:
+            return MICRO_LOT
+
+        stop_pips = stop_distance / pip_size
+        pv_per_unit = _pip_value_per_unit(instrument, entry_price, pip_size)
+
+        risk_amount = account_balance * settings.max_risk_per_trade
+        units_raw   = risk_amount / (stop_pips * pv_per_unit)
+
+        # Kelly overlay (half-Kelly cap) — only reduces, never increases
+        if kelly_fraction is not None and 0 < kelly_fraction < 1.0:
+            kelly_units = units_raw * kelly_fraction * 0.5
+            units_raw   = min(units_raw, kelly_units)
+
+        # Scale factors (correlation and drawdown)
+        units_scaled = units_raw * correlation_scale * drawdown_scale
+
+        # Snap to micro-lot boundary
+        units = int(units_scaled // MICRO_LOT) * MICRO_LOT
+
+        # Hard cap: never more than 5% of account value in a single position
+        if entry_price > 0 and pv_per_unit > 0:
+            notional_per_unit = entry_price  # approximate
+            max_notional = account_balance * settings.max_position_pct
+            max_units_by_notional = int(max_notional / notional_per_unit)
+            max_units_by_notional = (max_units_by_notional // MICRO_LOT) * MICRO_LOT
+            units = min(units, max(max_units_by_notional, MICRO_LOT))
+
+        return max(units, MICRO_LOT)
+
+    def compute_units(
+        self,
+        account_balance: float,
+        stop_distance: float,
+        instrument: str,
+        entry_price: float = 1.0,
+    ) -> int:
+        """Convenience method used by the backtesting engine.
+
+        When entry_price is not available (e.g., before fill), caller passes
+        a reference price (e.g., current close) as entry_price.
+        """
+        if stop_distance < 1e-10:
+            return MICRO_LOT
+
+        pip_size = get_pip_size(instrument)
+        stop_pips = stop_distance / pip_size
+        pv_per_unit = _pip_value_per_unit(instrument, entry_price, pip_size)
+
+        risk_amount = account_balance * settings.max_risk_per_trade
+        units_raw = risk_amount / (stop_pips * pv_per_unit)
+
+        units = int(units_raw // MICRO_LOT) * MICRO_LOT
+        return max(units, MICRO_LOT)

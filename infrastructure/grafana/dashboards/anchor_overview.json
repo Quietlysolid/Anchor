@@ -1,0 +1,121 @@
+{
+  "title": "Anchor — Trading Overview",
+  "uid": "anchor-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Engine Health",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "expr": "up{job=\"anchor_engine\"}",
+          "legendFormat": "Engine"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "thresholds": {
+          "steps": [
+            { "color": "red", "value": 0 },
+            { "color": "green", "value": 1 }
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Signals Generated (24h)",
+      "type": "stat",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "expr": "increase(anchor_signals_generated_total[24h])",
+          "legendFormat": "Signals"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Open Positions",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "expr": "anchor_open_positions",
+          "legendFormat": "Positions"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Current Drawdown %",
+      "type": "gauge",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "expr": "anchor_drawdown_pct * 100",
+          "legendFormat": "Drawdown"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "thresholds": {
+          "steps": [
+            { "color": "green", "value": 0 },
+            { "color": "yellow", "value": 8 },
+            { "color": "red", "value": 15 }
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Account Equity",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "anchor_account_equity",
+          "legendFormat": "Equity (USD)"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Signal Confluence Score (last 50)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "expr": "anchor_last_confluence_score",
+          "legendFormat": "Confluence"
+        }
+      ],
+      "options": {
+        "thresholds": {
+          "steps": [
+            { "color": "red", "value": 0 },
+            { "color": "green", "value": 0.65 }
+          ]
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Trade P&L (closed)",
+      "type": "barchart",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "expr": "anchor_trade_pnl_usd",
+          "legendFormat": "P&L USD"
+        }
+      ]
+    }
+  ]
+}

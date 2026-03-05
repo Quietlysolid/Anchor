@@ -1,0 +1,84 @@
+"""
+Position reconciler.
+Every 15 minutes: compare DB open positions vs OANDA ground truth.
+On VPS restart: full state reconstruction from broker.
+"""
+from datetime import datetime, timedelta
+
+import structlog
+
+from anchor.utils.time_utils import utcnow
+
+logger = structlog.get_logger(__name__)
+
+STALE_ORDER_HOURS = 4
+
+
+class Reconciler:
+    def __init__(self, broker_client, position_repo, order_repo, system_event_repo):
+        self.broker      = broker_client
+        self.pos_repo    = position_repo
+        self.order_repo  = order_repo
+        self.event_repo  = system_event_repo
+
+    async def reconcile(self) -> dict:
+        """
+        Compare DB positions vs broker positions.
+        Returns dict with discrepancies found and actions taken.
+        """
+        result = {
+            "timestamp":          utcnow().isoformat(),
+            "db_positions":       0,
+            "broker_positions":   0,
+            "missing_from_db":    [],
+            "missing_from_broker": [],
+            "actions_taken":      [],
+        }
+
+        broker_trades  = await self.broker.get_open_trades()
+        broker_ids     = {t["id"] for t in broker_trades}
+
+        db_positions = await self.pos_repo.get_open_positions()
+        db_trade_ids = {p.oanda_trade_id for p in db_positions if p.oanda_trade_id}
+
+        result["db_positions"]     = len(db_positions)
+        result["broker_positions"] = len(broker_trades)
+
+        # DB has position, broker doesn't → mark closed
+        for pos in db_positions:
+            if pos.oanda_trade_id and pos.oanda_trade_id not in broker_ids:
+                await self.pos_repo.mark_closed(
+                    position_id=pos.id,
+                    close_reason="VPS_CRASH_UNKNOWN",
+                    closed_at=utcnow(),
+                )
+                result["missing_from_broker"].append(pos.oanda_trade_id)
+                result["actions_taken"].append(f"CLOSED_IN_DB:{pos.oanda_trade_id}")
+                logger.warning("position_missing_from_broker", trade_id=pos.oanda_trade_id)
+
+        # Broker has trade, DB doesn't → reconstruct
+        for trade in broker_trades:
+            if trade["id"] not in db_trade_ids:
+                await self.pos_repo.create_from_broker_trade(trade)
+                result["missing_from_db"].append(trade["id"])
+                result["actions_taken"].append(f"RECONSTRUCTED:{trade['id']}")
+                logger.warning("position_missing_from_db", trade_id=trade["id"])
+
+        # Cancel stale pending orders
+        stale_cutoff = utcnow() - timedelta(hours=STALE_ORDER_HOURS)
+        stale_orders = await self.order_repo.get_stale_pending(stale_cutoff)
+        for order in stale_orders:
+            if order.oanda_order_id:
+                await self.broker.cancel_order(order.oanda_order_id)
+            await self.order_repo.update_state(order.id, "EXPIRED", {"reason": "STALE"})
+            result["actions_taken"].append(f"CANCELLED_STALE:{order.id}")
+
+        await self.event_repo.insert(
+            event_type="RECONCILIATION",
+            severity="INFO" if not result["missing_from_broker"] and not result["missing_from_db"] else "WARN",
+            component="RECONCILER",
+            message=f"Reconciled: {len(result['actions_taken'])} actions",
+            metadata=result,
+        )
+
+        return result

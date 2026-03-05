@@ -1,0 +1,175 @@
+services:
+
+  db:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: anchor_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-anchor}
+      POSTGRES_USER: ${DB_USER:-anchor}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-anchor} -d ${DB_NAME:-anchor}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: anchor_redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save 60 1
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  engine:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: anchor_engine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SERVICE_NAME=engine
+    volumes:
+      - mlflow_artifacts:/app/mlflow_artifacts
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/system/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: anchor_celery
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - db
+    env_file: .env
+    environment:
+      - SERVICE_NAME=celery
+    command: celery -A anchor.scheduler.celery_app worker --loglevel=info -Q ml_tasks,default
+    volumes:
+      - mlflow_artifacts:/app/mlflow_artifacts
+
+  mlflow:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: anchor_mlflow
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    command: >
+      mlflow server
+        --backend-store-uri postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+        --default-artifact-root /app/mlflow_artifacts
+        --host 0.0.0.0
+        --port 5000
+    volumes:
+      - mlflow_artifacts:/app/mlflow_artifacts
+    ports:
+      - "127.0.0.1:5000:5000"
+
+  watchdog:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: anchor_watchdog
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - SERVICE_NAME=watchdog
+    command: python -m anchor.monitoring.watchdog
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: anchor_frontend
+    restart: unless-stopped
+    depends_on:
+      - engine
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: anchor_nginx
+    restart: unless-stopped
+    depends_on:
+      - engine
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+      # Uncomment after certbot:
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: anchor_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: anchor_grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infrastructure/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+
+volumes:
+  pg_data:
+  redis_data:
+  mlflow_artifacts:
+  prometheus_data:
+  grafana_data:
+  nginx_logs:
