@@ -25,9 +25,28 @@ class XGBDirectionClassifier:
         self._model: Optional[xgb.XGBClassifier] = None
         self._feature_names: list = []
 
-    def fit(self, X: np.ndarray, y: np.ndarray, feature_names: List[str] | None = None) -> None:
-        """Train on feature matrix X and binary labels y (1=LONG, 0=SHORT)."""
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: List[str] | None = None,
+        class_weight: str | None = "balanced",
+    ) -> None:
+        """Train on feature matrix X and binary labels y (1=LONG, 0=SHORT).
+
+        class_weight="balanced" computes scale_pos_weight = n_neg / n_pos so
+        XGBoost handles class-imbalanced label distributions the same way
+        LightGBM does with class_weight="balanced".
+        """
         self._feature_names = feature_names or [f"f{i}" for i in range(X.shape[1])]
+
+        scale_pos_weight = 1.0
+        if class_weight == "balanced":
+            n_pos = float(np.sum(y == 1))
+            n_neg = float(np.sum(y == 0))
+            if n_pos > 0:
+                scale_pos_weight = n_neg / n_pos
+
         self._model = xgb.XGBClassifier(
             n_estimators=300,
             max_depth=5,
@@ -35,11 +54,17 @@ class XGBDirectionClassifier:
             subsample=0.8,
             colsample_bytree=0.8,
             eval_metric="logloss",
+            scale_pos_weight=scale_pos_weight,
             random_state=42,
             n_jobs=-1,
         )
         self._model.fit(X, y)
-        logger.info("xgb_trained", n_samples=len(X), features=len(self._feature_names))
+        logger.info(
+            "xgb_trained",
+            n_samples=len(X),
+            features=len(self._feature_names),
+            scale_pos_weight=round(scale_pos_weight, 4),
+        )
 
     def predict(self, features: np.ndarray) -> Tuple[float, str]:
         """Returns (confidence: float, direction: str)."""

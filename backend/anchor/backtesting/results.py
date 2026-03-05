@@ -81,17 +81,20 @@ def compute_results(broker: SimulatedBroker, instrument: str, timeframe: str) ->
     else:
         max_dd = 0.0
 
-    # Sharpe (annualized, assume daily returns from equity curve)
+    # Sharpe / Sortino (annualized from hourly equity snapshots).
+    # The equity history records one entry per H1 bar, so there are
+    # 24 * 252 = 6,048 periods per year. Annualization factor = sqrt(6048).
+    ANNUAL_FACTOR = np.sqrt(252 * 24)
     if len(broker.equity_history) > 1:
         eq = np.array([e["equity"] for e in broker.equity_history])
-        daily_returns = np.diff(eq) / eq[:-1]
-        if daily_returns.std() > 0:
-            sharpe = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
+        bar_returns = np.diff(eq) / eq[:-1]
+        if bar_returns.std(ddof=1) > 0:
+            sharpe = float(bar_returns.mean() / bar_returns.std(ddof=1) * ANNUAL_FACTOR)
         else:
             sharpe = 0.0
-        neg = daily_returns[daily_returns < 0]
-        if neg.std() > 0:
-            sortino = float(daily_returns.mean() / neg.std() * np.sqrt(252))
+        neg = bar_returns[bar_returns < 0]
+        if len(neg) > 1 and neg.std(ddof=1) > 0:
+            sortino = float(bar_returns.mean() / neg.std(ddof=1) * ANNUAL_FACTOR)
         else:
             sortino = 0.0
     else:
@@ -154,6 +157,19 @@ def compute_results(broker: SimulatedBroker, instrument: str, timeframe: str) ->
                 "exit_time": str(t.exit_time),
                 "net_pl": round(t.net_pl, 2),
                 "close_reason": t.close_reason,
+                # Signal context for analysis
+                "regime": t.regime,
+                "session": t.session,
+                "confluence_score": round(t.confluence_score, 4),
+                "rsi_score": round(t.rsi_score, 4),
+                "bb_kc_score": round(t.bb_kc_score, 4),
+                "adx_score": round(t.adx_score, 4),
+                "sr_score": round(t.sr_score, 4),
+                "mtf_score": round(t.mtf_score, 4),
+                "csi_score": round(t.csi_score, 4),
+                "ml_confidence": round(t.ml_confidence, 4) if t.ml_confidence is not None else None,
+                "atr": round(t.atr, 6),
+                "outcome": 1 if t.net_pl > 0 else 0,
             }
             for t in trades
         ],

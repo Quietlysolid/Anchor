@@ -179,22 +179,39 @@ class ConfluenceEngine:
 
         # ── Step 5: Component scoring ─────────────────────────────────────
         bb_kc_score, squeeze_on = detect_squeeze(df_1h)
-        adx_score, adx_regime   = compute_adx_score(df_1h)
+        adx_score, adx_regime   = compute_adx_score(df_1h, rsi_confirmed=rsi_confirmed)
         sr_score, sr_level      = compute_sr_score(df_1h)
 
         # CSI across all available pairs
         csi = compute_csi(self.data_cache.get("H1", {}))
         csi_score = csi_signal_score(instrument, csi, direction)
 
-        # Weighted confluence
-        confluence = (
-            WEIGHTS["rsi_divergence"] * rsi_score
-            + WEIGHTS["bb_kc_squeeze"]  * bb_kc_score
-            + WEIGHTS["adx_filter"]     * adx_score
-            + WEIGHTS["sr_strength"]    * sr_score
-            + WEIGHTS["mtf_agreement"]  * mtf_score
-            + WEIGHTS["csi_strength"]   * csi_score
-        )
+        # Weighted confluence.
+        # When RSI divergence is absent (trend-following path), rsi_score = 0.0
+        # and its 0.25 weight would cap the maximum achievable confluence at 0.75,
+        # making the 0.65 threshold effectively 86.7% of achievable max — nearly
+        # impossible to reach. Instead, when RSI is absent we renormalize by
+        # distributing the RSI weight proportionally across the remaining components
+        # so the score still spans [0, 1] and the threshold is consistently applied.
+        if not rsi_confirmed:
+            non_rsi_total = 1.0 - WEIGHTS["rsi_divergence"]  # = 0.75
+            scale = 1.0 / non_rsi_total  # = 1/0.75 ≈ 1.333
+            confluence = scale * (
+                WEIGHTS["bb_kc_squeeze"] * bb_kc_score
+                + WEIGHTS["adx_filter"]  * adx_score
+                + WEIGHTS["sr_strength"] * sr_score
+                + WEIGHTS["mtf_agreement"] * mtf_score
+                + WEIGHTS["csi_strength"] * csi_score
+            )
+        else:
+            confluence = (
+                WEIGHTS["rsi_divergence"] * rsi_score
+                + WEIGHTS["bb_kc_squeeze"]  * bb_kc_score
+                + WEIGHTS["adx_filter"]     * adx_score
+                + WEIGHTS["sr_strength"]    * sr_score
+                + WEIGHTS["mtf_agreement"]  * mtf_score
+                + WEIGHTS["csi_strength"]   * csi_score
+            )
 
         result.rsi_score   = round(rsi_score, 4)
         result.bb_kc_score = round(bb_kc_score, 4)
@@ -204,9 +221,10 @@ class ConfluenceEngine:
         result.csi_score   = round(csi_score, 4)
         result.regime_state = adx_regime
         result.metadata.update({
-            "sr_level":   sr_level,
-            "squeeze_on": squeeze_on,
-            "csi":        csi,
+            "sr_level":      sr_level,
+            "squeeze_on":    squeeze_on,
+            "csi":           csi,
+            "rsi_confirmed": rsi_confirmed,
         })
 
         # ── Step 6: ML confidence overlay ────────────────────────────────

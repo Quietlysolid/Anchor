@@ -82,13 +82,22 @@ class FeatureEngineer:
             close_val = float(df_1h["close"].iloc[-2])
             features["dist_from_ema50"] = (close_val - ema_val) / (atr_val if atr_val else 1.0)
 
-        # 4H features
+        # 4H features.
+        # When 4H data is unavailable, set adx_4h to the neutral midpoint (25.0,
+        # the ranging/trending boundary) rather than 0.0 (which would mean
+        # "ADX=0, extremely ranging" — a semantically wrong imputation).
+        # A companion binary flag adx_4h_available lets the model learn to
+        # discount the imputed value when data is genuinely absent.
+        adx_4h_available = 0.0
+        features["adx_4h"] = 25.0  # neutral fallback
         if df_4h is not None and len(df_4h) >= 55:
             adx_4h = ta_lib.trend.ADXIndicator(
                 high=df_4h["high"], low=df_4h["low"], close=df_4h["close"], window=14
             ).adx()
             if adx_4h is not None and not adx_4h.isna().all():
                 features["adx_4h"] = float(adx_4h.iloc[-2])
+                adx_4h_available = 1.0
+        features["adx_4h_available"] = adx_4h_available
 
         # ── Time encoding (cyclic, no ordinal leakage) ────────────────────
         last_ts = df_1h.index[-1]
@@ -117,7 +126,7 @@ class FeatureEngineer:
     def get_feature_names(self) -> list[str]:
         """Returns sorted list of feature names (must match build() output)."""
         names = [
-            "adx_1h", "adx_4h", "atr_norm", "bb_width",
+            "adx_1h", "adx_4h", "adx_4h_available", "atr_norm", "bb_width",
             "dist_from_ema50", "dow_cos", "dow_sin",
             "hour_cos", "hour_sin", "is_asian", "is_london", "is_newyork",
             "macd_signal", "realized_vol",

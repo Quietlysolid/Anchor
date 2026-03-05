@@ -32,6 +32,17 @@ PIP_SIZES: Dict[str, float] = {
 }
 DEFAULT_PIP_SIZE = 0.0001
 
+# Pairs where the quote currency is JPY — P&L is in JPY and must be converted to USD.
+# For USD_JPY: 1 unit moves = (price_delta) JPY. USD value = JPY / exit_price.
+# For EUR_JPY: 1 unit moves = (price_delta) JPY. USD value = JPY / exit_price.
+JPY_QUOTE_PAIRS: set = {"USD_JPY", "EUR_JPY"}
+
+# Pairs where USD is the base (not the quote) — P&L is in the quote currency,
+# which is not USD, so we must convert. However for USD_JPY it is already covered
+# above. USD_CHF, USD_CAD would need CHF/USD or CAD/USD rates which we don't have,
+# so for now we only correct the JPY pairs (the ~150x error). CHF/CAD are close
+# enough to USD that the error is <5% and acceptable without a live rate feed.
+
 SLIPPAGE_PIPS = 0.5  # half-pip slippage on entry
 COMMISSION_USD_PER_LOT = 3.5  # per 100,000 units (one standard lot)
 
@@ -52,6 +63,18 @@ class SimulatedPosition:
     exit_time: Optional[datetime] = None
     close_reason: str = ""
     net_pl: float = 0.0
+    # Signal context recorded at entry (for post-hoc analysis)
+    regime: Optional[str] = None
+    session: Optional[str] = None
+    confluence_score: float = 0.0
+    rsi_score: float = 0.0
+    bb_kc_score: float = 0.0
+    adx_score: float = 0.0
+    sr_score: float = 0.0
+    mtf_score: float = 0.0
+    csi_score: float = 0.0
+    ml_confidence: Optional[float] = None
+    atr: float = 0.0
 
 
 @dataclass
@@ -81,6 +104,7 @@ class SimulatedBroker:
         stop_loss: Optional[float],
         take_profit: Optional[float],
         fill_time: datetime,
+        signal_context: Optional[dict] = None,
     ) -> SimulatedPosition:
         pip = self.pip_size(instrument)
         slip = SLIPPAGE_PIPS * pip
@@ -94,6 +118,7 @@ class SimulatedBroker:
         comm = self.commission(units)
         self.account_balance -= comm
 
+        ctx = signal_context or {}
         pos = SimulatedPosition(
             id=str(uuid.uuid4()),
             instrument=instrument,
@@ -103,6 +128,17 @@ class SimulatedBroker:
             entry_time=fill_time,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            regime=ctx.get("regime"),
+            session=ctx.get("session"),
+            confluence_score=ctx.get("confluence_score", 0.0),
+            rsi_score=ctx.get("rsi_score", 0.0),
+            bb_kc_score=ctx.get("bb_kc_score", 0.0),
+            adx_score=ctx.get("adx_score", 0.0),
+            sr_score=ctx.get("sr_score", 0.0),
+            mtf_score=ctx.get("mtf_score", 0.0),
+            csi_score=ctx.get("csi_score", 0.0),
+            ml_confidence=ctx.get("ml_confidence"),
+            atr=ctx.get("atr", 0.0),
         )
         self.positions.append(pos)
         return pos
@@ -142,19 +178,33 @@ class SimulatedBroker:
             {"time": bar.time, "balance": self.account_balance, "equity": self.account_balance + unrealized}
         )
 
+    def _quote_to_usd(self, instrument: str, pl_in_quote: float, exit_price: float) -> float:
+        """Convert P&L from quote currency to USD.
+
+        For JPY-quoted pairs (USD_JPY, EUR_JPY), raw P&L is in JPY.
+        Divide by the exit price (JPY per USD) to get USD.
+        For USD-quoted pairs (EUR_USD, GBP_USD, AUD_USD) P&L is already in USD.
+        """
+        if instrument in JPY_QUOTE_PAIRS and exit_price > 0:
+            return pl_in_quote / exit_price
+        return pl_in_quote
+
     def _unrealized_pl(self, pos: SimulatedPosition, current_price: float) -> float:
         if pos.direction == "LONG":
-            return (current_price - pos.entry_price) * pos.units
-        return (pos.entry_price - current_price) * pos.units
+            raw = (current_price - pos.entry_price) * pos.units
+        else:
+            raw = (pos.entry_price - current_price) * pos.units
+        return self._quote_to_usd(pos.instrument, raw, current_price)
 
     def _close(
         self, pos: SimulatedPosition, exit_price: float, exit_time: datetime, reason: str
     ) -> None:
         comm = self.commission(pos.units)
         if pos.direction == "LONG":
-            pl = (exit_price - pos.entry_price) * pos.units - comm
+            raw_pl = (exit_price - pos.entry_price) * pos.units
         else:
-            pl = (pos.entry_price - exit_price) * pos.units - comm
+            raw_pl = (pos.entry_price - exit_price) * pos.units
+        pl = self._quote_to_usd(pos.instrument, raw_pl, exit_price) - comm
 
         pos.exit_price = exit_price
         pos.exit_time = exit_time

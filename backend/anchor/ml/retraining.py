@@ -35,10 +35,28 @@ LABEL_FORWARD_BARS = 3   # label = price direction 3 bars ahead
 
 
 def _make_labels(closes: np.ndarray, forward_bars: int = LABEL_FORWARD_BARS) -> np.ndarray:
-    """Binary label: 1 if price rose N bars later, 0 if fell."""
-    future = np.roll(closes, -forward_bars)
-    labels = (future > closes).astype(int)
-    labels[-forward_bars:] = -1  # invalid (lookahead)
+    """Binary label: 1 if price rose N bars after the reference bar, 0 if fell.
+
+    closes[k] is the close of bar 60+k — one bar BEYOND the last bar of the
+    feature window for row k (window = df.iloc[k : k+60], last bar = index 59+k).
+    We therefore shift the reference back by 1 so it aligns with the window's
+    last bar (df.iloc[59+k]) and compare against forward_bars later:
+
+        label[k] = 1  iff  closes[k + forward_bars] > closes[k - 1]
+
+    This eliminates the 1-bar reference asymmetry while keeping the label
+    strictly forward-looking with respect to the feature window.
+    """
+    n = len(closes)
+    labels = np.full(n, -1, dtype=int)
+    # Reference price = closes[k-1] (last bar inside the feature window).
+    # Target price    = closes[k - 1 + forward_bars].
+    # Valid range: k >= 1 and k - 1 + forward_bars < n  →  k < n - forward_bars + 1
+    for k in range(1, n - forward_bars + 1):
+        ref    = closes[k - 1]
+        target = closes[k - 1 + forward_bars]
+        labels[k] = 1 if target > ref else 0
+    # k=0 and the last forward_bars rows are left as -1 (invalid)
     return labels
 
 

@@ -41,8 +41,20 @@ def compute_csi(
     """
     Returns normalized strength score 0-100 per currency.
     candle_cache: instrument → DataFrame with 'close' column.
+
+    Normalization: z-score across currencies, then mapped to [0, 100] via a
+    sigmoid (tanh-based) so a single extreme outlier (e.g. JPY during FOMC)
+    does not compress all other currency differences toward a narrow band.
+
+    Averaging: the mean return per currency is weighted by observation count
+    to avoid giving equal weight to currencies with only 1 pair vs those with
+    5 pairs (USD). Currencies absent from the loaded pairs are not imputed —
+    they receive 50.0 (neutral) rather than being pulled to 0 by the old
+    min-max formula.
     """
-    strengths: dict[str, list[float]] = defaultdict(list)
+    # Accumulate returns and observation counts per currency
+    sum_rets: dict[str, float] = defaultdict(float)
+    obs_count: dict[str, int] = defaultdict(int)
 
     for (base, quote), instrument in PAIR_MAP.items():
         df = candle_cache.get(instrument)
@@ -52,26 +64,38 @@ def compute_csi(
         closes = df["close"]
         period_return = (float(closes.iloc[-1]) - float(closes.iloc[-period])) / float(closes.iloc[-period])
 
-        strengths[base].append(period_return)
-        strengths[quote].append(-period_return)  # reverse for quote currency
+        sum_rets[base] += period_return
+        obs_count[base] += 1
+        sum_rets[quote] += -period_return
+        obs_count[quote] += 1
 
-    if not strengths:
+    observed = {ccy for ccy in CURRENCIES if obs_count.get(ccy, 0) > 0}
+    if not observed:
         return {c: 50.0 for c in CURRENCIES}
 
-    raw = {ccy: float(np.mean(rets)) for ccy, rets in strengths.items()}
+    # Weighted mean (= sum / count, naturally handles uneven coverage)
+    raw = {ccy: sum_rets[ccy] / obs_count[ccy] for ccy in observed}
 
-    # Normalize to 0-100
+    # Z-score across observed currencies
     values = np.array(list(raw.values()))
-    mn, mx = values.min(), values.max()
-    spread = mx - mn
+    mu  = float(values.mean())
+    std = float(values.std(ddof=0))
 
-    if spread < 1e-10:
-        return {ccy: 50.0 for ccy in CURRENCIES}
+    result: dict[str, float] = {}
+    for ccy in CURRENCIES:
+        if ccy not in raw:
+            result[ccy] = 50.0  # neutral for unobserved currencies
+            continue
+        if std < 1e-10:
+            result[ccy] = 50.0
+        else:
+            z = (raw[ccy] - mu) / std
+            # tanh maps z-scores to (-1, 1); scale to (0, 100)
+            # tanh saturates at ~±3σ, so outliers beyond 3σ don't
+            # compress other currencies — they just hit ~97 or ~3.
+            result[ccy] = round(50.0 + 50.0 * float(np.tanh(z)), 2)
 
-    return {
-        ccy: round(((raw.get(ccy, 0) - mn) / spread) * 100, 2)
-        for ccy in CURRENCIES
-    }
+    return result
 
 
 def csi_signal_score(
