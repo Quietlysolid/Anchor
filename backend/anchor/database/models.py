@@ -88,7 +88,7 @@ class Signal(Base):
     mtf_score:         Mapped[Decimal | None]  = mapped_column(Numeric(5, 4))
     csi_score:         Mapped[Decimal | None]  = mapped_column(Numeric(5, 4))
     ml_confidence:     Mapped[Decimal | None]  = mapped_column(Numeric(5, 4))
-    regime_state:      Mapped[str | None]      = mapped_column(String(12))
+    regime_state:      Mapped[str | None]      = mapped_column(String(16))
     session:           Mapped[str | None]      = mapped_column(String(8))
     suppressed:        Mapped[bool]            = mapped_column(Boolean, nullable=False, default=False)
     suppression_reason: Mapped[str | None]     = mapped_column(Text)
@@ -203,7 +203,7 @@ class Trade(Base):
     max_adverse_excursion:   Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     max_favorable_excursion: Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     close_reason:            Mapped[str | None]      = mapped_column(String(32))
-    regime_at_entry:         Mapped[str | None]      = mapped_column(String(12))
+    regime_at_entry:         Mapped[str | None]      = mapped_column(String(16))
     session_at_entry:        Mapped[str | None]      = mapped_column(String(8))
     signal_id:               Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("signals.id"))
 
@@ -254,9 +254,9 @@ class RegimeHistory(Base):
 
     time:             Mapped[datetime]     = mapped_column(DateTime(timezone=True), primary_key=True)
     instrument:       Mapped[str | None]   = mapped_column(String(12), primary_key=True)
-    regime:           Mapped[str]          = mapped_column(String(12), nullable=False)
+    regime:           Mapped[str]          = mapped_column(String(16), nullable=False)
     confidence:       Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
-    transition_from:  Mapped[str | None]   = mapped_column(String(12))
+    transition_from:  Mapped[str | None]   = mapped_column(String(16))
 
 
 class SlippageRecord(Base):
