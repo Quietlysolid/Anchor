@@ -74,6 +74,22 @@ services:
     volumes:
       - mlflow_artifacts:/app/mlflow_artifacts
 
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: anchor_beat
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - db
+    env_file: .env
+    environment:
+      - SERVICE_NAME=celery_beat
+    command: celery -A anchor.scheduler.celery_app beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+    volumes:
+      - mlflow_artifacts:/app/mlflow_artifacts
+
   mlflow:
     build:
       context: ./backend
