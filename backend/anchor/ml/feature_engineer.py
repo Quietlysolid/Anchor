@@ -104,9 +104,9 @@ class FeatureEngineer:
         features["is_newyork"]  = 1.0 if 12 <= hour < 21 else 0.0
         features["is_asian"]    = 1.0 if hour < 9          else 0.0
 
-        # ── Fill any missing features with 0.0 ───────────────────────────
+        # ── Fill any missing features with 0.0 (fixed-length output) ────
         return np.array(
-            [features.get(k, 0.0) for k in sorted(features.keys())],
+            [features.get(k, 0.0) for k in self.get_feature_names()],
             dtype=np.float32,
         )
 
