@@ -186,9 +186,9 @@ def run_signal_scan(self):
                             "low": float(r.low), "close": float(r.close),
                         } for r in rows]).set_index("time")
 
-                    engine.data_cache[f"{instrument}_H1"] = to_df(h1)
-                    engine.data_cache[f"{instrument}_H4"] = to_df(h4)
-                    engine.data_cache[f"{instrument}_D"]  = to_df(d1)
+                    engine.update_cache(instrument, "H1", to_df(h1))
+                    engine.update_cache(instrument, "H4", to_df(h4))
+                    engine.update_cache(instrument, "D",  to_df(d1))
 
                     result = await engine.evaluate(instrument, dt=now)
 
@@ -263,7 +263,7 @@ def run_regime_detection(self):
                         "low": float(r.low), "close": float(r.close),
                     } for r in rows]).set_index("time")
 
-                    if not detector.is_ready():
+                    if not detector.is_ready:
                         detector.fit(df)
 
                     state, confidence = detector.predict_current(df)
