@@ -48,7 +48,6 @@ def fetch_candles(client, instrument: str, granularity: str, start: datetime, en
             "granularity": granularity,
             "from": current.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "to":   chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "count": CANDLES_PER_REQUEST,
             "price": "M",   # midpoint
         }
         try:
