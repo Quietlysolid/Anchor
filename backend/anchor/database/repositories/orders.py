@@ -124,7 +124,7 @@ class OrderRepository:
         result = await self.session.execute(
             select(Order).where(
                 and_(
-                    Order.state.in_(["PENDING", "SUBMITTED"]),
+                    Order.state.in_([OrderState.PENDING, OrderState.SUBMITTED]),
                     Order.created_at < cutoff,
                 )
             )
