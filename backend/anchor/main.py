@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
             async def _redis_fanout():
                 """Subscribe to Redis 'ticks' channel and broadcast to WebSocket clients."""
                 pubsub = redis_client.pubsub()
-                await pubsub.subscribe("ticks")
+                await pubsub.subscribe("ticks", "regime", "signals")
                 async for message in pubsub.listen():
                     if message["type"] == "message":
                         try:

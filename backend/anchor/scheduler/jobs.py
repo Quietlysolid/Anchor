@@ -144,6 +144,149 @@ def reconcile_positions(self):
         raise self.retry(exc=exc, countdown=60)
 
 
+@celery_app.task(name="anchor.scheduler.jobs.run_signal_scan", bind=True, max_retries=2)
+def run_signal_scan(self):
+    """Evaluate confluence signals for all instruments on every H1 candle close."""
+    async def _inner():
+        from anchor.config import settings
+        from anchor.database.engine import get_session
+        from anchor.database.repositories.market_data import MarketDataRepository
+        from anchor.database.repositories.signals import SignalRepository
+        from anchor.database.models import Signal as SignalModel
+        from anchor.signals.engine import ConfluenceEngine
+        from anchor.signals.news_filter import NewsFilter
+        from anchor.utils.time_utils import utcnow
+
+        now = utcnow()
+
+        async with get_session() as session:
+            market_repo = MarketDataRepository(session)
+            signal_repo = SignalRepository(session)
+
+            news_filter = NewsFilter(calendar_repo=None)
+            engine = ConfluenceEngine(news_filter=news_filter)
+
+            for instrument in settings.instruments:
+                try:
+                    # Load candles into engine data cache
+                    h1 = await market_repo.get_latest_n_candles(instrument, "H1", 200)
+                    h4 = await market_repo.get_latest_n_candles(instrument, "H4", 100)
+                    d1 = await market_repo.get_latest_n_candles(instrument, "D", 50)
+
+                    if len(h1) < 50:
+                        logger.warning("signal_scan_insufficient_data", instrument=instrument)
+                        continue
+
+                    import pandas as pd
+                    def to_df(rows):
+                        return pd.DataFrame([{
+                            "time": r.time, "open": float(r.open), "high": float(r.high),
+                            "low": float(r.low), "close": float(r.close),
+                        } for r in rows]).set_index("time")
+
+                    engine.data_cache[f"{instrument}_H1"] = to_df(h1)
+                    engine.data_cache[f"{instrument}_H4"] = to_df(h4)
+                    engine.data_cache[f"{instrument}_D"]  = to_df(d1)
+
+                    result = await engine.evaluate(instrument, dt=now)
+
+                    # Persist every evaluation (suppressed or not) for audit trail
+                    row = SignalModel(
+                        instrument=instrument,
+                        timeframe="H1",
+                        direction=result.direction or "LONG",
+                        confluence_score=result.confluence_score,
+                        rsi_score=result.rsi_score,
+                        bb_kc_score=result.bb_kc_score,
+                        adx_score=result.adx_score,
+                        sr_score=result.sr_score,
+                        mtf_score=result.mtf_score,
+                        csi_score=result.csi_score,
+                        ml_confidence=result.ml_confidence,
+                        regime_state=result.regime_state,
+                        session=result.session,
+                        suppressed=result.suppressed,
+                        suppression_reason=result.suppression_reason,
+                    )
+                    session.add(row)
+
+                    if not result.suppressed:
+                        logger.info("signal_generated",
+                                    instrument=instrument,
+                                    direction=result.direction,
+                                    confluence=result.confluence_score,
+                                    ml_conf=result.ml_confidence)
+
+                except Exception as exc:
+                    logger.error("signal_scan_instrument_failed", instrument=instrument, error=str(exc))
+
+            await session.commit()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("signal_scan_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.run_regime_detection", bind=True, max_retries=2)
+def run_regime_detection(self):
+    """Fit/update HMM regime detector for all instruments and publish to WebSocket."""
+    async def _inner():
+        import json
+        from anchor.config import settings
+        from anchor.database.engine import get_session
+        from anchor.database.repositories.market_data import MarketDataRepository
+        from anchor.regime.hmm_detector import HMMRegimeDetector
+
+        import pandas as pd
+        import redis.asyncio as aioredis
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        detector = HMMRegimeDetector()
+        regime_snapshot = {}
+
+        async with get_session() as session:
+            repo = MarketDataRepository(session)
+            for instrument in settings.instruments:
+                try:
+                    rows = await repo.get_latest_n_candles(instrument, "D", 300)
+                    if len(rows) < 60:
+                        continue
+
+                    df = pd.DataFrame([{
+                        "time": r.time, "open": float(r.open), "high": float(r.high),
+                        "low": float(r.low), "close": float(r.close),
+                    } for r in rows]).set_index("time")
+
+                    if not detector.is_ready():
+                        detector.fit(df)
+
+                    state, confidence = detector.predict_current(df)
+                    regime_snapshot[instrument] = {"state": state, "confidence": round(confidence, 4)}
+
+                    logger.debug("regime_detected", instrument=instrument, state=state, confidence=confidence)
+
+                except Exception as exc:
+                    logger.error("regime_detection_failed", instrument=instrument, error=str(exc))
+
+        if regime_snapshot:
+            # Publish to Redis → WebSocket fanout so dashboard updates in real time
+            await redis_client.publish("regime", json.dumps({
+                "channel": "regime",
+                "data": regime_snapshot,
+            }))
+
+        await redis_client.aclose()
+        logger.info("regime_detection_complete", instruments=list(regime_snapshot.keys()))
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("regime_detection_task_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
 @celery_app.task(name="anchor.scheduler.jobs.retrain_models", bind=True, max_retries=1)
 def retrain_models(self, instrument: Optional[str] = None):
     """Monthly ML retraining for all instruments."""
