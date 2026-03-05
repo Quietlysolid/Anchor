@@ -110,8 +110,11 @@ class FeatureEngineer:
             dtype=np.float32,
         )
 
-    @property
-    def feature_names(self) -> list[str]:
+    def compute(self, df: pd.DataFrame, instrument: str) -> np.ndarray:
+        """Alias for build() used by retraining pipeline. df is H1 window."""
+        return self.build(instrument, df)
+
+    def get_feature_names(self) -> list[str]:
         """Returns sorted list of feature names (must match build() output)."""
         names = [
             "adx_1h", "adx_4h", "atr_norm", "bb_width",
@@ -121,3 +124,7 @@ class FeatureEngineer:
             "rsi_1h", "rsi_1h_prev", "stoch_k",
         ]
         return sorted(names)
+
+    @property
+    def feature_names(self) -> list[str]:
+        return self.get_feature_names()

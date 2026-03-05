@@ -17,6 +17,8 @@ import numpy as np
 import pandas as pd
 import structlog
 
+from pathlib import Path
+
 from anchor.backtesting.data_feed import HistoricalDataFeed
 from anchor.backtesting.simulated_broker import SimulatedBroker
 from anchor.backtesting.results import compute_results, BacktestResults
@@ -24,6 +26,10 @@ from anchor.config import settings
 from anchor.risk.position_sizer import PositionSizer
 from anchor.risk.weekend_guard import WeekendGuard as _WG
 from anchor.risk.holiday_calendar import is_holiday
+from anchor.ml.xgb_classifier import XGBDirectionClassifier
+from anchor.ml.feature_engineer import FeatureEngineer
+
+MODEL_DIR = Path("/app/models")
 
 _wg = _WG()
 
@@ -37,11 +43,21 @@ ATR_MULTIPLIER_SL = 1.5   # stop loss = 1.5x ATR
 ATR_MULTIPLIER_TP = 3.0   # take profit = 3.0x ATR (2:1 R/R minimum)
 
 
+def _load_ml_classifier(instrument: str) -> XGBDirectionClassifier | None:
+    """Load a trained XGBoost model for the given instrument if it exists."""
+    path = MODEL_DIR / f"{instrument}_xgb.pkl"
+    clf = XGBDirectionClassifier(model_path=path)
+    if clf.load(path):
+        return clf
+    return None
+
+
 class BacktestEngine:
     def __init__(self, initial_balance: float = 10_000.0) -> None:
         self.broker = SimulatedBroker(account_balance=initial_balance)
         self.feed = HistoricalDataFeed()
         self.sizer = PositionSizer()
+        self._feature_engineer = FeatureEngineer()
 
     def load_csv(self, instrument: str, timeframe: str, path: str) -> None:
         df = pd.read_csv(path, parse_dates=["time"])
@@ -61,9 +77,20 @@ class BacktestEngine:
         directly (same mechanism used in live trading) and calls evaluate()
         with the correct signature: (instrument, dt).
         """
+        # Load ML model if available
+        ml_clf = _load_ml_classifier(instrument)
+        if ml_clf:
+            logger.info("ml_model_loaded", instrument=instrument)
+        else:
+            logger.info("ml_model_not_found_running_without_ml", instrument=instrument)
+
         # Build the engine with a data_cache dict that we update each bar
         data_cache: dict = {"H1": {}, "H4": {}, "D": {}}
-        engine = ConfluenceEngine(data_cache=data_cache)
+        engine = ConfluenceEngine(
+            data_cache=data_cache,
+            ml_classifier=ml_clf,
+            feature_engineer=self._feature_engineer if ml_clf else None,
+        )
 
         # Create a new event loop for running async evaluate() calls
         loop = _asyncio.new_event_loop()

@@ -103,7 +103,7 @@ async def run_retraining(instrument: Optional[str] = None) -> Dict:
             y = labels[valid_mask]
             ts = np.array(timestamps)[valid_mask].astype("datetime64[M]")
 
-            feature_names = engineer.feature_names()
+            feature_names = engineer.get_feature_names()
 
             with mlflow.start_run(run_name=f"{instr}_{datetime.now().strftime('%Y%m')}"):
                 # Walk-forward
