@@ -146,31 +146,80 @@ def reconcile_positions(self):
 
 @celery_app.task(name="anchor.scheduler.jobs.run_signal_scan", bind=True, max_retries=2)
 def run_signal_scan(self):
-    """Evaluate confluence signals for all instruments on every H1 candle close."""
+    """Evaluate confluence signals for all instruments on every H1 candle close.
+
+    When a signal passes all filters (suppressed=False), immediately size and
+    submit an order to OANDA via the OrderManager execution pipeline.
+    """
     async def _inner():
+        import pandas as pd
         from anchor.config import settings
-        from anchor.database.engine import init_db, AsyncSessionFactory
+        from anchor.database.engine import init_db
         from anchor.database.repositories.market_data import MarketDataRepository
-        from anchor.database.repositories.signals import SignalRepository
+        from anchor.database.repositories.orders import OrderRepository
+        from anchor.database.repositories.positions import PositionRepository
         from anchor.database.models import Signal as SignalModel
         from anchor.signals.engine import ConfluenceEngine
         from anchor.signals.news_filter import NewsFilter
+        from anchor.execution.broker_client import BrokerClient
+        from anchor.execution.order_manager import OrderManager
+        from anchor.execution.order_types import OrderRequest, Direction, OrderType
+        from anchor.risk.position_sizer import PositionSizer
+        from anchor.risk.drawdown_monitor import DrawdownMonitor
+        from anchor.risk.daily_limiter import DailyLimiter
+        from anchor.risk.correlation import CorrelationManager
         from anchor.utils.time_utils import utcnow
+        from anchor.utils.math_utils import get_pip_size
+        import redis.asyncio as aioredis
 
         await init_db()
         import anchor.database.engine as _db_engine
         now = utcnow()
 
+        broker = BrokerClient()
+        sizer = PositionSizer()
+        drawdown_monitor = DrawdownMonitor()
+        daily_limiter = DailyLimiter()
+        correlation_mgr = CorrelationManager()
+
+        # Get live account state once for the whole scan
+        account = await broker.get_account_summary()
+        balance = float(account.get("balance", 0))
+        equity  = float(account.get("NAV", balance))
+        drawdown_monitor.update(equity)
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+
         async with _db_engine.AsyncSessionFactory() as session:
-            market_repo = MarketDataRepository(session)
-            signal_repo = SignalRepository(session)
+            market_repo   = MarketDataRepository(session)
+            order_repo    = OrderRepository(session)
+            position_repo = PositionRepository(session)
+            order_manager = OrderManager(order_repo, broker, redis=redis_client)
 
             news_filter = NewsFilter(calendar_repo=None)
             engine = ConfluenceEngine(news_filter=news_filter)
 
+            # Build correlation matrix from daily closes
+            daily_closes = {}
+            for inst in settings.instruments:
+                rows = await market_repo.get_latest_n_candles(inst, "D", 50)
+                if len(rows) >= 2:
+                    daily_closes[inst] = pd.Series(
+                        [float(r.close) for r in rows],
+                        index=[r.time for r in rows],
+                    )
+            await correlation_mgr.update(daily_closes)
+
+            open_positions = await position_repo.get_open()
+
+            def to_df(rows):
+                return pd.DataFrame([{
+                    "time": r.time, "open": float(r.open), "high": float(r.high),
+                    "low": float(r.low), "close": float(r.close),
+                } for r in rows]).set_index("time")
+
             for instrument in settings.instruments:
                 try:
-                    # Load candles into engine data cache
                     h1 = await market_repo.get_latest_n_candles(instrument, "H1", 200)
                     h4 = await market_repo.get_latest_n_candles(instrument, "H4", 100)
                     d1 = await market_repo.get_latest_n_candles(instrument, "D", 50)
@@ -179,20 +228,13 @@ def run_signal_scan(self):
                         logger.warning("signal_scan_insufficient_data", instrument=instrument)
                         continue
 
-                    import pandas as pd
-                    def to_df(rows):
-                        return pd.DataFrame([{
-                            "time": r.time, "open": float(r.open), "high": float(r.high),
-                            "low": float(r.low), "close": float(r.close),
-                        } for r in rows]).set_index("time")
-
                     engine.update_cache(instrument, "H1", to_df(h1))
                     engine.update_cache(instrument, "H4", to_df(h4))
                     engine.update_cache(instrument, "D",  to_df(d1))
 
                     result = await engine.evaluate(instrument, dt=now)
 
-                    # Persist every evaluation (suppressed or not) for audit trail
+                    # Persist every evaluation for audit trail
                     row = SignalModel(
                         instrument=instrument,
                         timeframe="H1",
@@ -211,18 +253,92 @@ def run_signal_scan(self):
                         suppression_reason=result.suppression_reason,
                     )
                     session.add(row)
+                    await session.flush()  # get row.id assigned
 
-                    if not result.suppressed:
-                        logger.info("signal_generated",
-                                    instrument=instrument,
-                                    direction=result.direction,
-                                    confluence=result.confluence_score,
-                                    ml_conf=result.ml_confidence)
+                    if result.suppressed:
+                        continue
+
+                    # ── Execution gate ────────────────────────────────────────
+
+                    # 1. Drawdown circuit breaker
+                    dd_ok, dd_reason = drawdown_monitor.check()
+                    if not dd_ok:
+                        logger.warning("trade_blocked_drawdown", instrument=instrument, reason=dd_reason)
+                        continue
+
+                    # 2. Daily loss limit
+                    if daily_limiter.is_halted(balance):
+                        logger.warning("trade_blocked_daily_limit", instrument=instrument)
+                        continue
+
+                    # 3. Already have an open position in this instrument?
+                    already_open = any(p.instrument == instrument for p in open_positions)
+                    if already_open:
+                        logger.info("trade_skipped_already_open", instrument=instrument)
+                        continue
+
+                    # 4. Correlation check
+                    corr_ok, corr_reason = correlation_mgr.check_new_position(
+                        instrument, result.direction, open_positions
+                    )
+                    if not corr_ok:
+                        logger.warning("trade_blocked_correlation", instrument=instrument, reason=corr_reason)
+                        continue
+
+                    # 5. Compute ATR-based stop loss & take profit
+                    h1_df = to_df(h1)
+                    atr = (h1_df["high"] - h1_df["low"]).rolling(14).mean().iloc[-1]
+                    entry = float(h1_df["close"].iloc[-1])
+                    pip_size = get_pip_size(instrument)
+
+                    if result.direction == "LONG":
+                        stop_loss   = round(entry - 1.5 * atr, 5)
+                        take_profit = round(entry + 3.0 * atr, 5)
+                    else:
+                        stop_loss   = round(entry + 1.5 * atr, 5)
+                        take_profit = round(entry - 3.0 * atr, 5)
+
+                    # 6. Size the position
+                    units = sizer.compute(
+                        account_balance=balance,
+                        instrument=instrument,
+                        entry_price=entry,
+                        stop_loss=stop_loss,
+                        kelly_fraction=float(result.ml_confidence) if result.ml_confidence else None,
+                        drawdown_scale=drawdown_monitor.scale_factor,
+                    )
+
+                    # 7. Submit order
+                    direction = Direction.LONG if result.direction == "LONG" else Direction.SHORT
+                    order_request = OrderRequest(
+                        instrument=instrument,
+                        direction=direction,
+                        units=units,
+                        order_type=OrderType.MARKET,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        signal_id=row.id,
+                    )
+
+                    order_id = await order_manager.submit(order_request)
+                    logger.info(
+                        "trade_submitted",
+                        instrument=instrument,
+                        direction=result.direction,
+                        units=units,
+                        entry=entry,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        confluence=result.confluence_score,
+                        order_id=str(order_id),
+                    )
 
                 except Exception as exc:
                     logger.error("signal_scan_instrument_failed", instrument=instrument, error=str(exc))
 
             await session.commit()
+
+        await redis_client.aclose()
 
     try:
         _run_async(_inner())
