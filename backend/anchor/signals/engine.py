@@ -138,14 +138,34 @@ class ConfluenceEngine:
             result.suppression_reason = "INSUFFICIENT_DATA"
             return result
 
-        # ── Step 3: RSI divergence → determine direction ──────────────────
+        # ── Step 3: Direction determination ──────────────────────────────
+        # Primary: RSI divergence (highest-quality setups)
+        # Fallback: MTF trend alignment (trend-following mode)
         rsi_raw = detect_rsi_divergence(df_1h)
-        if rsi_raw == 0.0:
-            result.suppression_reason = "NO_RSI_DIVERGENCE"
-            return result
+        rsi_score = abs(rsi_raw)  # 0.5 or 1.0; 0.0 if no divergence
 
-        direction = "LONG" if rsi_raw > 0 else "SHORT"
-        rsi_score = abs(rsi_raw)  # 0.5 or 1.0
+        if rsi_raw != 0.0:
+            # RSI divergence present — use it for direction
+            direction = "LONG" if rsi_raw > 0 else "SHORT"
+            rsi_confirmed = True
+        else:
+            # No RSI divergence — determine direction from MTF trend
+            # Try LONG first, then SHORT; pick whichever the trend supports
+            if df_4h is not None and df_1d is not None:
+                long_score, _  = check_mtf_alignment(df_4h, df_1d, "LONG")
+                short_score, _ = check_mtf_alignment(df_4h, df_1d, "SHORT")
+                if long_score > short_score:
+                    direction = "LONG"
+                elif short_score > long_score:
+                    direction = "SHORT"
+                else:
+                    result.suppression_reason = "NO_DIRECTION"
+                    return result
+            else:
+                result.suppression_reason = "NO_DIRECTION"
+                return result
+            rsi_confirmed = False
+            rsi_score = 0.0  # no RSI edge — penalised in confluence
 
         # ── Step 4: Multi-timeframe confirmation ──────────────────────────
         if df_4h is not None and df_1d is not None:
