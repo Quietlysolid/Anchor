@@ -106,14 +106,10 @@ class OrderRepository:
         return result.scalar_one_or_none()
 
     async def get_pending(self) -> List[Order]:
-        from sqlalchemy import or_
+        from sqlalchemy import text
         result = await self.session.execute(
             select(Order).where(
-                or_(
-                    Order.state == OrderState.PENDING,
-                    Order.state == OrderState.SUBMITTED,
-                    Order.state == OrderState.ACKNOWLEDGED,
-                )
+                text("orders.state IN ('PENDING'::order_state, 'SUBMITTED'::order_state, 'ACKNOWLEDGED'::order_state)")
             )
         )
         return list(result.scalars().all())
@@ -126,14 +122,11 @@ class OrderRepository:
 
     async def get_stale_pending(self, cutoff: datetime) -> List[Order]:
         """Return pending/submitted orders created before cutoff (for cancellation)."""
-        from sqlalchemy import or_
+        from sqlalchemy import text
         result = await self.session.execute(
             select(Order).where(
                 and_(
-                    or_(
-                        Order.state == OrderState.PENDING,
-                        Order.state == OrderState.SUBMITTED,
-                    ),
+                    text("orders.state IN ('PENDING'::order_state, 'SUBMITTED'::order_state)"),
                     Order.created_at < cutoff,
                 )
             )
