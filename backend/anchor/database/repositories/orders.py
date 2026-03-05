@@ -106,9 +106,14 @@ class OrderRepository:
         return result.scalar_one_or_none()
 
     async def get_pending(self) -> List[Order]:
+        from sqlalchemy import or_
         result = await self.session.execute(
             select(Order).where(
-                Order.state.in_([OrderState.PENDING, OrderState.SUBMITTED, OrderState.ACKNOWLEDGED])
+                or_(
+                    Order.state == OrderState.PENDING,
+                    Order.state == OrderState.SUBMITTED,
+                    Order.state == OrderState.ACKNOWLEDGED,
+                )
             )
         )
         return list(result.scalars().all())
