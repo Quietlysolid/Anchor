@@ -22,8 +22,13 @@ from anchor.backtesting.simulated_broker import SimulatedBroker
 from anchor.backtesting.results import compute_results, BacktestResults
 from anchor.config import settings
 from anchor.risk.position_sizer import PositionSizer
-from anchor.risk.weekend_guard import is_weekend_close_time
+from anchor.risk.weekend_guard import WeekendGuard as _WG
 from anchor.risk.holiday_calendar import is_holiday
+
+_wg = _WG()
+
+def is_weekend_close_time(dt) -> bool:
+    return _wg._is_close_time(dt)
 from anchor.signals.engine import ConfluenceEngine, SignalResult
 
 logger = structlog.get_logger(__name__)
