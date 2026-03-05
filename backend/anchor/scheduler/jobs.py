@@ -158,9 +158,10 @@ def run_signal_scan(self):
         from anchor.utils.time_utils import utcnow
 
         await init_db()
+        import anchor.database.engine as _db_engine
         now = utcnow()
 
-        async with AsyncSessionFactory() as session:
+        async with _db_engine.AsyncSessionFactory() as session:
             market_repo = MarketDataRepository(session)
             signal_repo = SignalRepository(session)
 
@@ -244,11 +245,12 @@ def run_regime_detection(self):
         import redis.asyncio as aioredis
 
         await init_db()
+        import anchor.database.engine as _db_engine
         redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
         detector = HMMRegimeDetector()
         regime_snapshot = {}
 
-        async with AsyncSessionFactory() as session:
+        async with _db_engine.AsyncSessionFactory() as session:
             repo = MarketDataRepository(session)
             for instrument in settings.instruments:
                 try:
