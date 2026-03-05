@@ -50,9 +50,9 @@ celery_app.conf.update(
             "task": "anchor.scheduler.jobs.retrain_models",
             "schedule": 2_592_000.0,  # ~30 days
         },
-        "signal-scan-every-hour": {
+        "signal-scan-every-5-min": {
             "task": "anchor.scheduler.jobs.run_signal_scan",
-            "schedule": 3_600.0,  # every H1 candle close
+            "schedule": 300.0,  # every 5 minutes for real-time responsiveness
         },
         "regime-detection-every-hour": {
             "task": "anchor.scheduler.jobs.run_regime_detection",
