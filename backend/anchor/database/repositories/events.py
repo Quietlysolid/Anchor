@@ -13,7 +13,25 @@ class SystemEventRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def insert(self, event: SystemEvent) -> None:
+    async def insert(
+        self,
+        event: SystemEvent | None = None,
+        *,
+        event_type: str | None = None,
+        severity: str = "INFO",
+        component: str = "SYSTEM",
+        message: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        """Accept either a pre-built SystemEvent or keyword args."""
+        if event is None:
+            event = SystemEvent(
+                event_type=event_type,
+                severity=severity,
+                component=component,
+                message=message,
+                metadata_=metadata,
+            )
         self.session.add(event)
         await self.session.flush()
 

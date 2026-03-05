@@ -125,17 +125,29 @@ def update_cot_data(self):
 def reconcile_positions(self):
     """Reconcile DB positions vs OANDA ground truth every 15 minutes."""
     async def _inner():
-        from anchor.database.engine import get_session
+        from anchor.database.engine import init_db
+        from anchor.database.repositories.positions import PositionRepository
+        from anchor.database.repositories.orders import OrderRepository
+        from anchor.database.repositories.events import SystemEventRepository
         from anchor.execution.broker_client import BrokerClient
         from anchor.execution.reconciler import Reconciler
 
+        await init_db()
+        import anchor.database.engine as _db_engine
+
         client = BrokerClient()
-        async with get_session() as session:
-            reconciler = Reconciler(client, session)
+        async with _db_engine.AsyncSessionFactory() as session:
+            reconciler = Reconciler(
+                broker_client=client,
+                position_repo=PositionRepository(session),
+                order_repo=OrderRepository(session),
+                system_event_repo=SystemEventRepository(session),
+            )
             report = await reconciler.reconcile()
             await session.commit()
-        if report.discrepancies:
-            logger.warning("reconciliation_discrepancies", count=len(report.discrepancies))
+        actions = len(report.get("actions_taken", []))
+        if actions:
+            logger.info("reconciliation_complete", actions=actions, report=report)
 
     try:
         _run_async(_inner())

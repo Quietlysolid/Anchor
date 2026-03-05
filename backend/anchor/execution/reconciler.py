@@ -44,17 +44,37 @@ class Reconciler:
         result["db_positions"]     = len(db_positions)
         result["broker_positions"] = len(broker_trades)
 
-        # DB has position, broker doesn't → mark closed
+        # DB has position, broker doesn't → fetch closed trade details and mark closed
         for pos in db_positions:
             if pos.oanda_trade_id and pos.oanda_trade_id not in broker_ids:
+                # Try to get the closed trade details from OANDA for accurate P&L
+                realized_pl = 0.0
+                exit_price  = None
+                close_reason = "SL_TP_OR_MANUAL"
+                try:
+                    closed = await self.broker.get_closed_trade(pos.oanda_trade_id)
+                    if closed:
+                        realized_pl  = float(closed.get("realizedPL", 0.0))
+                        exit_price   = float(closed.get("averageClosePrice", 0)) or None
+                        close_reason = closed.get("closingTransactionIDs") and "TP_SL" or "MANUAL"
+                except Exception:
+                    pass
+
                 await self.pos_repo.mark_closed(
                     position_id=pos.id,
-                    close_reason="VPS_CRASH_UNKNOWN",
+                    close_reason=close_reason,
                     closed_at=utcnow(),
+                    realized_pl=realized_pl,
+                    exit_price=exit_price,
                 )
                 result["missing_from_broker"].append(pos.oanda_trade_id)
                 result["actions_taken"].append(f"CLOSED_IN_DB:{pos.oanda_trade_id}")
-                logger.warning("position_missing_from_broker", trade_id=pos.oanda_trade_id)
+                logger.info(
+                    "position_closed_by_broker",
+                    trade_id=pos.oanda_trade_id,
+                    realized_pl=realized_pl,
+                    close_reason=close_reason,
+                )
 
         # Broker has trade, DB doesn't → reconstruct
         for trade in broker_trades:

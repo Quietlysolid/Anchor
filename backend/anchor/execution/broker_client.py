@@ -81,13 +81,21 @@ class BrokerClient:
         ep = orders_ep.OrderCreate(self._account_id, data=order_body)
         resp = await self._run(ep)
 
-        oanda_order_id = (
-            resp.get("orderFillTransaction", {}).get("id")
-            or resp.get("orderCreateTransaction", {}).get("id")
-            or "unknown"
+        fill_tx  = resp.get("orderFillTransaction", {})
+        create_tx = resp.get("orderCreateTransaction", {})
+
+        oanda_order_id = fill_tx.get("id") or create_tx.get("id") or "unknown"
+        fill_price = float(fill_tx["price"]) if fill_tx.get("price") else None
+        trade_id   = fill_tx.get("tradeOpened", {}).get("tradeID")
+
+        logger.info(
+            "order_placed",
+            oanda_order_id=oanda_order_id,
+            trade_id=trade_id,
+            fill_price=fill_price,
+            instrument=request.instrument,
         )
-        logger.info("order_placed", oanda_order_id=oanda_order_id, instrument=request.instrument)
-        return oanda_order_id
+        return oanda_order_id, fill_price, trade_id
 
     async def cancel_order(self, oanda_order_id: str) -> None:
         ep = orders_ep.OrderCancel(self._account_id, oanda_order_id)
@@ -120,3 +128,13 @@ class BrokerClient:
         ep = orders_ep.OrderList(self._account_id, params={"state": "PENDING"})
         resp = await self._run(ep)
         return resp.get("orders", [])
+
+    async def get_closed_trade(self, trade_id: str) -> dict | None:
+        """Fetch a single closed trade by OANDA trade ID."""
+        try:
+            ep = trades_ep.TradeDetails(self._account_id, trade_id)
+            resp = await self._run(ep)
+            return resp.get("trade")
+        except Exception as exc:
+            logger.warning("get_closed_trade_failed", trade_id=trade_id, error=str(exc))
+            return None

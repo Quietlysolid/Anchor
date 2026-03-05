@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
 from uuid import UUID
 
@@ -7,6 +9,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anchor.database.models import Position, Trade, PositionStatus
+from anchor.utils.time_utils import utcnow
 
 
 class PositionRepository:
@@ -65,6 +68,67 @@ class PositionRepository:
             position.status = PositionStatus.CLOSED
             position.unrealized_pl = unrealized_pl
             await self.session.flush()
+
+    # ── Methods called by Reconciler ──────────────────────────────────────────
+
+    async def get_open_positions(self) -> List[Position]:
+        """Alias used by the reconciler."""
+        return await self.get_open()
+
+    async def mark_closed(
+        self,
+        position_id: UUID,
+        close_reason: str,
+        closed_at: datetime,
+        realized_pl: float = 0.0,
+        exit_price: float | None = None,
+    ) -> None:
+        """Mark a DB position as closed and write a Trade record."""
+        position = await self.get_by_id(position_id)
+        if position is None:
+            return
+
+        position.status    = PositionStatus.CLOSED
+        position.closed_at = closed_at
+        position.realized_pl = Decimal(str(realized_pl))
+        if exit_price is not None:
+            position.current_price = Decimal(str(exit_price))
+
+        # Write a Trade record for P&L tracking
+        net_pl = realized_pl
+        trade = Trade(
+            position_id=position.id,
+            instrument=position.instrument,
+            direction=position.direction,
+            units=position.units,
+            entry_price=position.avg_entry_price,
+            exit_price=Decimal(str(exit_price)) if exit_price else position.avg_entry_price,
+            opened_at=position.opened_at,
+            closed_at=closed_at,
+            gross_pl=Decimal(str(net_pl)),
+            net_pl=Decimal(str(net_pl)),
+            close_reason=close_reason,
+            signal_id=position.signal_id,
+        )
+        self.session.add(trade)
+        await self.session.flush()
+
+    async def create_from_broker_trade(self, broker_trade: dict) -> Position:
+        """Reconstruct a Position from an OANDA trade dict (for crash recovery)."""
+        position = Position(
+            instrument=broker_trade.get("instrument", "UNKNOWN"),
+            direction="LONG" if float(broker_trade.get("currentUnits", 0)) > 0 else "SHORT",
+            units=Decimal(str(abs(float(broker_trade.get("currentUnits", 0))))),
+            avg_entry_price=Decimal(str(broker_trade.get("price", 0))),
+            current_price=Decimal(str(broker_trade.get("price", 0))),
+            unrealized_pl=Decimal(str(broker_trade.get("unrealizedPL", 0))),
+            oanda_trade_id=broker_trade.get("id"),
+            status=PositionStatus.OPEN,
+            opened_at=utcnow(),
+        )
+        self.session.add(position)
+        await self.session.flush()
+        return position
 
 
 class TradeRepository:

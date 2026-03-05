@@ -84,10 +84,48 @@ class OrderManager:
         # Transition → SUBMITTED and send to broker
         await self.transition(order_id, OrderState.SUBMITTED, {})
 
-        oanda_id = await self.broker_client.place_order(order_id, request)
+        oanda_id, fill_price, trade_id = await self.broker_client.place_order(order_id, request)
         await self.order_repo.set_oanda_id(order_id, oanda_id)
 
+        # Market orders fill immediately — create Position row and mark FILLED
+        if trade_id and fill_price:
+            await self._create_position(request, trade_id, fill_price)
+            await self.transition(order_id, OrderState.FILLED, {"fill_price": fill_price})
+
         return order_id
+
+    async def _create_position(
+        self,
+        request: OrderRequest,
+        oanda_trade_id: str,
+        fill_price: float,
+    ) -> None:
+        """Write a Position row after a market order fills."""
+        from anchor.database.models import Position, PositionStatus
+        from decimal import Decimal
+
+        position = Position(
+            instrument=request.instrument,
+            direction=request.direction.value,
+            units=Decimal(str(request.units)),
+            avg_entry_price=Decimal(str(fill_price)),
+            current_price=Decimal(str(fill_price)),
+            stop_loss=Decimal(str(request.stop_loss)) if request.stop_loss else None,
+            take_profit=Decimal(str(request.take_profit)) if request.take_profit else None,
+            oanda_trade_id=oanda_trade_id,
+            status=PositionStatus.OPEN,
+            signal_id=request.signal_id,
+        )
+        self.order_repo.session.add(position)
+        await self.order_repo.session.flush()
+        logger.info(
+            "position_opened",
+            instrument=request.instrument,
+            direction=request.direction.value,
+            units=request.units,
+            fill_price=fill_price,
+            oanda_trade_id=oanda_trade_id,
+        )
 
     async def transition(
         self,

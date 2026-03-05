@@ -119,6 +119,18 @@ class OrderRepository:
         )
         return list(result.scalars().all())
 
+    async def get_stale_pending(self, cutoff: datetime) -> List[Order]:
+        """Return pending/submitted orders created before cutoff (for cancellation)."""
+        result = await self.session.execute(
+            select(Order).where(
+                and_(
+                    Order.state.in_(["PENDING", "SUBMITTED"]),
+                    Order.created_at < cutoff,
+                )
+            )
+        )
+        return list(result.scalars().all())
+
     async def insert_event(self, event: OrderEvent) -> None:
         self.session.add(event)
         await self.session.flush()
