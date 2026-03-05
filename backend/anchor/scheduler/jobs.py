@@ -149,7 +149,7 @@ def run_signal_scan(self):
     """Evaluate confluence signals for all instruments on every H1 candle close."""
     async def _inner():
         from anchor.config import settings
-        from anchor.database.engine import get_session
+        from anchor.database.engine import init_db, AsyncSessionFactory
         from anchor.database.repositories.market_data import MarketDataRepository
         from anchor.database.repositories.signals import SignalRepository
         from anchor.database.models import Signal as SignalModel
@@ -157,9 +157,10 @@ def run_signal_scan(self):
         from anchor.signals.news_filter import NewsFilter
         from anchor.utils.time_utils import utcnow
 
+        await init_db()
         now = utcnow()
 
-        async with get_session() as session:
+        async with AsyncSessionFactory() as session:
             market_repo = MarketDataRepository(session)
             signal_repo = SignalRepository(session)
 
@@ -235,18 +236,19 @@ def run_regime_detection(self):
     async def _inner():
         import json
         from anchor.config import settings
-        from anchor.database.engine import get_session
+        from anchor.database.engine import init_db, AsyncSessionFactory
         from anchor.database.repositories.market_data import MarketDataRepository
         from anchor.regime.hmm_detector import HMMRegimeDetector
 
         import pandas as pd
         import redis.asyncio as aioredis
 
+        await init_db()
         redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
         detector = HMMRegimeDetector()
         regime_snapshot = {}
 
-        async with get_session() as session:
+        async with AsyncSessionFactory() as session:
             repo = MarketDataRepository(session)
             for instrument in settings.instruments:
                 try:
