@@ -121,10 +121,14 @@ class OrderRepository:
 
     async def get_stale_pending(self, cutoff: datetime) -> List[Order]:
         """Return pending/submitted orders created before cutoff (for cancellation)."""
+        from sqlalchemy import or_
         result = await self.session.execute(
             select(Order).where(
                 and_(
-                    Order.state.in_([OrderState.PENDING, OrderState.SUBMITTED]),
+                    or_(
+                        Order.state == OrderState.PENDING,
+                        Order.state == OrderState.SUBMITTED,
+                    ),
                     Order.created_at < cutoff,
                 )
             )
