@@ -76,9 +76,12 @@ async def lifespan(app: FastAPI):
             # Thin wrapper so the stream can persist ticks via a fresh session per write
             class _TickRepo:
                 async def insert_tick(self, instrument, bid, ask, time):
-                    async with AsyncSessionFactory() as session:
-                        from anchor.database.models import TickData
-                        session.add(TickData(instrument=instrument, bid=bid, ask=ask, time=time))
+                    from anchor.database.engine import AsyncSessionFactory as _SF
+                    from anchor.database.models import TickData
+                    if _SF is None:
+                        return
+                    async with _SF() as session:
+                        session.add(TickData(instrument=instrument, bid=bid, ask=ask, time=time, source="oanda"))
                         await session.commit()
 
             stream_client = OANDAStreamClient(
