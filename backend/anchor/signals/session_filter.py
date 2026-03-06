@@ -12,8 +12,11 @@ from anchor.utils.time_utils import (
 )
 
 
-# Sessions where signal generation is allowed
-ALLOWED_SESSIONS = {"LONDON", "NEWYORK", "OVERLAP"}
+# Sessions where signal generation is allowed.
+# NEWYORK-only (no overlap with London) is excluded: backtest showed
+# consistently negative P&L and lowest win rates across all 5 pairs.
+# London and London/NY overlap retain the edge; pure NY afternoon does not.
+ALLOWED_SESSIONS = {"LONDON", "OVERLAP"}
 
 
 def check_session(dt: datetime) -> tuple[bool, str]:
