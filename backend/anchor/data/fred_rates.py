@@ -12,8 +12,8 @@ FRED series used (monthly/daily, most recent observation):
   USD  → FEDFUNDS          (Fed Funds effective rate)
   EUR  → ECBDFR            (ECB deposit facility rate)
   GBP  → IUDSOIA           (BoE SONIA overnight rate)
-  JPY  → INTDSRJPM193N     (IMF discount rate for Japan — BoJ policy rate)
-  AUD  → IRSTCB01AUM156N   (OECD short-term rate — RBA cash rate)
+  JPY  → IR3TIB01JPM156N   (3-month interbank rate Japan — current BoJ policy proxy)
+  AUD  → IRSTCI01AUM156N   (RBA cash rate target — confirmed current)
   CAD  → IRSTCB01CAM156N   (OECD short-term rate — BoC overnight rate)
 
 Redis key: fred_rate_diff
@@ -44,8 +44,8 @@ _RATE_SERIES: Dict[str, str] = {
     "USD": "FEDFUNDS",
     "EUR": "ECBDFR",
     "GBP": "IUDSOIA",
-    "JPY": "INTDSRJPM193N",
-    "AUD": "IRSTCB01AUM156N",
+    "JPY": "IR3TIB01JPM156N",
+    "AUD": "IRSTCI01AUM156N",
     "CAD": "IRSTCB01CAM156N",
 }
 
