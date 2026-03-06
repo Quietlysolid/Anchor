@@ -3,8 +3,9 @@ import json
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from anchor.config import get_settings
 from anchor.database.engine import init_db, close_db, AsyncSessionFactory
@@ -162,3 +163,8 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

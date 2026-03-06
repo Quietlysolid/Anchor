@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { CandlestickChart } from '../components/charts/CandlestickChart'
 import { EquityCurveChart } from '../components/charts/EquityCurveChart'
 import { SignalScoringPanel } from '../components/panels/SignalScoringPanel'
@@ -16,17 +16,23 @@ const TIMEFRAMES  = ['15m','1h','4h']
 export default function Dashboard() {
   const [pair, setPair] = useState('EUR_USD')
   const [tf,   setTf]   = useState('1h')
+  const [now,  setNow]  = useState(() => new Date())
   const { data: candles } = useCandles(pair, tf)
   const { data: equity  } = useEquityCurve()
   const prices = useMarketStore(s => s.prices)
   const live = prices[pair]
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(t)
+  }, [])
 
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Live Dashboard</h1>
-        <div className="text-xs text-muted-foreground">{new Date().toLocaleString()}</div>
+        <div className="text-xs text-muted-foreground">{now.toLocaleString()}</div>
       </div>
 
       {/* Chart + controls */}
@@ -50,9 +56,9 @@ export default function Dashboard() {
           </div>
           {live && (
             <div className="text-xs font-mono ml-4">
-              <span className="text-muted-foreground">B</span> {live.bid.toFixed(5)}
-              <span className="text-muted-foreground ml-2">A</span> {live.ask.toFixed(5)}
-              <span className="text-muted-foreground ml-2">Spd</span> {live.spread.toFixed(1)}
+              <span className="text-muted-foreground">Bid</span> {live.bid.toFixed(5)}
+              <span className="text-muted-foreground ml-2">Ask</span> {live.ask.toFixed(5)}
+              <span className="text-muted-foreground ml-2">Spread</span> {live.spread.toFixed(1)}
             </div>
           )}
         </div>

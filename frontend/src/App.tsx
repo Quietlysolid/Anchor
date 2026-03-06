@@ -19,9 +19,9 @@ function WsBootstrap() {
 
   useEffect(() => {
     wsClient.connect()
-    setWsConnected(true)
 
     const unsubs = [
+      wsClient.onStatus((connected) => setWsConnected(connected)),
       wsClient.on('ticks',     (d) => setPrice(d as LivePrice)),
       wsClient.on('signals',   (d) => pushSignal(d as Signal)),
       wsClient.on('positions', (d) => setPositions(d as Position[])),
