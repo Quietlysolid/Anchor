@@ -7,15 +7,33 @@ NO lookahead bias.
 """
 from __future__ import annotations
 
+import json
 import numpy as np
 import pandas as pd
 import ta as ta_lib
 
 
+# COT currency codes per instrument (base currency drives positioning)
+_INSTRUMENT_COT_CURRENCY = {
+    "EUR_USD": "EUR",
+    "GBP_USD": "GBP",
+    "USD_JPY": "JPY",
+    "AUD_USD": "AUD",
+    "USD_CAD": "CAD",
+}
+_COT_SCALE = 200_000.0  # normalise raw contract counts to ~[-1, 1]
+
+
 class FeatureEngineer:
     """
     Builds a 1D feature vector for a given instrument + OHLCV data.
+    Optionally enriched with COT positioning data from Redis.
     """
+
+    def __init__(self, redis_client=None):
+        # Synchronous redis client (redis.Redis, not aioredis) or None.
+        # Injected at construction so retraining (no Redis) stays clean.
+        self._redis = redis_client
 
     def build(
         self,
@@ -113,6 +131,51 @@ class FeatureEngineer:
         features["is_newyork"]  = 1.0 if 12 <= hour < 21 else 0.0
         features["is_asian"]    = 1.0 if hour < 9          else 0.0
 
+        # ── COT net positioning (institutional flow) ───────────────────────
+        # Reads from Redis key 'cot_data' written by the update_cot_data task.
+        # Neutral 0.0 + availability flag=0.0 when data is absent, so the model
+        # learns to ignore these features when COT data has not been fetched yet.
+        cot_currency = _INSTRUMENT_COT_CURRENCY.get(instrument)
+        cot_net_noncomm = 0.0
+        cot_net_comm    = 0.0
+        cot_available   = 0.0
+        if cot_currency and self._redis is not None:
+            try:
+                raw = self._redis.get("cot_data")
+                if raw:
+                    cot_data = json.loads(raw)
+                    cot = cot_data.get(cot_currency, {})
+                    if cot:
+                        cot_net_noncomm = float(cot.get("net_noncommercial", 0)) / _COT_SCALE
+                        cot_net_comm    = float(cot.get("net_commercial", 0))    / _COT_SCALE
+                        cot_available   = 1.0
+            except Exception:
+                pass
+        features["cot_net_noncomm"] = cot_net_noncomm
+        features["cot_net_comm"]    = cot_net_comm
+        features["cot_available"]   = cot_available
+
+        # ── Interest rate differential (carry / macro) ────────────────────
+        # Reads from Redis key 'fred_rate_diff' written by the update_fred_rates task.
+        # rate_diff = base_rate - quote_rate (e.g. EUR rate - USD rate for EUR_USD).
+        # Normalised to ~[-1, 1] by dividing by 10 percentage points.
+        # Positive → base currency has higher rates → carry inflow → bullish for base.
+        rate_diff      = 0.0
+        rate_available = 0.0
+        if self._redis is not None:
+            try:
+                raw = self._redis.get("fred_rate_diff")
+                if raw:
+                    fred_data = json.loads(raw)
+                    inst_data = fred_data.get(instrument, {})
+                    if inst_data.get("available"):
+                        rate_diff      = float(inst_data["rate_diff"]) / 10.0
+                        rate_available = 1.0
+            except Exception:
+                pass
+        features["rate_diff"]      = rate_diff
+        features["rate_available"] = rate_available
+
         # ── Fill any missing features with 0.0 (fixed-length output) ────
         return np.array(
             [features.get(k, 0.0) for k in self.get_feature_names()],
@@ -127,9 +190,10 @@ class FeatureEngineer:
         """Returns sorted list of feature names (must match build() output)."""
         names = [
             "adx_1h", "adx_4h", "adx_4h_available", "atr_norm", "bb_width",
+            "cot_available", "cot_net_comm", "cot_net_noncomm",
             "dist_from_ema50", "dow_cos", "dow_sin",
             "hour_cos", "hour_sin", "is_asian", "is_london", "is_newyork",
-            "macd_signal", "realized_vol",
+            "macd_signal", "rate_available", "rate_diff", "realized_vol",
             "rsi_1h", "rsi_1h_prev", "stoch_k",
         ]
         return sorted(names)

@@ -24,9 +24,11 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.import_economic_calendar": {"queue": "default"},
         "anchor.scheduler.jobs.snapshot_equity": {"queue": "default"},
         "anchor.scheduler.jobs.update_cot_data": {"queue": "default"},
+        "anchor.scheduler.jobs.update_fred_rates": {"queue": "default"},
         "anchor.scheduler.jobs.reconcile_positions": {"queue": "default"},
         "anchor.scheduler.jobs.run_signal_scan": {"queue": "default"},
         "anchor.scheduler.jobs.run_regime_detection": {"queue": "default"},
+        "anchor.scheduler.jobs.import_candles": {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -42,6 +44,10 @@ celery_app.conf.update(
             "task": "anchor.scheduler.jobs.update_cot_data",
             "schedule": 604_800.0,  # 7 days
         },
+        "update-fred-rates-daily": {
+            "task": "anchor.scheduler.jobs.update_fred_rates",
+            "schedule": 86_400.0,  # 24 hours
+        },
         "reconcile-positions-every-15-min": {
             "task": "anchor.scheduler.jobs.reconcile_positions",
             "schedule": 900.0,
@@ -56,7 +62,11 @@ celery_app.conf.update(
         },
         "regime-detection-every-hour": {
             "task": "anchor.scheduler.jobs.run_regime_detection",
-            "schedule": 3_600.0,  # sync with signal scan
+            "schedule": 3_600.0,
+        },
+        "import-candles-every-hour": {
+            "task": "anchor.scheduler.jobs.import_candles",
+            "schedule": 3_600.0,  # every hour, 5 min before regime detection
         },
     },
     worker_prefetch_multiplier=1,

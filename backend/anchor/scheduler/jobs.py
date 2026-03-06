@@ -102,17 +102,73 @@ def import_economic_calendar(self):
         raise self.retry(exc=exc, countdown=300)
 
 
+@celery_app.task(name="anchor.scheduler.jobs.update_fred_rates", bind=True, max_retries=3)
+def update_fred_rates(self):
+    """Fetch FRED central bank policy rates and store rate differentials in Redis.
+
+    Key: fred_rate_diff  TTL: 25 hours.
+    Runs daily — rates change at most once per central bank meeting (~6 weeks).
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.data.fred_rates import fetch_and_store
+        import redis.asyncio as aioredis
+
+        if not settings.fred_api_key:
+            logger.warning("fred_api_key_not_set")
+            return
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            result = await fetch_and_store(redis_client, settings.fred_api_key)
+            available = [k for k, v in result.items() if v["available"]]
+            logger.info("fred_rates_updated", available=available)
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("fred_rates_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=3_600)  # retry in 1 hour
+
+
 @celery_app.task(name="anchor.scheduler.jobs.update_cot_data", bind=True, max_retries=2)
 def update_cot_data(self):
-    """Download and store latest CFTC COT report."""
+    """Download and store latest CFTC COT report in Redis.
+
+    Key: cot_data  TTL: 8 days (COT is weekly; 8-day TTL survives holiday delays).
+    """
     async def _inner():
+        import json
+        from anchor.config import settings
         from anchor.data.cot_parser import CotParser
+        import redis.asyncio as aioredis
 
         async with CotParser() as parser:
             result = await parser.fetch_latest()
-        logger.info("cot_updated", currencies=list(result.keys()))
-        # Store in Redis for quick access by signal engine
-        # (full DB storage would require a dedicated table — keep in Redis for now)
+
+        if not result:
+            logger.warning("cot_empty_result")
+            return
+
+        # Serialise datetime → ISO strings so json.dumps works
+        serialisable = {
+            currency: {
+                "net_noncommercial": data["net_noncommercial"],
+                "net_commercial":    data["net_commercial"],
+                "report_date":       data["report_date"].isoformat() if data.get("report_date") else None,
+            }
+            for currency, data in result.items()
+        }
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            await redis_client.set("cot_data", json.dumps(serialisable), ex=8 * 86_400)
+        finally:
+            await redis_client.aclose()
+
+        logger.info("cot_persisted", currencies=list(result.keys()))
 
     try:
         _run_async(_inner())
@@ -182,11 +238,18 @@ def run_signal_scan(self):
         from anchor.risk.correlation import CorrelationManager
         from anchor.utils.time_utils import utcnow
         from anchor.utils.math_utils import get_pip_size
+        from anchor.ml.xgb_classifier import XGBDirectionClassifier
+        from anchor.ml.feature_engineer import FeatureEngineer
+        from anchor.ml.ood_detector import OODDetector
+        import redis
         import redis.asyncio as aioredis
 
         await init_db()
         import anchor.database.engine as _db_engine
         now = utcnow()
+
+        # Sync Redis client for FeatureEngineer (called in executor thread, not async)
+        sync_redis = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
         broker = BrokerClient()
         sizer = PositionSizer()
@@ -208,8 +271,22 @@ def run_signal_scan(self):
                 "low": float(r.low), "close": float(r.close),
             } for r in rows]).set_index("time")
 
+        # Load ML classifiers from disk (written by retrain_models task).
+        # Falls back gracefully — ConfluenceEngine raises threshold +10% when absent.
+        from pathlib import Path as _Path
+        # Pass sync Redis to FeatureEngineer so COT features are populated at prediction time
+        feature_engineer = FeatureEngineer(redis_client=sync_redis)
+        ood_detector = OODDetector()
+        _classifiers: dict = {}
+        for _inst in settings.instruments:
+            _clf = XGBDirectionClassifier()
+            _model_path = _Path("/app/models") / f"{_inst}_xgb.pkl"
+            if _clf.load(_model_path):
+                _classifiers[_inst] = _clf
+            else:
+                logger.warning("ml_model_missing", instrument=_inst, path=str(_model_path))
+
         news_filter = NewsFilter(calendar_repo=None)
-        engine = ConfluenceEngine(news_filter=news_filter)
 
         # Build correlation matrix + open positions in a short-lived session
         async with _db_engine.AsyncSessionFactory() as session:
@@ -226,6 +303,13 @@ def run_signal_scan(self):
                     )
             await correlation_mgr.update(daily_closes)
             open_positions = await position_repo.get_open()
+
+        # Shared engine instance; ML classifier is swapped per-instrument below
+        engine = ConfluenceEngine(
+            news_filter=news_filter,
+            feature_engineer=feature_engineer,
+            ood_detector=ood_detector,
+        )
 
         # Evaluate + persist each instrument in its own isolated session
         # so one DB error doesn't poison the others
@@ -247,6 +331,15 @@ def run_signal_scan(self):
                     engine.update_cache(instrument, "H1", to_df(h1))
                     engine.update_cache(instrument, "H4", to_df(h4))
                     engine.update_cache(instrument, "D",  to_df(d1))
+
+                    # Inject instrument-specific classifier (None → engine falls back gracefully)
+                    engine.ml_classifier = _classifiers.get(instrument)
+                    if not engine.ml_classifier:
+                        engine.feature_engineer = None
+                        engine.ood_detector = None
+                    else:
+                        engine.feature_engineer = feature_engineer
+                        engine.ood_detector = ood_detector
 
                     result = await engine.evaluate(instrument, dt=now)
 
@@ -306,9 +399,16 @@ def run_signal_scan(self):
                         await session.commit()
                         continue
 
-                    # 5. Compute ATR-based stop loss & take profit
+                    # 5. Compute true ATR-based stop loss & take profit.
+                    # True ATR = max(H-L, |H-prev_C|, |L-prev_C|) — accounts for overnight gaps.
                     h1_df = to_df(h1)
-                    atr = (h1_df["high"] - h1_df["low"]).rolling(14).mean().iloc[-1]
+                    prev_close = h1_df["close"].shift(1)
+                    true_range = pd.concat([
+                        h1_df["high"] - h1_df["low"],
+                        (h1_df["high"] - prev_close).abs(),
+                        (h1_df["low"]  - prev_close).abs(),
+                    ], axis=1).max(axis=1)
+                    atr = true_range.rolling(14).mean().iloc[-1]
                     entry = float(h1_df["close"].iloc[-1])
                     pip_size = get_pip_size(instrument)
 
@@ -359,11 +459,77 @@ def run_signal_scan(self):
                 logger.error("signal_scan_instrument_failed", instrument=instrument, error=str(exc))
 
         await redis_client.aclose()
+        sync_redis.close()
 
     try:
         _run_async(_inner())
     except Exception as exc:
         logger.error("signal_scan_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.import_candles", bind=True, max_retries=3)
+def import_candles(self):
+    """Import latest H1, H4, and D candles from OANDA for all instruments.
+
+    Runs every hour to keep the candle cache fresh for signal scanning.
+    Fetches only the last ~200 H1 / 100 H4 / 60 D candles (fast incremental).
+    """
+    async def _inner():
+        from datetime import timezone
+        from anchor.config import settings
+        from anchor.database.engine import init_db
+        from anchor.database.repositories.market_data import MarketDataRepository
+        from anchor.data.oanda_history import OANDAHistoryClient
+
+        await init_db()
+        import anchor.database.engine as _db_engine
+
+        client = OANDAHistoryClient()
+        end = datetime.now(timezone.utc)
+
+        # How far back to pull per timeframe (enough to keep signal scan fed)
+        lookback = {
+            "H1": timedelta(days=9),   # ~200 H1 bars
+            "H4": timedelta(days=17),  # ~100 H4 bars
+            "D":  timedelta(days=65),  # ~60 D bars
+        }
+
+        for instrument in settings.instruments:
+            for tf, delta in lookback.items():
+                try:
+                    df = await client.fetch_candles(
+                        instrument=instrument,
+                        granularity=tf,
+                        start=end - delta,
+                        end=end,
+                    )
+                    if df.empty:
+                        continue
+
+                    async with _db_engine.AsyncSessionFactory() as session:
+                        repo = MarketDataRepository(session)
+                        await repo.bulk_insert(instrument, tf, df)
+                        await session.commit()
+
+                    logger.info(
+                        "candles_imported",
+                        instrument=instrument,
+                        timeframe=tf,
+                        rows=len(df),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "candle_import_failed",
+                        instrument=instrument,
+                        timeframe=tf,
+                        error=str(exc),
+                    )
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("import_candles_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120)
 
 

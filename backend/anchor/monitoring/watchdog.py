@@ -23,8 +23,7 @@ CHECK_INTERVAL_SECONDS  = 120  # check every 2 minutes
 
 
 class WatchdogService:
-    def __init__(self, event_repo=None, alert_service: AlertService | None = None):
-        self.event_repo    = event_repo
+    def __init__(self, alert_service: AlertService | None = None):
         self.alert_service = alert_service or AlertService()
 
     async def run(self) -> None:
@@ -37,10 +36,14 @@ class WatchdogService:
             await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
     async def _check(self) -> None:
-        if self.event_repo is None:
-            return
+        # Fresh session per check — long-lived sessions idle-timeout on Postgres and
+        # silently stop working, which would cause the watchdog to never fire alerts.
+        from anchor.database.engine import AsyncSessionFactory
+        from anchor.database.repositories.events import SystemEventRepository
 
-        latest_hb = await self.event_repo.get_latest_heartbeat()
+        async with AsyncSessionFactory() as session:
+            event_repo = SystemEventRepository(session)
+            latest_hb = await event_repo.get_latest_heartbeat()
 
         if latest_hb is None:
             await self.alert_service.send_critical(
@@ -64,14 +67,8 @@ async def main() -> None:
 
     await init_db()
 
-    # Import here to avoid circular import at module level
-    from anchor.database.repositories.events import SystemEventRepository
-    from anchor.database.engine import AsyncSessionFactory
-
-    async with AsyncSessionFactory() as session:
-        event_repo = SystemEventRepository(session)
-        watchdog = WatchdogService(event_repo=event_repo)
-        await watchdog.run()
+    watchdog = WatchdogService()
+    await watchdog.run()
 
 
 if __name__ == "__main__":

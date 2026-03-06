@@ -28,7 +28,14 @@
       "Bash(pip install paramiko -q)",
       "Bash(python3 -:*)",
       "Bash(py -3.12 -c \"import paramiko; print\\(''ok''\\)\")",
-      "Bash(py -3.12:*)"
+      "Bash(py -3.12:*)",
+      "Bash(/c/Users/z-Nwosu.Ozichi.G/AppData/Local/Programs/Python/Python313/python -c \"import paramiko\")",
+      "Bash(/c/Users/z-Nwosu.Ozichi.G/AppData/Local/Programs/Python/Python312/python -c \"import paramiko\")",
+      "Bash(/c/Users/z-Nwosu.Ozichi.G/AppData/Local/Programs/Python/Python313/python -m pip install paramiko -q)",
+      "Bash(/c/Users/z-Nwosu.Ozichi.G/AppData/Local/Programs/Python/Python312/python -m pip install paramiko -q)",
+      "Bash(/c/Users/z-Nwosu.Ozichi.G/AppData/Local/Programs/Python/Python312/python -c \":*)",
+      "Bash(ssh -o StrictHostKeyChecking=no root@89.167.82.233 'cat /opt/anchor/deploy.sh')",
+      "Bash(ssh -o:*)"
     ]
   }
 }

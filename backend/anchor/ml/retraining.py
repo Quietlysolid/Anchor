@@ -31,32 +31,67 @@ logger = structlog.get_logger(__name__)
 
 LOOKBACK_YEARS = 2
 MIN_OOS_ACCURACY = 0.58  # must beat this to replace production model
-LABEL_FORWARD_BARS = 3   # label = price direction 3 bars ahead
+
+# Risk-adjusted label parameters — match live trading SL/TP multipliers
+_SL_ATR_MULT = 1.5
+_TP_ATR_MULT = 3.0
+_MAX_FORWARD_BARS = 48  # cap look-forward at 48 H1 bars (2 trading days)
 
 
-def _make_labels(closes: np.ndarray, forward_bars: int = LABEL_FORWARD_BARS) -> np.ndarray:
-    """Binary label: 1 if price rose N bars after the reference bar, 0 if fell.
+def _make_labels(
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+) -> np.ndarray:
+    """Risk-adjusted binary labels that mirror live trading SL/TP logic.
 
-    closes[k] is the close of bar 60+k — one bar BEYOND the last bar of the
-    feature window for row k (window = df.iloc[k : k+60], last bar = index 59+k).
-    We therefore shift the reference back by 1 so it aligns with the window's
-    last bar (df.iloc[59+k]) and compare against forward_bars later:
+    For each bar k, we simulate a LONG entry at closes[k]:
+      - SL = entry - 1.5 * ATR14[k]
+      - TP = entry + 3.0 * ATR14[k]
 
-        label[k] = 1  iff  closes[k + forward_bars] > closes[k - 1]
+    Then scan forward up to MAX_FORWARD_BARS bars:
+      label[k] = 1  if TP hit before SL  (trade would have won)
+      label[k] = 0  if SL hit before TP  (trade would have lost)
+      label[k] = -1 if neither hit       (timeout — excluded from training)
 
-    This eliminates the 1-bar reference asymmetry while keeping the label
-    strictly forward-looking with respect to the feature window.
+    This directly aligns the training objective with actual P&L, producing
+    a cleaner signal than a raw N-bar price direction label.
+
+    Note: We only simulate LONG scenarios here. The engine evaluates LONG and
+    SHORT separately; the label captures whether the move materialized with the
+    correct magnitude. In practice XGB learns symmetry across both sides.
     """
     n = len(closes)
     labels = np.full(n, -1, dtype=int)
-    # Reference price = closes[k-1] (last bar inside the feature window).
-    # Target price    = closes[k - 1 + forward_bars].
-    # Valid range: k >= 1 and k - 1 + forward_bars < n  →  k < n - forward_bars + 1
-    for k in range(1, n - forward_bars + 1):
-        ref    = closes[k - 1]
-        target = closes[k - 1 + forward_bars]
-        labels[k] = 1 if target > ref else 0
-    # k=0 and the last forward_bars rows are left as -1 (invalid)
+
+    # Compute ATR14 using true range
+    tr = np.zeros(n)
+    for i in range(1, n):
+        hl  = highs[i]  - lows[i]
+        hpc = abs(highs[i]  - closes[i - 1])
+        lpc = abs(lows[i]   - closes[i - 1])
+        tr[i] = max(hl, hpc, lpc)
+    # Simple rolling mean for ATR (faster than pandas here)
+    atr = np.full(n, np.nan)
+    for i in range(14, n):
+        atr[i] = tr[i - 13: i + 1].mean()
+
+    for k in range(14, n - 1):
+        if np.isnan(atr[k]):
+            continue
+        entry = closes[k]
+        sl    = entry - _SL_ATR_MULT * atr[k]
+        tp    = entry + _TP_ATR_MULT * atr[k]
+
+        for j in range(k + 1, min(k + _MAX_FORWARD_BARS + 1, n)):
+            if lows[j] <= sl:
+                labels[k] = 0  # SL hit first
+                break
+            if highs[j] >= tp:
+                labels[k] = 1  # TP hit first
+                break
+        # if neither hit within MAX_FORWARD_BARS, label stays -1 (excluded)
+
     return labels
 
 
@@ -114,8 +149,12 @@ async def run_retraining(instrument: Optional[str] = None) -> Dict:
                 continue
 
             X = np.array(feature_rows, dtype=np.float32)
-            closes = df["close"].values[60: 60 + len(feature_rows)]
-            labels = _make_labels(closes)
+            offset = 60
+            n_rows = len(feature_rows)
+            highs  = df["high"].values[offset: offset + n_rows]
+            lows   = df["low"].values[offset: offset + n_rows]
+            closes = df["close"].values[offset: offset + n_rows]
+            labels = _make_labels(highs, lows, closes)
             valid_mask = labels >= 0
             X = X[valid_mask]
             y = labels[valid_mask]
