@@ -24,7 +24,10 @@ ssh "$VPS_USER@$VPS_HOST" bash << EOF
   cd $APP_DIR
 
   echo "==> Building images..."
-  docker compose build --parallel
+  # --no-cache on Python services ensures the COPY . . layer is never stale
+  # after a code sync. Frontend/nginx are cache-friendly (rarely change).
+  docker compose build --parallel --no-cache engine celery_worker celery_beat watchdog
+  docker compose build --parallel frontend
 
   echo "==> Running DB migrations..."
   # Attempt upgrade; if the DB has a stale revision stamp (e.g. after a
