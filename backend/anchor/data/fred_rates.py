@@ -9,12 +9,12 @@ Rate differential is the single strongest macro driver of FX direction:
   - Negative diff  → base currency expected to weaken   (carry outflow)
 
 FRED series used (monthly/daily, most recent observation):
-  USD  → FEDFUNDS        (Fed Funds effective rate)
-  EUR  → ECBDFR          (ECB deposit facility rate)
-  GBP  → IUDSOIA         (BoE SONIA overnight rate)
-  JPY  → IRSTJP01M156N   (BoJ uncollateralised overnight call rate)
-  AUD  → RBAAONBP        (RBA cash rate target)
-  CAD  → CAOUovernight    (BoC overnight rate)
+  USD  → FEDFUNDS          (Fed Funds effective rate)
+  EUR  → ECBDFR            (ECB deposit facility rate)
+  GBP  → IUDSOIA           (BoE SONIA overnight rate)
+  JPY  → INTDSRJPM193N     (IMF discount rate for Japan — BoJ policy rate)
+  AUD  → IRSTCB01AUM156N   (OECD short-term rate — RBA cash rate)
+  CAD  → IRSTCB01CAM156N   (OECD short-term rate — BoC overnight rate)
 
 Redis key: fred_rate_diff
 TTL: 25 hours (rates change at most once per meeting, ~6 weeks apart;
@@ -34,13 +34,19 @@ logger = structlog.get_logger(__name__)
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
 # FRED series ID per currency code
+# USD: Fed Funds effective rate
+# EUR: ECB deposit facility rate
+# GBP: BoE SONIA overnight rate
+# JPY: IMF/OECD short-term rate for Japan (BoJ near-zero policy rate)
+# AUD: OECD short-term interest rate for Australia (RBA cash rate target)
+# CAD: OECD short-term interest rate for Canada (BoC overnight rate)
 _RATE_SERIES: Dict[str, str] = {
     "USD": "FEDFUNDS",
     "EUR": "ECBDFR",
     "GBP": "IUDSOIA",
-    "JPY": "IRSTJP01M156N",
-    "AUD": "RBAAONBP",
-    "CAD": "CAOUovernight",
+    "JPY": "INTDSRJPM193N",
+    "AUD": "IRSTCB01AUM156N",
+    "CAD": "IRSTCB01CAM156N",
 }
 
 # Instrument → (base_currency, quote_currency)
