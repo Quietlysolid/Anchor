@@ -311,9 +311,16 @@ def run_signal_scan(self):
             ood_detector=ood_detector,
         )
 
+        # Instruments with no confluence-only edge (backtest Sharpe < 0, WR < 30%).
+        # Re-enable once XGB models are trained (~60 days of live data).
+        _NO_TRADE_WITHOUT_ML = {"AUD_USD", "GBP_USD"}
+
         # Evaluate + persist each instrument in its own isolated session
         # so one DB error doesn't poison the others
         for instrument in settings.instruments:
+            if instrument in _NO_TRADE_WITHOUT_ML and instrument not in _classifiers:
+                logger.debug("signal_scan_skipped_no_ml", instrument=instrument)
+                continue
             try:
                 async with _db_engine.AsyncSessionFactory() as session:
                     market_repo   = MarketDataRepository(session)
