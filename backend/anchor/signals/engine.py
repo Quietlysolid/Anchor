@@ -180,7 +180,7 @@ class ConfluenceEngine:
         # ── Step 5: Component scoring ─────────────────────────────────────
         bb_kc_score, squeeze_on = detect_squeeze(df_1h)
         adx_score, adx_regime   = compute_adx_score(df_1h, rsi_confirmed=rsi_confirmed)
-        sr_score, sr_level      = compute_sr_score(df_1h)
+        sr_score, sr_level      = compute_sr_score(df_1h, direction=direction)
 
         # CSI across all available pairs
         csi = compute_csi(self.data_cache.get("H1", {}))

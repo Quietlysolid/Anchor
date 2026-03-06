@@ -56,6 +56,7 @@ def _cluster_pivots(
 
 def compute_sr_score(
     df: pd.DataFrame,
+    direction: str | None = None,
     pivot_window: int = 10,
     tolerance_pct: float = 0.002,
     proximity_pct: float = 0.003,
@@ -63,8 +64,19 @@ def compute_sr_score(
     """
     Returns (score: 0.0-1.0, nearest_level).
 
-    score = 0.0 if price is not near any significant S/R level.
-    score approaches 1.0 as: more touches, closer to level, level tested more recently.
+    score = 0.0 if price is not near any significant S/R level, or if the
+    nearest level is acting *against* the signal direction.
+
+    Direction-aware logic:
+    - LONG:  positive score only when price is near a *support* level
+             (level is below current price — we're bouncing off it).
+    - SHORT: positive score only when price is near a *resistance* level
+             (level is above current price — we're rejecting from it).
+    - None:  direction-agnostic (legacy, scores all nearby levels).
+
+    Without this, price pressing into resistance while going LONG would get
+    the same sr_score as price bouncing off support — adding noise rather
+    than edge to the confluence signal.
     """
     if len(df) < pivot_window * 3:
         return 0.0, None
@@ -75,6 +87,17 @@ def compute_sr_score(
 
     # Filter zones within proximity of current price
     nearby = [z for z in zones if z["distance_pct"] <= proximity_pct]
+
+    if not nearby:
+        return 0.0, None
+
+    # Direction filter: only keep levels that support the trade direction.
+    if direction == "LONG":
+        # Support = level below price (price bouncing up off it)
+        nearby = [z for z in nearby if z["level"] <= current_price]
+    elif direction == "SHORT":
+        # Resistance = level above price (price rejecting down from it)
+        nearby = [z for z in nearby if z["level"] >= current_price]
 
     if not nearby:
         return 0.0, None
