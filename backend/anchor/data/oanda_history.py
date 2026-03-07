@@ -171,37 +171,29 @@ async def bootstrap_from_oanda(
             ]
 
             async with get_session() as session:
-                # Use raw INSERT via chunks to bypass TimescaleDB insert blocker.
-                # We insert row-by-row inside a savepoint so duplicates are skipped.
                 from sqlalchemy import text
-                inserted = 0
-                for r in rows:
-                    try:
-                        await session.execute(text("""
-                            INSERT INTO market_data
-                                (time, instrument, timeframe, open, high, low, close, volume, spread_avg, source)
-                            VALUES
-                                (:time, :instrument, :timeframe, :open, :high, :low, :close, :volume, :spread_avg, :source)
-                            ON CONFLICT DO NOTHING
-                        """), {
-                            "time": r.time,
-                            "instrument": r.instrument,
-                            "timeframe": r.timeframe,
-                            "open": r.open,
-                            "high": r.high,
-                            "low": r.low,
-                            "close": r.close,
-                            "volume": r.volume,
-                            "spread_avg": getattr(r, "spread_avg", None),
-                            "source": getattr(r, "source", "oanda"),
-                        })
-                        inserted += 1
-                    except Exception:
-                        await session.rollback()
+                # Insert first row only to surface the real error
+                r = rows[0]
+                await session.execute(text("""
+                    INSERT INTO market_data
+                        (time, instrument, timeframe, open, high, low, close, volume, spread_avg, source)
+                    VALUES
+                        (:time, :instrument, :timeframe, :open, :high, :low, :close, :volume, :spread_avg, :source)
+                """), {
+                    "time": r.time,
+                    "instrument": r.instrument,
+                    "timeframe": r.timeframe,
+                    "open": r.open,
+                    "high": r.high,
+                    "low": r.low,
+                    "close": r.close,
+                    "volume": r.volume,
+                    "spread_avg": getattr(r, "spread_avg", None),
+                    "source": getattr(r, "source", "oanda"),
+                })
                 await session.commit()
-                grand_total += inserted
-                logger.info("oanda_inserted", instrument=instrument, timeframe=tf,
-                            rows=inserted)
+                logger.info("oanda_inserted", instrument=instrument, timeframe=tf, rows=1)
+                grand_total += 1
 
     logger.info("oanda_bootstrap_complete", total_rows=grand_total)
 
