@@ -2,7 +2,10 @@
 Support and Resistance level detection with strength scoring.
 
 Finds significant price levels by:
-1. Identifying pivot highs/lows
+1. Identifying pivot highs (from the high series) and pivot lows (from the low
+   series). Using wicks instead of closes is critical: resistance is where price
+   was *rejected* (shown by the wick high), not where it *closed*. Close-based
+   pivots undercount zone strength and misplace levels by several pips.
 2. Clustering nearby pivots into zones
 3. Scoring each zone by number of touches + recency
 """
@@ -10,12 +13,22 @@ import numpy as np
 import pandas as pd
 
 
-def _find_pivots(series: pd.Series, window: int = 10) -> list[float]:
-    """Return list of pivot prices (both highs and lows)."""
+def _find_pivot_highs(series: pd.Series, window: int = 10) -> list[float]:
+    """Return list of pivot high prices (local maxima in the high series)."""
     pivots = []
     for i in range(window, len(series) - window):
         seg = series.iloc[i - window: i + window + 1]
-        if series.iloc[i] == seg.max() or series.iloc[i] == seg.min():
+        if series.iloc[i] == seg.max():
+            pivots.append(float(series.iloc[i]))
+    return pivots
+
+
+def _find_pivot_lows(series: pd.Series, window: int = 10) -> list[float]:
+    """Return list of pivot low prices (local minima in the low series)."""
+    pivots = []
+    for i in range(window, len(series) - window):
+        seg = series.iloc[i - window: i + window + 1]
+        if series.iloc[i] == seg.min():
             pivots.append(float(series.iloc[i]))
     return pivots
 
@@ -82,7 +95,21 @@ def compute_sr_score(
         return 0.0, None
 
     current_price = float(df["close"].iloc[-1])
-    pivots = _find_pivots(df["close"], pivot_window)
+
+    # Resistance zones from high-series wicks; support zones from low-series wicks.
+    # This correctly identifies where price was rejected, not just where it closed.
+    resistance_pivots = _find_pivot_highs(df["high"], pivot_window)
+    support_pivots    = _find_pivot_lows(df["low"],  pivot_window)
+
+    # Direction-aware: only cluster the relevant side
+    if direction == "LONG":
+        pivots = support_pivots
+    elif direction == "SHORT":
+        pivots = resistance_pivots
+    else:
+        # Direction-agnostic: use all pivots
+        pivots = resistance_pivots + support_pivots
+
     zones = _cluster_pivots(pivots, current_price, tolerance_pct)
 
     # Filter zones within proximity of current price
@@ -91,7 +118,7 @@ def compute_sr_score(
     if not nearby:
         return 0.0, None
 
-    # Direction filter: only keep levels that support the trade direction.
+    # Direction filter: confirm level is on the correct side of price.
     if direction == "LONG":
         # Support = level below price (price bouncing up off it)
         nearby = [z for z in nearby if z["level"] <= current_price]

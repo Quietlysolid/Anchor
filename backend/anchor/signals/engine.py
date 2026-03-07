@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 import structlog
 
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
     from anchor.ml.xgb_classifier     import XGBClassifier
     from anchor.ml.ood_detector        import OODDetector
     from anchor.ml.feature_engineer   import FeatureEngineer
+    from anchor.regime.hmm_detector   import HMMRegimeDetector
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -89,6 +91,7 @@ class ConfluenceEngine:
         ml_classifier:    "XGBClassifier" | None = None,
         ood_detector:     "OODDetector"   | None = None,
         feature_engineer: "FeatureEngineer" | None = None,
+        hmm_detector:     "HMMRegimeDetector" | None = None,
         data_cache:       dict[str, dict[str, pd.DataFrame]] | None = None,
     ):
         self.news_filter      = news_filter or NewsFilter()
@@ -97,6 +100,7 @@ class ConfluenceEngine:
         self.ml_classifier    = ml_classifier
         self.ood_detector     = ood_detector
         self.feature_engineer = feature_engineer
+        self.hmm_detector     = hmm_detector
         self.data_cache       = data_cache or {}
 
     async def evaluate(
@@ -122,6 +126,7 @@ class ConfluenceEngine:
             return result
 
         if self.spread_monitor:
+            # Fast check: spike vs rolling median (no ATR needed)
             spread_ok, spread_reason = await self.spread_monitor.check(instrument)
             if not spread_ok:
                 result.suppression_reason = spread_reason
@@ -133,6 +138,20 @@ class ConfluenceEngine:
                 result.suppression_reason = drawdown_reason
                 return result
 
+        # ── Step 1b: HMM regime gate ──────────────────────────────────────
+        # Block all entries when HMM classifies the market as VOLATILE.
+        # The ADX filter handles trending/ranging discrimination downstream;
+        # this gate specifically targets the high-vol unpredictable regime.
+        if self.hmm_detector and self.hmm_detector.is_ready:
+            df_daily_hmm = self._get_data(instrument, "D")
+            if df_daily_hmm is not None and len(df_daily_hmm) >= 60:
+                hmm_regime, hmm_conf = self.hmm_detector.predict_current(df_daily_hmm)
+                result.regime_state = hmm_regime
+                result.metadata["hmm_confidence"] = hmm_conf
+                if hmm_regime == "VOLATILE":
+                    result.suppression_reason = f"HMM_VOLATILE:{hmm_conf:.3f}"
+                    return result
+
         # ── Step 2: Load data ─────────────────────────────────────────────
         df_1h  = self._get_data(instrument, "H1")
         df_4h  = self._get_data(instrument, "H4")
@@ -141,6 +160,29 @@ class ConfluenceEngine:
         if df_1h is None or len(df_1h) < 50:
             result.suppression_reason = "INSUFFICIENT_DATA"
             return result
+
+        # ── Step 2b: ATR-aware spread check ───────────────────────────────
+        # Now that we have price data, check spread / ATR ratio to ensure
+        # the entry cost is not an excessive fraction of the expected move.
+        if self.spread_monitor:
+            closes = df_1h["close"].values
+            highs  = df_1h["high"].values
+            lows   = df_1h["low"].values
+            prev_c = np.roll(closes, 1); prev_c[0] = closes[0]
+            tr_vals = np.maximum(highs - lows, np.maximum(
+                np.abs(highs - prev_c), np.abs(lows - prev_c)
+            ))
+            _atr_period = 14
+            _live_atr = float(np.mean(tr_vals[:_atr_period]))
+            _alpha = 1.0 / _atr_period
+            for _tv in tr_vals[_atr_period:]:
+                _live_atr = _alpha * float(_tv) + (1.0 - _alpha) * _live_atr
+            spread_ok2, spread_reason2 = await self.spread_monitor.check(
+                instrument, atr=_live_atr
+            )
+            if not spread_ok2:
+                result.suppression_reason = spread_reason2
+                return result
 
         # ── Step 3: Direction determination ──────────────────────────────
         # Primary: RSI divergence (highest-quality setups)

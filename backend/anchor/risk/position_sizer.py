@@ -72,10 +72,19 @@ class PositionSizer:
         kelly_fraction:    float | None = None,
         correlation_scale: float = 1.0,
         drawdown_scale:    float = 1.0,
+        current_atr:       float | None = None,
+        reference_atr:     float | None = None,
     ) -> int:
         """
         Returns position size in units (OANDA native).
         Always a multiple of MICRO_LOT (1,000 units).
+
+        current_atr / reference_atr: when both are provided, applies
+        volatility-regime normalization = reference_atr / current_atr,
+        capped at [0.5, 1.5]. This prevents high-vol environments from
+        silently expanding dollar risk through wider ATR-based stops while
+        also allowing modest size increases in compressed low-vol regimes.
+        reference_atr should be the trailing 20-day median ATR.
         """
         pip_size = get_pip_size(instrument)
         stop_distance = abs(entry_price - stop_loss)
@@ -94,8 +103,14 @@ class PositionSizer:
             kelly_units = units_raw * kelly_fraction * 0.5
             units_raw   = min(units_raw, kelly_units)
 
-        # Scale factors (correlation and drawdown)
-        units_scaled = units_raw * correlation_scale * drawdown_scale
+        # Volatility-regime normalization: scale down in high-vol, up in low-vol
+        vol_scale = 1.0
+        if current_atr is not None and reference_atr is not None:
+            if current_atr > 1e-10 and reference_atr > 1e-10:
+                vol_scale = max(0.5, min(1.5, reference_atr / current_atr))
+
+        # Scale factors (correlation, drawdown, volatility regime)
+        units_scaled = units_raw * correlation_scale * drawdown_scale * vol_scale
 
         # Snap to micro-lot boundary
         units = int(units_scaled // MICRO_LOT) * MICRO_LOT

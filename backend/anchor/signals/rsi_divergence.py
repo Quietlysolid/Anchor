@@ -45,6 +45,7 @@ def detect_rsi_divergence(
     rsi_period: int = 14,
     pivot_window: int = 5,
     lookback_pivots: int = 3,
+    min_pivot_separation: int = 10,
 ) -> float:
     """
     Returns divergence score from -1.0 to 1.0.
@@ -54,6 +55,10 @@ def detect_rsi_divergence(
     same bar rather than on independently found RSI pivots that may differ
     by several bars. We additionally require that the RSI value at the price
     pivot is itself a local RSI extreme (within ±window bars) to filter noise.
+
+    min_pivot_separation: minimum bar distance required between the two reference
+    pivots. Adjacent pivots produce trivial noise-divergence; ≥10 bars ensures
+    both swing points represent meaningful, distinct price moves.
     """
     if len(df) < rsi_period + pivot_window * 2 + 5:
         return 0.0
@@ -87,10 +92,11 @@ def detect_rsi_divergence(
     if len(valid_highs) >= 2:
         p1, p2 = valid_highs[-2], valid_highs[-1]   # older, newer price high
         if (
-            price[p2] > price[p1]                     # price higher high
+            (p2 - p1) >= min_pivot_separation         # pivots are genuinely separated
+            and price[p2] > price[p1]                 # price higher high
             and rsi_vals[p2] < rsi_vals[p1]           # RSI lower high (diverge)
-            and rsi_vals[p2] > 60                      # RSI still elevated
-            and _is_rsi_local_extreme(p1, "high")      # RSI was also a local high
+            and rsi_vals[p2] > 60                     # RSI still elevated
+            and _is_rsi_local_extreme(p1, "high")     # RSI was also a local high
             and _is_rsi_local_extreme(p2, "high")
         ):
             # Strength: relative RSI deterioration, symmetric denominator = mean
@@ -104,10 +110,11 @@ def detect_rsi_divergence(
     if len(valid_lows) >= 2:
         p1, p2 = valid_lows[-2], valid_lows[-1]      # older, newer price low
         if (
-            price[p2] < price[p1]                     # price lower low
+            (p2 - p1) >= min_pivot_separation         # pivots are genuinely separated
+            and price[p2] < price[p1]                 # price lower low
             and rsi_vals[p2] > rsi_vals[p1]           # RSI higher low (diverge)
-            and rsi_vals[p2] < 40                      # RSI still depressed
-            and _is_rsi_local_extreme(p1, "low")       # RSI was also a local low
+            and rsi_vals[p2] < 40                     # RSI still depressed
+            and _is_rsi_local_extreme(p1, "low")      # RSI was also a local low
             and _is_rsi_local_extreme(p2, "low")
         ):
             mean_rsi = (abs(rsi_vals[p1]) + abs(rsi_vals[p2])) / 2.0

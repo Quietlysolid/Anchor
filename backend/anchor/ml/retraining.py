@@ -38,6 +38,25 @@ _TP_ATR_MULT = 3.0
 _MAX_FORWARD_BARS = 48  # cap look-forward at 48 H1 bars (2 trading days)
 
 
+def _wilder_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
+    """Wilder's smoothed ATR — matches the `ta` library used in live trading."""
+    n = len(closes)
+    tr = np.zeros(n)
+    for i in range(1, n):
+        tr[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i]  - closes[i - 1]),
+        )
+    atr = np.full(n, np.nan)
+    if n > period:
+        atr[period] = float(np.mean(tr[1: period + 1]))
+        alpha = 1.0 / period
+        for i in range(period + 1, n):
+            atr[i] = alpha * tr[i] + (1.0 - alpha) * atr[i - 1]
+    return atr
+
+
 def _make_labels(
     highs: np.ndarray,
     lows: np.ndarray,
@@ -45,52 +64,64 @@ def _make_labels(
 ) -> np.ndarray:
     """Risk-adjusted binary labels that mirror live trading SL/TP logic.
 
-    For each bar k, we simulate a LONG entry at closes[k]:
-      - SL = entry - 1.5 * ATR14[k]
-      - TP = entry + 3.0 * ATR14[k]
+    For each bar k we simulate BOTH a LONG and a SHORT entry at closes[k]:
+      LONG:  SL = entry - 1.5*ATR,  TP = entry + 3.0*ATR
+      SHORT: SL = entry + 1.5*ATR,  TP = entry - 3.0*ATR
 
-    Then scan forward up to MAX_FORWARD_BARS bars:
-      label[k] = 1  if TP hit before SL  (trade would have won)
-      label[k] = 0  if SL hit before TP  (trade would have lost)
-      label[k] = -1 if neither hit       (timeout — excluded from training)
+    We scan forward up to MAX_FORWARD_BARS and record whichever side wins.
 
-    This directly aligns the training objective with actual P&L, producing
-    a cleaner signal than a raw N-bar price direction label.
+      label[k] = 1  if LONG TP hit first   (bullish bar)
+      label[k] = 0  if SHORT TP hit first  (bearish bar)
+      label[k] = -1 if neither side resolves (timeout — excluded)
 
-    Note: We only simulate LONG scenarios here. The engine evaluates LONG and
-    SHORT separately; the label captures whether the move materialized with the
-    correct magnitude. In practice XGB learns symmetry across both sides.
+    This correctly labels both directions symmetrically so XGBoost is not
+    trained with a built-in bullish bias. Previously only LONG was simulated,
+    which caused SHORT-signal bars where the LONG also won to be mislabelled.
+
+    ATR uses Wilder's smoothing (α=1/14) to match the live ta-library value,
+    eliminating the SL/TP distance mismatch during volatile periods.
     """
     n = len(closes)
     labels = np.full(n, -1, dtype=int)
-
-    # Compute ATR14 using true range
-    tr = np.zeros(n)
-    for i in range(1, n):
-        hl  = highs[i]  - lows[i]
-        hpc = abs(highs[i]  - closes[i - 1])
-        lpc = abs(lows[i]   - closes[i - 1])
-        tr[i] = max(hl, hpc, lpc)
-    # Simple rolling mean for ATR (faster than pandas here)
-    atr = np.full(n, np.nan)
-    for i in range(14, n):
-        atr[i] = tr[i - 13: i + 1].mean()
+    atr = _wilder_atr(highs, lows, closes)
 
     for k in range(14, n - 1):
         if np.isnan(atr[k]):
             continue
-        entry = closes[k]
-        sl    = entry - _SL_ATR_MULT * atr[k]
-        tp    = entry + _TP_ATR_MULT * atr[k]
+        entry      = closes[k]
+        long_sl    = entry - _SL_ATR_MULT * atr[k]
+        long_tp    = entry + _TP_ATR_MULT * atr[k]
+        short_sl   = entry + _SL_ATR_MULT * atr[k]
+        short_tp   = entry - _TP_ATR_MULT * atr[k]
+
+        long_result  = -1   # -1 = unresolved
+        short_result = -1
 
         for j in range(k + 1, min(k + _MAX_FORWARD_BARS + 1, n)):
-            if lows[j] <= sl:
-                labels[k] = 0  # SL hit first
+            h, l = highs[j], lows[j]
+
+            if long_result == -1:
+                if l <= long_sl:
+                    long_result = 0   # long stopped out
+                elif h >= long_tp:
+                    long_result = 1   # long TP hit
+
+            if short_result == -1:
+                if h >= short_sl:
+                    short_result = 0  # short stopped out
+                elif l <= short_tp:
+                    short_result = 1  # short TP hit
+
+            if long_result != -1 and short_result != -1:
                 break
-            if highs[j] >= tp:
-                labels[k] = 1  # TP hit first
-                break
-        # if neither hit within MAX_FORWARD_BARS, label stays -1 (excluded)
+
+        # Assign label: LONG win = 1, SHORT win = 0, both/neither = excluded
+        if long_result == 1 and short_result != 1:
+            labels[k] = 1
+        elif short_result == 1 and long_result != 1:
+            labels[k] = 0
+        # if both sides hit TP (very rare, e.g. large candle) → exclude (-1)
+        # if neither side resolved within the window → exclude (-1)
 
     return labels
 

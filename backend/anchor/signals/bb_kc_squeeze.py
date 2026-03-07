@@ -4,10 +4,17 @@ Bollinger Bands + Keltner Channels squeeze (TTM Squeeze).
 Squeeze ON:  BB is inside KC → low volatility, coiling for a move.
 Squeeze OFF: BB expands outside KC → breakout in progress.
 
-Score:
-  - Squeeze just fired (BB crossed outside KC) → 1.0
-  - Still in squeeze (BB inside KC) → 0.3 (potential setup, not yet confirmed)
-  - No squeeze → 0.0
+Score with timing decay:
+  - Squeeze fired this bar (bar 0 after release):  1.0  (best entry)
+  - Fired 1-3 bars ago:                            0.85 (still valid)
+  - Fired 4-10 bars ago:                           0.65 (trailing edge)
+  - Fired >10 bars ago:                            0.0  (move is over)
+  - Still in squeeze (coiling):                    0.4
+  - No squeeze:                                    0.0
+
+Rationale: entering a squeeze breakout many bars after the release means
+chasing a move already in progress. The score decays linearly so older
+fires contribute less to confluence.
 """
 import pandas as pd
 import ta as ta_lib
@@ -19,12 +26,14 @@ def detect_squeeze(
     bb_std: float = 2.0,
     kc_period: int = 20,
     kc_multiplier: float = 1.5,
+    lookback: int = 12,
 ) -> tuple[float, bool]:
     """
     Returns (score: float, squeeze_on: bool).
     squeeze_on = True means currently in compression.
+    lookback: number of bars to look back for a recent squeeze fire.
     """
-    if len(df) < bb_period + 5:
+    if len(df) < bb_period + lookback + 2:
         return 0.0, False
 
     # Bollinger Bands
@@ -45,15 +54,32 @@ def detect_squeeze(
     if any(s is None or s.isna().all() for s in [bb_upper, bb_lower, kc_upper, kc_lower]):
         return 0.0, False
 
-    # Squeeze ON: BB inside KC
-    squeeze_now  = (bb_upper.iloc[-1] < kc_upper.iloc[-1]) and (bb_lower.iloc[-1] > kc_lower.iloc[-1])
-    squeeze_prev = (bb_upper.iloc[-2] < kc_upper.iloc[-2]) and (bb_lower.iloc[-2] > kc_lower.iloc[-2])
+    def _squeeze_on(i: int) -> bool:
+        return (
+            bb_upper.iloc[i] < kc_upper.iloc[i]
+            and bb_lower.iloc[i] > kc_lower.iloc[i]
+        )
 
-    # Squeeze just fired (was ON, now OFF)
-    if squeeze_prev and not squeeze_now:
-        return 1.0, False
+    # Current bar: still in squeeze → coiling score
+    if _squeeze_on(-1):
+        return 0.4, True
 
-    if squeeze_now:
-        return 0.6, True
+    # Scan back up to `lookback` bars for the most recent squeeze-fire transition
+    # (was ON at bar i-1, OFF at bar i)
+    for bars_ago in range(0, lookback + 1):
+        idx_now  = -(1 + bars_ago)
+        idx_prev = -(2 + bars_ago)
+        if abs(idx_prev) > len(bb_upper):
+            break
+        if _squeeze_on(idx_prev) and not _squeeze_on(idx_now):
+            # Squeeze fired `bars_ago` bars ago
+            if bars_ago == 0:
+                return 1.0, False    # fired this bar
+            elif bars_ago <= 3:
+                return 0.85, False   # 1-3 bars ago: fresh
+            elif bars_ago <= 10:
+                return 0.65, False   # 4-10 bars ago: trailing
+            else:
+                return 0.0, False    # stale
 
     return 0.0, False

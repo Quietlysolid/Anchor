@@ -184,7 +184,9 @@ class BacktestEngine:
                 signal_count += 1
 
                 # Compute ATR on this bar's window (no lookahead).
-                # SL/TP offsets are stored; actual prices computed at next bar's open.
+                # Uses Wilder's smoothing (EMA α=1/14) to match the `ta` library
+                # used in live signal generation — preventing SL/TP divergence
+                # between backtest and live execution in volatile periods.
                 closes = h1_window["close"].values
                 highs = h1_window["high"].values
                 lows = h1_window["low"].values
@@ -197,7 +199,12 @@ class BacktestEngine:
                         np.abs(lows - prev_closes),
                     ),
                 )
-                atr = float(np.mean(tr[-14:]))
+                # Wilder's: seed with 14-bar mean, then apply EMA with α=1/14
+                _atr_period = 14
+                atr = float(np.mean(tr[:_atr_period]))
+                _alpha = 1.0 / _atr_period
+                for _tr_val in tr[_atr_period:]:
+                    atr = _alpha * float(_tr_val) + (1.0 - _alpha) * atr
 
                 # Queue fill for next bar's open — no lookahead on price.
                 pending_fill = {

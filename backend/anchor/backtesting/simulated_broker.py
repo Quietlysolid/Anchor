@@ -63,6 +63,7 @@ class SimulatedPosition:
     exit_time: Optional[datetime] = None
     close_reason: str = ""
     net_pl: float = 0.0
+    bars_open: int = 0  # bar counter for time-based exit
     # Signal context recorded at entry (for post-hoc analysis)
     regime: Optional[str] = None
     session: Optional[str] = None
@@ -143,14 +144,20 @@ class SimulatedBroker:
         self.positions.append(pos)
         return pos
 
-    def update(self, bar: CandleBar) -> None:
-        """Process a new bar: check SL/TP/end-of-bar for each open position."""
+    def update(self, bar: CandleBar, max_bars_open: int = 48) -> None:
+        """Process a new bar: check SL/TP/time-exit for each open position.
+
+        max_bars_open: maximum number of H1 bars a position may remain open.
+        Default 48 = 2 trading days. Positions that have not resolved by then
+        are closed at the current bar's close to prevent overnight gap accumulation
+        and to mirror the live system's time-based exit.
+        """
         to_close: List[SimulatedPosition] = []
         for pos in self.positions:
             if pos.instrument != bar.instrument or pos.status != "OPEN":
                 continue
 
-            pip = self.pip_size(pos.instrument)
+            pos.bars_open += 1
 
             if pos.direction == "LONG":
                 # Check SL (fill at SL price or bar low if gapped)
@@ -162,6 +169,9 @@ class SimulatedBroker:
                     exit_price = pos.take_profit
                     self._close(pos, exit_price, bar.time, "TAKE_PROFIT")
                     to_close.append(pos)
+                elif pos.bars_open >= max_bars_open:
+                    self._close(pos, bar.close, bar.time, "TIME_EXIT")
+                    to_close.append(pos)
             else:  # SHORT
                 if pos.stop_loss and bar.high >= pos.stop_loss:
                     exit_price = max(pos.stop_loss, bar.open)
@@ -170,6 +180,9 @@ class SimulatedBroker:
                 elif pos.take_profit and bar.low <= pos.take_profit:
                     exit_price = pos.take_profit
                     self._close(pos, exit_price, bar.time, "TAKE_PROFIT")
+                    to_close.append(pos)
+                elif pos.bars_open >= max_bars_open:
+                    self._close(pos, bar.close, bar.time, "TIME_EXIT")
                     to_close.append(pos)
 
         # Record equity

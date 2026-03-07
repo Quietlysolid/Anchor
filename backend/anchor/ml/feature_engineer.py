@@ -117,6 +117,26 @@ class FeatureEngineer:
                 adx_4h_available = 1.0
         features["adx_4h_available"] = adx_4h_available
 
+        # ── Order-flow proxy ──────────────────────────────────────────────
+        # Up-close ratio: fraction of last 20 bars that closed above their open.
+        # This is a free-to-compute accumulation/distribution proxy that
+        # captures sustained directional buying/selling pressure — a leading
+        # indicator that lagging oscillators (Stoch, MACD) can miss.
+        # Range [0, 1]: >0.6 = bullish pressure, <0.4 = bearish pressure.
+        if len(df_1h) >= 22:
+            recent = df_1h.iloc[-21:-1]  # last 20 closed bars (exclude current)
+            up_closes = (recent["close"] > recent["open"]).sum()
+            features["up_close_ratio_20"] = float(up_closes) / 20.0
+
+            # Directional volume imbalance: (up-bar volume - down-bar volume) / total
+            # where up-bar = close > open. Normalised to [-1, 1].
+            up_vol   = recent.loc[recent["close"] > recent["open"], "volume"].sum()
+            down_vol = recent.loc[recent["close"] < recent["open"], "volume"].sum()
+            total_vol = up_vol + down_vol
+            features["volume_imbalance_20"] = (
+                float(up_vol - down_vol) / float(total_vol) if total_vol > 0 else 0.0
+            )
+
         # ── Time encoding (cyclic, no ordinal leakage) ────────────────────
         last_ts = df_1h.index[-1]
         hour = last_ts.hour
@@ -195,6 +215,7 @@ class FeatureEngineer:
             "hour_cos", "hour_sin", "is_asian", "is_london", "is_newyork",
             "macd_signal", "rate_available", "rate_diff", "realized_vol",
             "rsi_1h", "rsi_1h_prev", "stoch_k",
+            "up_close_ratio_20", "volume_imbalance_20",
         ]
         return sorted(names)
 
