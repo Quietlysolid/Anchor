@@ -172,20 +172,12 @@ async def bootstrap_from_oanda(
 
             async with get_session() as session:
                 repo = MarketDataRepository(session)
-                existing = await repo.get_candles(instrument, tf, start, end, limit=100000)
-                existing_times = {
-                    r.time.replace(tzinfo=None) if hasattr(r.time, "tzinfo") and r.time.tzinfo else r.time
-                    for r in existing
-                }
-                new_rows = [r for r in rows if r.time not in existing_times]
-                if new_rows:
-                    await repo.bulk_insert_candles(new_rows)
-                    await session.commit()
-                    grand_total += len(new_rows)
-                    logger.info("oanda_inserted", instrument=instrument, timeframe=tf,
-                                rows=len(new_rows))
-                else:
-                    logger.info("oanda_no_new_rows", instrument=instrument, timeframe=tf)
+                # ON CONFLICT DO NOTHING handles duplicates at DB level
+                await repo.bulk_insert_candles(rows)
+                await session.commit()
+                grand_total += len(rows)
+                logger.info("oanda_inserted", instrument=instrument, timeframe=tf,
+                            rows=len(rows))
 
     logger.info("oanda_bootstrap_complete", total_rows=grand_total)
 

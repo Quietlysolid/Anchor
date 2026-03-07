@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import select, and_, desc
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anchor.database.models import MarketData, TickData
@@ -18,7 +19,25 @@ class MarketDataRepository:
         await self.session.flush()
 
     async def bulk_insert_candles(self, candles: List[MarketData]) -> int:
-        self.session.add_all(candles)
+        if not candles:
+            return 0
+        rows = [
+            {
+                "time": c.time,
+                "instrument": c.instrument,
+                "timeframe": c.timeframe,
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+                "volume": c.volume,
+                "spread_avg": c.spread_avg if hasattr(c, "spread_avg") else None,
+                "source": c.source if hasattr(c, "source") else None,
+            }
+            for c in candles
+        ]
+        stmt = pg_insert(MarketData).values(rows).on_conflict_do_nothing()
+        await self.session.execute(stmt)
         await self.session.flush()
         return len(candles)
 
