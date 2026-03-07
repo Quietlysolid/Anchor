@@ -67,6 +67,7 @@ class OrderRequest:
     limit_price:            float | None = None
     trailing_stop_distance: float | None = None
     signal_id:              uuid.UUID | None = None
+    gtd_time:               datetime | None = None  # expiry for GTD limit orders
 
 
 @dataclass

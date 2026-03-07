@@ -50,15 +50,25 @@ class BrokerClient:
         """Submit order to OANDA. Returns OANDA order ID."""
         units_str = str(request.units) if request.direction.value == "LONG" else str(-request.units)
 
+        if request.order_type.value == "LIMIT" and request.gtd_time is not None:
+            time_in_force = "GTD"
+        elif request.order_type.value == "MARKET":
+            time_in_force = "FOK"
+        else:
+            time_in_force = "GTC"
+
         order_body: dict = {
             "order": {
-                "type":       request.order_type.value,
-                "instrument": request.instrument,
-                "units":      units_str,
-                "timeInForce": "FOK" if request.order_type.value == "MARKET" else "GTC",
+                "type":        request.order_type.value,
+                "instrument":  request.instrument,
+                "units":       units_str,
+                "timeInForce": time_in_force,
                 "positionFill": "DEFAULT",
             }
         }
+
+        if time_in_force == "GTD" and request.gtd_time is not None:
+            order_body["order"]["gtdTime"] = request.gtd_time.strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
 
         if request.stop_loss is not None:
             order_body["order"]["stopLossOnFill"] = {

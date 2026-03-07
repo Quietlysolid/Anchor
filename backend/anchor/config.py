@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     daily_loss_limit_pct: float = 0.03     # 3% daily loss limit → halt for the day
     drawdown_reduce_pct: float = 0.08      # 8% → halve position size
     drawdown_halt_pct: float = 0.15        # 15% → halt all trading
-    min_confluence_score: float = 0.65
+    min_confluence_score: float = 0.70
     min_ml_confidence: float = 0.58
     max_position_pct: float = 0.05         # 5% hard cap per position notional
     correlation_block_threshold: float = 0.70
