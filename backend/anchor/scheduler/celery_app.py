@@ -29,6 +29,7 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.run_signal_scan": {"queue": "default"},
         "anchor.scheduler.jobs.run_regime_detection": {"queue": "default"},
         "anchor.scheduler.jobs.import_candles": {"queue": "default"},
+        "anchor.scheduler.jobs.close_stale_trades": {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -67,6 +68,10 @@ celery_app.conf.update(
         "import-candles-every-hour": {
             "task": "anchor.scheduler.jobs.import_candles",
             "schedule": 3_600.0,  # every hour, 5 min before regime detection
+        },
+        "close-stale-trades-every-hour": {
+            "task": "anchor.scheduler.jobs.close_stale_trades",
+            "schedule": 3_600.0,  # hourly check — 12h threshold means no urgency
         },
     },
     worker_prefetch_multiplier=1,

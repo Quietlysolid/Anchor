@@ -54,6 +54,6 @@ def detect_squeeze(
         return 1.0, False
 
     if squeeze_now:
-        return 0.3, True
+        return 0.6, True
 
     return 0.0, False

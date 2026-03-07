@@ -66,13 +66,17 @@ class SignalResult:
 
 
 # Signal component weights (must sum to 1.0)
+# CSI weight reduced from 0.10 → 0.05: with only 5 instruments in the DB the
+# currency strength index is too sparse (USD gets 4 pairs, others get 1-2) to
+# produce a reliable signal. The freed weight goes to S/R (direction-aware,
+# reliable at any sample size).
 WEIGHTS = {
     "rsi_divergence": 0.25,
     "bb_kc_squeeze":  0.20,
     "adx_filter":     0.15,
-    "sr_strength":    0.20,
+    "sr_strength":    0.25,
     "mtf_agreement":  0.10,
-    "csi_strength":   0.10,
+    "csi_strength":   0.05,
 }
 
 

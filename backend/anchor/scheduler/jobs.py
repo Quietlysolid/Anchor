@@ -417,13 +417,30 @@ def run_signal_scan(self):
                     ], axis=1).max(axis=1)
                     atr = true_range.rolling(14).mean().iloc[-1]
 
+                    # ATR volatility filter: skip dead markets (no movement = noise) and
+                    # news spikes (ATR 5× normal = stop blown through unpredictably).
+                    atr_series = true_range.rolling(14).mean()
+                    atr_pct_20 = atr_series.rolling(30).quantile(0.20).iloc[-1]
+                    atr_pct_95 = atr_series.rolling(30).quantile(0.95).iloc[-1]
+                    if not (pd.isna(atr_pct_20) or pd.isna(atr_pct_95)):
+                        if atr < atr_pct_20:
+                            logger.debug("trade_blocked_dead_market", instrument=instrument, atr=atr)
+                            await session.commit()
+                            continue
+                        if atr > atr_pct_95:
+                            logger.debug("trade_blocked_news_spike", instrument=instrument, atr=atr)
+                            await session.commit()
+                            continue
+
                     # Pullback entry: limit order at 50% of the signal candle's body.
                     # For LONG:  limit below close (wait for a dip into support).
                     # For SHORT: limit above close (wait for a pop into resistance).
                     # This improves effective R:R from 2:1 → ~2.5:1 without widening the stop.
+                    # Doji guard: if candle body < 0.2×ATR (doji), use 0.3×ATR as minimum
+                    # pullback so we don't accidentally submit a market-price limit order.
                     last_candle = h1_df.iloc[-1]
                     candle_body = abs(float(last_candle["close"]) - float(last_candle["open"]))
-                    pullback    = candle_body * 0.5
+                    pullback    = max(candle_body * 0.5, atr * 0.3) if candle_body < atr * 0.2 else candle_body * 0.5
 
                     close_price = float(h1_df["close"].iloc[-1])
                     if result.direction == "LONG":
@@ -613,6 +630,73 @@ def run_regime_detection(self):
         _run_async(_inner())
     except Exception as exc:
         logger.error("regime_detection_task_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.close_stale_trades", bind=True, max_retries=2)
+def close_stale_trades(self):
+    """Close open trades that have not reached 50% of TP distance within 12 hours.
+
+    A trade drifting sideways for 12 hours has failed its thesis. Holding it
+    ties up capital and a correlation slot. Close it at market to free both.
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.database.engine import init_db
+        from anchor.database.repositories.positions import PositionRepository
+        from anchor.execution.broker_client import BrokerClient
+        from anchor.utils.time_utils import utcnow
+
+        await init_db()
+        import anchor.database.engine as _db_engine
+
+        broker = BrokerClient()
+        now = utcnow()
+        stale_threshold = timedelta(hours=12)
+
+        async with _db_engine.AsyncSessionFactory() as session:
+            repo = PositionRepository(session)
+            open_positions = await repo.get_open()
+
+            for pos in open_positions:
+                age = now - pos.opened_at
+                if age < stale_threshold:
+                    continue
+
+                if pos.take_profit is None or pos.stop_loss is None:
+                    continue
+
+                entry = float(pos.avg_entry_price)
+                tp    = float(pos.take_profit)
+                price = float(pos.current_price)
+                tp_distance = abs(tp - entry)
+
+                if pos.direction == "LONG":
+                    progress = (price - entry) / tp_distance if tp_distance > 0 else 0
+                else:
+                    progress = (entry - price) / tp_distance if tp_distance > 0 else 0
+
+                if progress < 0.5:
+                    logger.info(
+                        "closing_stale_trade",
+                        instrument=pos.instrument,
+                        direction=pos.direction,
+                        age_hours=round(age.total_seconds() / 3600, 1),
+                        tp_progress=round(progress, 2),
+                        oanda_trade_id=pos.oanda_trade_id,
+                    )
+                    try:
+                        await broker.close_trade(pos.oanda_trade_id)
+                        await repo.mark_closed(pos.id, price, now)
+                    except Exception as exc:
+                        logger.error("stale_close_failed", trade_id=pos.oanda_trade_id, error=str(exc))
+
+            await session.commit()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("close_stale_trades_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120)
 
 
