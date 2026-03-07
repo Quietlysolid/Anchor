@@ -23,9 +23,10 @@ from anchor.database.engine import get_session
 from anchor.database.repositories import MarketDataRepository
 from anchor.ml.feature_engineer import FeatureEngineer
 from anchor.ml.walk_forward import walk_forward_validate, WalkForwardResult
-from anchor.ml.xgb_classifier import XGBDirectionClassifier
+from anchor.ml.xgb_classifier import XGBDirectionClassifier, DEFAULT_MODEL_DIR
 from anchor.ml.lgbm_classifier import LGBMDirectionClassifier
 from anchor.ml.model_registry import ModelRegistry
+from anchor.ml.ood_detector import OODDetector
 
 logger = structlog.get_logger(__name__)
 
@@ -204,12 +205,19 @@ async def run_retraining(instrument: Optional[str] = None) -> Dict:
 
                 if wf_result.oos_accuracy >= MIN_OOS_ACCURACY:
                     # Train final model on all data
-                    clf = XGBDirectionClassifier()
+                    model_path = DEFAULT_MODEL_DIR / f"{instr}_xgb.pkl"
+                    clf = XGBDirectionClassifier(model_path=model_path)
                     clf.fit(X, y, feature_names)
+
+                    # Fit OOD detector on training features so the gate is live
+                    ood = OODDetector()
+                    ood.fit(X)
+                    ood_path = DEFAULT_MODEL_DIR / f"{instr}_ood.pkl"
+                    ood.save(ood_path)
 
                     # Log and register
                     run_id = mlflow.active_run().info.run_id
-                    clf.save()
+                    clf.save(model_path)
                     await registry.promote(instr, run_id, wf_result.oos_accuracy)
                     logger.info(
                         "retraining_promoted",

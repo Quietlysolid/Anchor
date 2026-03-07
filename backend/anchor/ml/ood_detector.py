@@ -16,6 +16,8 @@ Implementation note:
 """
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
 import numpy as np
 from scipy.stats import chi2
 from sklearn.covariance import EmpiricalCovariance
@@ -72,4 +74,32 @@ class OODDetector:
                 )
             return is_ood
         except Exception:
+            return False
+
+    def save(self, path: Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump({
+                "cov_estimator": self._cov_estimator,
+                "threshold": self._threshold,
+                "confidence": self.confidence,
+            }, f)
+        logger.info("ood_detector_saved", path=str(path))
+
+    def load(self, path: Path) -> bool:
+        path = Path(path)
+        if not path.exists():
+            return False
+        try:
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+            self._cov_estimator = data["cov_estimator"]
+            self._threshold = data["threshold"]
+            self.confidence = data.get("confidence", self.confidence)
+            self._fitted = True
+            logger.info("ood_detector_loaded", path=str(path))
+            return True
+        except Exception as exc:
+            logger.warning("ood_detector_load_failed", path=str(path), error=str(exc))
             return False

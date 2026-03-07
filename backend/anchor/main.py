@@ -25,6 +25,8 @@ from anchor.api.websocket import router as ws_router, manager as ws_manager
 from anchor.monitoring.heartbeat import HeartbeatService
 from anchor.data.oanda_stream import OANDAStreamClient
 from anchor.api.routers.system import set_stream_status, set_account_info
+from anchor.scheduler.jobs import _spread_monitor as _shared_spread_monitor
+from anchor.risk.weekend_guard import WeekendGuard
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -61,6 +63,7 @@ async def lifespan(app: FastAPI):
 
     heartbeat: HeartbeatService | None = None
     stream_client: OANDAStreamClient | None = None
+    weekend_guard: WeekendGuard | None = None
 
     if settings.service_name == "engine":
         heartbeat = HeartbeatService()
@@ -88,6 +91,7 @@ async def lifespan(app: FastAPI):
             stream_client = OANDAStreamClient(
                 redis_client=redis_client,
                 tick_repo=_TickRepo(),
+                spread_monitor=_shared_spread_monitor,
             )
 
             async def _stream_with_status():
@@ -117,11 +121,33 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(_redis_fanout())
             logger.info("oanda_stream_started")
 
+            # Start weekend gap guard — closes all positions by Friday 20:30 UTC
+            from anchor.execution.broker_client import BrokerClient as _BC
+            from anchor.database.repositories.positions import PositionRepository as _PR
+            _wg_broker = _BC()
+
+            class _WGPositionRepo:
+                """Thin adapter: opens its own session for each WeekendGuard call."""
+                async def get_open(self):
+                    from anchor.database.engine import AsyncSessionFactory as _SF
+                    from anchor.database.repositories.positions import PositionRepository as _PRepo
+                    if _SF is None:
+                        return []
+                    async with _SF() as session:
+                        return await _PRepo(session).get_open()
+
+            weekend_guard = WeekendGuard(broker_client=_wg_broker, position_repo=_WGPositionRepo())
+            asyncio.create_task(weekend_guard.run())
+            logger.info("weekend_guard_started")
+
     yield
 
     if stream_client:
         await stream_client.stop()
         set_stream_status(False)
+
+    if weekend_guard:
+        await weekend_guard.stop()
 
     if heartbeat:
         await heartbeat.stop()

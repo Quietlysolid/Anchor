@@ -42,7 +42,7 @@ class NewsFilter:
         window_start = dt - timedelta(hours=NEWS_SUPPRESSION_WINDOW_HOURS)
         window_end   = dt + timedelta(hours=NEWS_SUPPRESSION_WINDOW_HOURS)
 
-        events = await self.calendar_repo.get_high_impact_events(
+        events = await self.calendar_repo.get_affecting_currencies(
             currencies=currencies,
             start=window_start,
             end=window_end,

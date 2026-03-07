@@ -49,3 +49,11 @@ async def get_session() -> AsyncSession:
         raise RuntimeError("Database not initialized")
     async with AsyncSessionFactory() as session:
         yield session
+
+
+async def get_db() -> AsyncSession:
+    """FastAPI dependency — yields an AsyncSession, auto-closes on request end."""
+    if AsyncSessionFactory is None:
+        raise RuntimeError("Database not initialized")
+    async with AsyncSessionFactory() as session:
+        yield session

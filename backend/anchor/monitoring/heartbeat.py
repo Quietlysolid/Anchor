@@ -35,7 +35,7 @@ class HeartbeatService:
                                 severity=EventSeverity.INFO,
                                 component="ENGINE",
                                 message="alive",
-                                metadata={"ts": now.isoformat()},
+                                metadata_={"ts": now.isoformat()},
                             ))
                     logger.debug("heartbeat_written")
                 else:

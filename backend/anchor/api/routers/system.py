@@ -3,7 +3,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from anchor.database.engine import get_session
+from anchor.database.engine import get_db
 from anchor.utils.time_utils import utcnow
 
 router = APIRouter()
@@ -29,7 +29,7 @@ def set_account_info(balance: float, equity: float, reconciled_at: str | None = 
 
 
 @router.get("/system/health")
-async def health_check(session: AsyncSession = Depends(get_session)):
+async def health_check(session: AsyncSession = Depends(get_db)):
     """System health endpoint. Used by Docker healthcheck and monitoring."""
     from sqlalchemy import text, select, func
     from anchor.database.models import Position
@@ -64,7 +64,7 @@ async def health_check(session: AsyncSession = Depends(get_session)):
 async def get_system_events(
     severity: str | None = None,
     limit:    int = 100,
-    session:  AsyncSession = Depends(get_session),
+    session:  AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import select, desc
     from anchor.database.models import SystemEvent

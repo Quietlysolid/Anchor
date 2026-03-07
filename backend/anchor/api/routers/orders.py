@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from anchor.database.engine import get_session
+from anchor.database.engine import get_db
 from anchor.database.models import Order
 
 router = APIRouter()
@@ -12,7 +12,7 @@ router = APIRouter()
 async def get_orders(
     status: str | None = None,
     limit:  int = 100,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
 ):
     q = select(Order).order_by(desc(Order.created_at)).limit(limit)
     if status:
@@ -24,7 +24,7 @@ async def get_orders(
 
 
 @router.get("/orders/{order_id}")
-async def get_order(order_id: str, session: AsyncSession = Depends(get_session)):
+async def get_order(order_id: str, session: AsyncSession = Depends(get_db)):
     from fastapi import HTTPException
     from anchor.database.models import OrderEvent
     q = select(Order).where(Order.id == order_id)

@@ -11,6 +11,17 @@ from anchor.scheduler.celery_app import celery_app
 
 logger = structlog.get_logger(__name__)
 
+# Module-level singletons — survive across task invocations within the same worker process.
+# DrawdownMonitor MUST be a singleton so _peak_equity accumulates correctly.
+# DailyLimiter MUST be a singleton so the daily P&L accumulates within a trading day.
+from anchor.risk.drawdown_monitor import DrawdownMonitor as _DrawdownMonitor
+from anchor.risk.daily_limiter import DailyLimiter as _DailyLimiter
+from anchor.risk.spread_monitor import SpreadMonitor as _SpreadMonitor
+
+_drawdown_monitor = _DrawdownMonitor()
+_daily_limiter = _DailyLimiter()
+_spread_monitor = _SpreadMonitor()
+
 
 def _run_async(coro):
     """Run an async coroutine from a sync Celery task."""
@@ -32,7 +43,7 @@ def snapshot_equity(self):
         from anchor.execution.broker_client import BrokerClient
 
         client = BrokerClient()
-        account = client.get_account_summary()
+        account = await client.get_account_summary()
         if not account:
             logger.warning("snapshot_equity_no_account")
             return
@@ -198,6 +209,7 @@ def reconcile_positions(self):
                 position_repo=PositionRepository(session),
                 order_repo=OrderRepository(session),
                 system_event_repo=SystemEventRepository(session),
+                daily_limiter=_daily_limiter,
             )
             report = await reconciler.reconcile()
             await session.commit()
@@ -233,8 +245,6 @@ def run_signal_scan(self):
         from anchor.execution.order_manager import OrderManager
         from anchor.execution.order_types import OrderRequest, Direction, OrderType
         from anchor.risk.position_sizer import PositionSizer
-        from anchor.risk.drawdown_monitor import DrawdownMonitor
-        from anchor.risk.daily_limiter import DailyLimiter
         from anchor.risk.correlation import CorrelationManager
         from anchor.utils.time_utils import utcnow
         from anchor.utils.math_utils import get_pip_size
@@ -253,8 +263,8 @@ def run_signal_scan(self):
 
         broker = BrokerClient()
         sizer = PositionSizer()
-        drawdown_monitor = DrawdownMonitor()
-        daily_limiter = DailyLimiter()
+        drawdown_monitor = _drawdown_monitor   # persistent singleton
+        daily_limiter = _daily_limiter         # persistent singleton
         correlation_mgr = CorrelationManager()
 
         # Get live account state once for the whole scan
@@ -276,13 +286,17 @@ def run_signal_scan(self):
         from pathlib import Path as _Path
         # Pass sync Redis to FeatureEngineer so COT features are populated at prediction time
         feature_engineer = FeatureEngineer(redis_client=sync_redis)
-        ood_detector = OODDetector()
         _classifiers: dict = {}
+        _ood_detectors: dict = {}
         for _inst in settings.instruments:
             _clf = XGBDirectionClassifier()
             _model_path = _Path("/app/models") / f"{_inst}_xgb.pkl"
             if _clf.load(_model_path):
                 _classifiers[_inst] = _clf
+                _ood = OODDetector()
+                _ood_path = _Path("/app/models") / f"{_inst}_ood.pkl"
+                _ood.load(_ood_path)  # gracefully no-ops if file missing
+                _ood_detectors[_inst] = _ood
             else:
                 logger.warning("ml_model_missing", instrument=_inst, path=str(_model_path))
 
@@ -304,11 +318,12 @@ def run_signal_scan(self):
             await correlation_mgr.update(daily_closes)
             open_positions = await position_repo.get_open()
 
-        # Shared engine instance; ML classifier is swapped per-instrument below
+        # Shared engine instance; ML classifier + OOD detector swapped per-instrument below
         engine = ConfluenceEngine(
             news_filter=news_filter,
+            spread_monitor=_spread_monitor,
             feature_engineer=feature_engineer,
-            ood_detector=ood_detector,
+            ood_detector=None,
         )
 
         # Instruments with no confluence-only edge (backtest Sharpe < 0, WR < 30%).
@@ -346,7 +361,7 @@ def run_signal_scan(self):
                         engine.ood_detector = None
                     else:
                         engine.feature_engineer = feature_engineer
-                        engine.ood_detector = ood_detector
+                        engine.ood_detector = _ood_detectors.get(instrument)
 
                     result = await engine.evaluate(instrument, dt=now)
 

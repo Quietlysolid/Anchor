@@ -201,14 +201,17 @@ class OrderManager:
         vwap_entry = pf["vwap_numerator"] / pf["total_units"]
 
         # Record fill
-        await self.order_repo.insert_fill(
+        from anchor.database.models import Fill
+        fill = Fill(
             order_id=order_id,
+            instrument=order.instrument,
             units_filled=units_filled,
             fill_price=fill_price,
             fill_at=fill_at,
             oanda_fill_id=oanda_fill_id,
             spread_at_fill=spread_at_fill,
         )
+        await self.order_repo.insert_fill(fill)
 
         # Determine if fully filled
         total_filled = pf["total_units"]

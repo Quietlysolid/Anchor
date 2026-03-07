@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from anchor.database.engine import get_session
+from anchor.database.engine import get_db
 from anchor.database.models import Trade, EquityCurvePoint
 from anchor.analytics.performance import compute_performance
 from anchor.analytics.monte_carlo import run_monte_carlo
@@ -11,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/performance/summary")
-async def get_performance_summary(session: AsyncSession = Depends(get_session)):
+async def get_performance_summary(session: AsyncSession = Depends(get_db)):
     q = select(Trade).order_by(Trade.closed_at)
     result = await session.execute(q)
     trades = result.scalars().all()
@@ -22,7 +22,7 @@ async def get_performance_summary(session: AsyncSession = Depends(get_session)):
 @router.get("/performance/equity-curve")
 async def get_equity_curve(
     limit: int = 500,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
 ):
     q = select(EquityCurvePoint).order_by(desc(EquityCurvePoint.time)).limit(limit)
     result = await session.execute(q)
@@ -43,7 +43,7 @@ async def get_equity_curve(
 @router.get("/performance/monte-carlo")
 async def get_monte_carlo(
     n_simulations: int = 10000,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
 ):
     q = select(Trade.net_pl).order_by(Trade.closed_at)
     result = await session.execute(q)
@@ -60,7 +60,7 @@ async def get_monte_carlo(
 async def get_trade_journal(
     limit:      int = 200,
     instrument: str | None = None,
-    session:    AsyncSession = Depends(get_session),
+    session:    AsyncSession = Depends(get_db),
 ):
     q = select(Trade).order_by(desc(Trade.closed_at)).limit(limit)
     if instrument:

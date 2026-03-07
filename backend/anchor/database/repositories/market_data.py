@@ -18,6 +18,32 @@ class MarketDataRepository:
         self.session.add(candle)
         await self.session.flush()
 
+    async def bulk_insert(self, instrument: str, timeframe: str, df) -> int:
+        """Insert a pandas DataFrame of OHLCV candles (index=time). ON CONFLICT DO NOTHING."""
+        if df is None or df.empty:
+            return 0
+        rows = []
+        for ts, row in df.iterrows():
+            t = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+            rows.append({
+                "time": t,
+                "instrument": instrument,
+                "timeframe": timeframe,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": int(row["volume"]) if "volume" in row and row["volume"] else None,
+                "spread_avg": float(row["spread"]) if "spread" in row and row["spread"] else None,
+                "source": str(row["source"]) if "source" in row else None,
+            })
+        stmt = pg_insert(MarketData).values(rows).on_conflict_do_nothing(
+            index_elements=["time", "instrument", "timeframe"]
+        )
+        await self.session.execute(stmt)
+        await self.session.flush()
+        return len(rows)
+
     async def bulk_insert_candles(self, candles: List[MarketData]) -> int:
         if not candles:
             return 0

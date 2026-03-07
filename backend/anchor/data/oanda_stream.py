@@ -17,9 +17,10 @@ settings = get_settings()
 
 
 class OANDAStreamClient:
-    def __init__(self, redis_client=None, tick_repo=None):
+    def __init__(self, redis_client=None, tick_repo=None, spread_monitor=None):
         self.redis = redis_client
         self.tick_repo = tick_repo
+        self.spread_monitor = spread_monitor
         self._running = False
         self._reconnect_delay = 1.0
         self._max_reconnect_delay = 60.0
@@ -115,6 +116,10 @@ class OANDAStreamClient:
                 "ticks",
                 json.dumps({"channel": "ticks", "data": tick}),
             )
+
+        # Feed spread monitor (keeps rolling median for spread spike gate)
+        if self.spread_monitor:
+            self.spread_monitor.update(instrument, bid, ask)
 
         # Write to DB (batched via repo)
         if self.tick_repo:

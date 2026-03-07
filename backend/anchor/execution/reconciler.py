@@ -15,11 +15,12 @@ STALE_ORDER_HOURS = 4
 
 
 class Reconciler:
-    def __init__(self, broker_client, position_repo, order_repo, system_event_repo):
-        self.broker      = broker_client
-        self.pos_repo    = position_repo
-        self.order_repo  = order_repo
-        self.event_repo  = system_event_repo
+    def __init__(self, broker_client, position_repo, order_repo, system_event_repo, daily_limiter=None):
+        self.broker         = broker_client
+        self.pos_repo       = position_repo
+        self.order_repo     = order_repo
+        self.event_repo     = system_event_repo
+        self.daily_limiter  = daily_limiter
 
     async def reconcile(self) -> dict:
         """
@@ -67,6 +68,11 @@ class Reconciler:
                     realized_pl=realized_pl,
                     exit_price=exit_price,
                 )
+
+                # Record realized P&L so daily loss limit gate stays current
+                if self.daily_limiter is not None:
+                    self.daily_limiter.record_trade(realized_pl)
+
                 result["missing_from_broker"].append(pos.oanda_trade_id)
                 result["actions_taken"].append(f"CLOSED_IN_DB:{pos.oanda_trade_id}")
                 logger.info(

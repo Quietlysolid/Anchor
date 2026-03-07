@@ -2,14 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from anchor.database.engine import get_session
+from anchor.database.engine import get_db
 from anchor.database.models import Position
 
 router = APIRouter()
 
 
 @router.get("/positions")
-async def get_open_positions(session: AsyncSession = Depends(get_session)):
+async def get_open_positions(session: AsyncSession = Depends(get_db)):
     q = select(Position).where(Position.status == "OPEN").order_by(desc(Position.opened_at))
     result = await session.execute(q)
     positions = result.scalars().all()
@@ -17,7 +17,7 @@ async def get_open_positions(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/positions/{position_id}")
-async def get_position(position_id: str, session: AsyncSession = Depends(get_session)):
+async def get_position(position_id: str, session: AsyncSession = Depends(get_db)):
     q = select(Position).where(Position.id == position_id)
     result = await session.execute(q)
     position = result.scalar_one_or_none()
@@ -29,7 +29,7 @@ async def get_position(position_id: str, session: AsyncSession = Depends(get_ses
 @router.get("/positions/history")
 async def get_position_history(
     limit: int = 100,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
 ):
     q = select(Position).where(Position.status == "CLOSED").order_by(desc(Position.closed_at)).limit(limit)
     result = await session.execute(q)

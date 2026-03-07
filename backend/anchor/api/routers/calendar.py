@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
-from anchor.database.engine import get_session
+from anchor.database.engine import get_db
 from anchor.database.models import EconomicEvent
 from anchor.utils.time_utils import utcnow
 
@@ -13,7 +13,7 @@ router = APIRouter()
 async def get_upcoming_events(
     hours_ahead: int = 48,
     impact:      str = "HIGH",
-    session:     AsyncSession = Depends(get_session),
+    session:     AsyncSession = Depends(get_db),
 ):
     from datetime import timedelta
     now = utcnow()

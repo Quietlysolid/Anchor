@@ -2,14 +2,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from anchor.database.engine import get_session
+from anchor.database.engine import get_db
 from anchor.database.models import RegimeHistory
 
 router = APIRouter()
 
 
 @router.get("/regime/current")
-async def get_current_regime(session: AsyncSession = Depends(get_session)):
+async def get_current_regime(session: AsyncSession = Depends(get_db)):
     from sqlalchemy import func
     # Get latest regime per instrument
     subq = (
@@ -42,7 +42,7 @@ async def get_current_regime(session: AsyncSession = Depends(get_session)):
 async def get_regime_history(
     instrument: str | None = None,
     limit: int = 200,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
 ):
     q = select(RegimeHistory).order_by(desc(RegimeHistory.time)).limit(limit)
     if instrument:

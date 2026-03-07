@@ -20,7 +20,7 @@ class RegimeRepository:
         result = await self.session.execute(
             select(RegimeHistory)
             .where(RegimeHistory.instrument == instrument)
-            .order_by(desc(RegimeHistory.detected_at))
+            .order_by(desc(RegimeHistory.time))
             .limit(1)
         )
         return result.scalar_one_or_none()
@@ -29,7 +29,7 @@ class RegimeRepository:
         result = await self.session.execute(
             select(RegimeHistory)
             .where(RegimeHistory.instrument == instrument)
-            .order_by(desc(RegimeHistory.detected_at))
+            .order_by(desc(RegimeHistory.time))
             .limit(limit)
         )
         rows = list(result.scalars().all())
@@ -42,7 +42,7 @@ class RegimeRepository:
         subq = (
             select(
                 RegimeHistory.instrument,
-                func.max(RegimeHistory.detected_at).label("max_at"),
+                func.max(RegimeHistory.time).label("max_at"),
             )
             .group_by(RegimeHistory.instrument)
             .subquery()
@@ -52,7 +52,7 @@ class RegimeRepository:
                 subq,
                 and_(
                     RegimeHistory.instrument == subq.c.instrument,
-                    RegimeHistory.detected_at == subq.c.max_at,
+                    RegimeHistory.time == subq.c.max_at,
                 ),
             )
         )

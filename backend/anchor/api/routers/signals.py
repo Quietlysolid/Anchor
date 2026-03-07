@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from anchor.database.engine import get_session
+from anchor.database.engine import get_db
 from anchor.database.models import Signal
 
 router = APIRouter()
@@ -12,7 +12,7 @@ router = APIRouter()
 async def get_latest_signals(
     instrument: str | None = None,
     limit: int = 50,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
 ):
     q = select(Signal).order_by(desc(Signal.created_at)).limit(limit)
     if instrument:
@@ -23,7 +23,7 @@ async def get_latest_signals(
 
 
 @router.get("/signals/active")
-async def get_active_signals(session: AsyncSession = Depends(get_session)):
+async def get_active_signals(session: AsyncSession = Depends(get_db)):
     from datetime import timedelta
     from anchor.utils.time_utils import utcnow
     cutoff = utcnow() - timedelta(hours=4)
@@ -38,7 +38,7 @@ async def get_active_signals(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/signals/{signal_id}")
-async def get_signal(signal_id: str, session: AsyncSession = Depends(get_session)):
+async def get_signal(signal_id: str, session: AsyncSession = Depends(get_db)):
     from fastapi import HTTPException
     q = select(Signal).where(Signal.id == signal_id)
     result = await session.execute(q)

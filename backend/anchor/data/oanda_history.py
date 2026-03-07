@@ -147,6 +147,7 @@ async def bootstrap_from_oanda(
             logger.info("oanda_bootstrap_start", instrument=instrument, timeframe=tf,
                         start=start.date(), end=end.date())
             df = await client.fetch_candles(instrument, tf, start, end)
+            logger.info("oanda_fetched", instrument=instrument, df_len=len(df))
             if df.empty:
                 logger.warning("oanda_no_data", instrument=instrument, timeframe=tf)
                 continue
@@ -155,46 +156,61 @@ async def bootstrap_from_oanda(
                 dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
                 return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
 
-            rows = [
-                MarketData(
-                    time=_to_naive_utc(ts),
-                    instrument=instrument,
-                    timeframe=tf,
-                    open=float(row.open),
-                    high=float(row.high),
-                    low=float(row.low),
-                    close=float(row.close),
-                    volume=int(row.volume) if row.volume else None,
-                    source="oanda",
-                )
-                for ts, row in df.iterrows()
-            ]
+            import csv, io, asyncpg
 
-            async with get_session() as session:
-                from sqlalchemy import text
-                for r in rows:
-                    await session.execute(text("""
-                        INSERT INTO market_data
-                            (time, instrument, timeframe, open, high, low, close, volume, spread_avg, source)
-                        VALUES
-                            (:time, :instrument, :timeframe, :open, :high, :low, :close, :volume, :spread_avg, :source)
-                        ON CONFLICT (time, instrument, timeframe) DO NOTHING
-                    """), {
-                        "time": r.time,
-                        "instrument": r.instrument,
-                        "timeframe": r.timeframe,
-                        "open": r.open,
-                        "high": r.high,
-                        "low": r.low,
-                        "close": r.close,
-                        "volume": r.volume,
-                        "spread_avg": getattr(r, "spread_avg", None),
-                        "source": getattr(r, "source", "oanda"),
-                    })
-                await session.commit()
-                grand_total += len(rows)
-                logger.info("oanda_inserted", instrument=instrument, timeframe=tf,
-                            rows=len(rows))
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            row_count = 0
+            for ts, row in df.iterrows():
+                t = _to_naive_utc(ts)
+                writer.writerow([
+                    t.strftime("%Y-%m-%d %H:%M:%S"),
+                    instrument, tf,
+                    float(row.open), float(row.high), float(row.low), float(row.close),
+                    int(row.volume) if row.volume else "",
+                    "",
+                    "oanda",
+                ])
+                row_count += 1
+
+            db_url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+            conn = await asyncpg.connect(db_url)
+            try:
+                # Use a temp table + INSERT ON CONFLICT DO NOTHING so re-runs are idempotent.
+                await conn.execute("""
+                    CREATE TEMP TABLE _md_stage (
+                        time        TIMESTAMPTZ,
+                        instrument  TEXT,
+                        timeframe   TEXT,
+                        open        NUMERIC,
+                        high        NUMERIC,
+                        low         NUMERIC,
+                        close       NUMERIC,
+                        volume      INTEGER,
+                        spread_avg  NUMERIC,
+                        source      TEXT
+                    ) ON COMMIT DROP
+                """)
+                await conn.copy_to_table(
+                    "_md_stage",
+                    source=io.BytesIO(buf.getvalue().encode()),
+                    columns=["time", "instrument", "timeframe", "open", "high", "low", "close", "volume", "spread_avg", "source"],
+                    format="csv",
+                )
+                result = await conn.execute("""
+                    INSERT INTO market_data
+                        (time, instrument, timeframe, open, high, low, close, volume, spread_avg, source)
+                    SELECT time, instrument, timeframe, open, high, low, close, volume, spread_avg, source
+                    FROM _md_stage
+                    ON CONFLICT (time, instrument, timeframe) DO NOTHING
+                """)
+                inserted = int(result.split()[-1]) if result else 0
+            finally:
+                await conn.close()
+
+            grand_total += row_count
+            logger.info("oanda_inserted", instrument=instrument, timeframe=tf,
+                        rows=row_count, inserted=inserted)
 
     logger.info("oanda_bootstrap_complete", total_rows=grand_total)
 

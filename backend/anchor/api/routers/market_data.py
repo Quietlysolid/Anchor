@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
-from anchor.database.engine import get_session
+from anchor.database.engine import get_db
 from anchor.database.models import MarketData
 
 router = APIRouter()
@@ -16,7 +16,7 @@ async def get_candles(
     instrument: str,
     timeframe:  str,
     limit:      int = 500,
-    session:    AsyncSession = Depends(get_session),
+    session:    AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import desc
     tf = _TF_MAP.get(timeframe.lower(), timeframe.upper())

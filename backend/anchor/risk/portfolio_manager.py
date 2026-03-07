@@ -12,13 +12,13 @@ Rules:
 """
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import structlog
 
 from anchor.config import settings
 from anchor.database.models import Position, Direction, PositionStatus
-from anchor.risk.correlation import CorrelationMatrix
+from anchor.risk.correlation import CorrelationManager
 
 logger = structlog.get_logger(__name__)
 
@@ -27,8 +27,8 @@ MAX_CURRENCY_EXPOSURE = 2  # max positions sharing a currency
 
 
 class PortfolioManager:
-    def __init__(self, correlation_matrix: CorrelationMatrix) -> None:
-        self._corr = correlation_matrix
+    def __init__(self, correlation_manager: CorrelationManager) -> None:
+        self._corr = correlation_manager
 
     def can_open(
         self,
@@ -52,13 +52,6 @@ class PortfolioManager:
 
         # Gate 3: currency exposure
         base, quote = instrument.split("_")
-        currencies_in_use = set()
-        for p in open_positions:
-            if p.status != PositionStatus.OPEN:
-                continue
-            b, q = p.instrument.split("_")
-            currencies_in_use.add(b)
-            currencies_in_use.add(q)
 
         base_count = sum(
             1 for p in open_positions
@@ -76,15 +69,10 @@ class PortfolioManager:
             return False, f"currency_overexposed ({quote}: {quote_count})"
 
         # Gate 4: correlation check
-        open_instrument_directions = [
-            (p.instrument, p.direction.value)
-            for p in open_positions
-            if p.status == PositionStatus.OPEN
-        ]
-        blocked, reason = self._corr.is_blocked(
-            instrument, direction, open_instrument_directions
+        allowed, corr_reason = self._corr.check_new_position(
+            instrument, direction, open_positions
         )
-        if blocked:
-            return False, reason
+        if not allowed:
+            return False, corr_reason or "correlated_position"
 
         return True, "ok"
