@@ -172,28 +172,29 @@ async def bootstrap_from_oanda(
 
             async with get_session() as session:
                 from sqlalchemy import text
-                # Insert first row only to surface the real error
-                r = rows[0]
-                await session.execute(text("""
-                    INSERT INTO market_data
-                        (time, instrument, timeframe, open, high, low, close, volume, spread_avg, source)
-                    VALUES
-                        (:time, :instrument, :timeframe, :open, :high, :low, :close, :volume, :spread_avg, :source)
-                """), {
-                    "time": r.time,
-                    "instrument": r.instrument,
-                    "timeframe": r.timeframe,
-                    "open": r.open,
-                    "high": r.high,
-                    "low": r.low,
-                    "close": r.close,
-                    "volume": r.volume,
-                    "spread_avg": getattr(r, "spread_avg", None),
-                    "source": getattr(r, "source", "oanda"),
-                })
+                for r in rows:
+                    await session.execute(text("""
+                        INSERT INTO market_data
+                            (time, instrument, timeframe, open, high, low, close, volume, spread_avg, source)
+                        VALUES
+                            (:time, :instrument, :timeframe, :open, :high, :low, :close, :volume, :spread_avg, :source)
+                        ON CONFLICT (time, instrument, timeframe) DO NOTHING
+                    """), {
+                        "time": r.time,
+                        "instrument": r.instrument,
+                        "timeframe": r.timeframe,
+                        "open": r.open,
+                        "high": r.high,
+                        "low": r.low,
+                        "close": r.close,
+                        "volume": r.volume,
+                        "spread_avg": getattr(r, "spread_avg", None),
+                        "source": getattr(r, "source", "oanda"),
+                    })
                 await session.commit()
-                logger.info("oanda_inserted", instrument=instrument, timeframe=tf, rows=1)
-                grand_total += 1
+                grand_total += len(rows)
+                logger.info("oanda_inserted", instrument=instrument, timeframe=tf,
+                            rows=len(rows))
 
     logger.info("oanda_bootstrap_complete", total_rows=grand_total)
 
