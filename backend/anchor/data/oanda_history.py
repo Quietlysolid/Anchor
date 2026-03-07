@@ -151,9 +151,13 @@ async def bootstrap_from_oanda(
                 logger.warning("oanda_no_data", instrument=instrument, timeframe=tf)
                 continue
 
+            def _to_naive_utc(ts):
+                dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+                return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
             rows = [
                 MarketData(
-                    time=ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts,
+                    time=_to_naive_utc(ts),
                     instrument=instrument,
                     timeframe=tf,
                     open=float(row.open),
@@ -169,7 +173,10 @@ async def bootstrap_from_oanda(
             async with get_session() as session:
                 repo = MarketDataRepository(session)
                 existing = await repo.get_candles(instrument, tf, start, end, limit=100000)
-                existing_times = {r.time for r in existing}
+                existing_times = {
+                    r.time.replace(tzinfo=None) if hasattr(r.time, "tzinfo") and r.time.tzinfo else r.time
+                    for r in existing
+                }
                 new_rows = [r for r in rows if r.time not in existing_times]
                 if new_rows:
                     await repo.bulk_insert_candles(new_rows)
