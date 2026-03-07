@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -41,6 +43,7 @@ async def close_db() -> None:
         engine = None
 
 
+@asynccontextmanager
 async def get_session() -> AsyncSession:
     if AsyncSessionFactory is None:
         raise RuntimeError("Database not initialized")
