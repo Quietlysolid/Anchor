@@ -119,5 +119,97 @@ async def seed_history(
             logger.info("seeded", instrument=instrument, timeframe=tf, rows=len(df))
 
 
+async def bootstrap_from_oanda(
+    start: datetime,
+    end: datetime,
+    retrain: bool = True,
+) -> None:
+    """Seed DB with OANDA history then optionally retrain ML models.
+
+    Usage (inside engine container):
+        python -m anchor.data.oanda_history
+        python -m anchor.data.oanda_history --start 2024-01-01 --no-retrain
+    """
+    from anchor.database.engine import init_db, get_session
+    from anchor.database.models import MarketData
+    from anchor.database.repositories.market_data import MarketDataRepository
+
+    await init_db()
+
+    client = OANDAHistoryClient()
+    instruments = settings.instruments
+    timeframes = ["H1"]
+
+    grand_total = 0
+
+    for instrument in instruments:
+        for tf in timeframes:
+            logger.info("oanda_bootstrap_start", instrument=instrument, timeframe=tf,
+                        start=start.date(), end=end.date())
+            df = await client.fetch_candles(instrument, tf, start, end)
+            if df.empty:
+                logger.warning("oanda_no_data", instrument=instrument, timeframe=tf)
+                continue
+
+            rows = [
+                MarketData(
+                    time=ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts,
+                    instrument=instrument,
+                    timeframe=tf,
+                    open=float(row.open),
+                    high=float(row.high),
+                    low=float(row.low),
+                    close=float(row.close),
+                    volume=int(row.volume) if row.volume else None,
+                    source="oanda",
+                )
+                for ts, row in df.iterrows()
+            ]
+
+            async with get_session() as session:
+                repo = MarketDataRepository(session)
+                existing = await repo.get_candles(instrument, tf, start, end, limit=100000)
+                existing_times = {r.time for r in existing}
+                new_rows = [r for r in rows if r.time not in existing_times]
+                if new_rows:
+                    await repo.bulk_insert_candles(new_rows)
+                    await session.commit()
+                    grand_total += len(new_rows)
+                    logger.info("oanda_inserted", instrument=instrument, timeframe=tf,
+                                rows=len(new_rows))
+                else:
+                    logger.info("oanda_no_new_rows", instrument=instrument, timeframe=tf)
+
+    logger.info("oanda_bootstrap_complete", total_rows=grand_total)
+
+    if retrain and grand_total > 0:
+        logger.info("bootstrap_triggering_retraining")
+        from anchor.ml.retraining import run_retraining
+        results = await run_retraining()
+        for instr, result in results.items():
+            logger.info("retraining_result", instrument=instr, **result)
+
+
 if __name__ == "__main__":
-    asyncio.run(seed_history(None))  # wire up repo when running standalone
+    import argparse
+    from datetime import timezone
+
+    parser = argparse.ArgumentParser(description="Bootstrap OANDA history into DB")
+    parser.add_argument(
+        "--start",
+        default=(datetime.now(timezone.utc) - timedelta(days=365 * 2)).strftime("%Y-%m-%d"),
+        help="Start date YYYY-MM-DD (default: 2 years ago)",
+    )
+    parser.add_argument(
+        "--end",
+        default=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        help="End date YYYY-MM-DD (default: today)",
+    )
+    parser.add_argument("--no-retrain", action="store_true", help="Skip ML retraining")
+    args = parser.parse_args()
+
+    from datetime import timezone
+    start_dt = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    end_dt   = datetime.strptime(args.end,   "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+    asyncio.run(bootstrap_from_oanda(start_dt, end_dt, retrain=not args.no_retrain))
