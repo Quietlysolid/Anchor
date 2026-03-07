@@ -36,7 +36,9 @@ class MarketDataRepository:
             }
             for c in candles
         ]
-        stmt = pg_insert(MarketData).values(rows).on_conflict_do_nothing()
+        stmt = pg_insert(MarketData).values(rows).on_conflict_do_nothing(
+            index_elements=["time", "instrument", "timeframe"]
+        )
         await self.session.execute(stmt)
         await self.session.flush()
         return len(candles)
