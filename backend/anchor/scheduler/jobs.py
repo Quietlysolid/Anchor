@@ -318,12 +318,21 @@ def run_signal_scan(self):
             await correlation_mgr.update(daily_closes)
             open_positions = await position_repo.get_open()
 
+        # Load HMM regime detector from disk (written by run_regime_detection task).
+        # Fails gracefully — engine skips the HMM gate when detector is not ready.
+        from anchor.regime.hmm_detector import HMMRegimeDetector
+        from pathlib import Path as _HMMPath
+        _hmm_detector = HMMRegimeDetector()
+        _hmm_detector.load(_HMMPath("/app/models/hmm_latest.pkl"))
+
         # Shared engine instance; ML classifier + OOD detector swapped per-instrument below
         engine = ConfluenceEngine(
             news_filter=news_filter,
             spread_monitor=_spread_monitor,
             feature_engineer=feature_engineer,
             ood_detector=None,
+            hmm_detector=_hmm_detector,
+            redis_client=redis_client,  # enables OANDA sentiment + VIX lookups
         )
 
         # Instruments with no confluence-only edge (backtest Sharpe < 0, WR < 30%).
@@ -479,6 +488,7 @@ def run_signal_scan(self):
                         stop_loss=stop_loss,
                         kelly_fraction=float(result.ml_confidence) if result.ml_confidence else None,
                         drawdown_scale=drawdown_monitor.scale_factor,
+                        vix_scale=result.vix_multiplier,  # VIX-based size reduction
                     )
 
                     # 7. Submit limit order (GTD — expires in 4 hours if not filled)
@@ -622,6 +632,9 @@ def run_regime_detection(self):
 
                     if not detector.is_ready:
                         detector.fit(df)
+                        # Persist so run_signal_scan can load it
+                        from pathlib import Path as _HMMSavePath
+                        detector.save(_HMMSavePath("/app/models/hmm_latest.pkl"))
 
                     state, confidence = detector.predict_current(df)
                     regime_snapshot[instrument] = {"state": state, "confidence": round(confidence, 4)}
@@ -713,6 +726,77 @@ def close_stale_trades(self):
     except Exception as exc:
         logger.error("close_stale_trades_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.update_vix", bind=True, max_retries=3)
+def update_vix(self):
+    """Fetch latest VIX from FRED and cache in Redis.
+
+    Key: vix_latest  TTL: 4 hours.
+    VIX is daily — fetching every 4 h ensures the morning's value is available
+    throughout the London/NY session. Fail-open: returns 1.0 multiplier on miss.
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.signals.vix_filter import fetch_and_store
+        import redis.asyncio as aioredis
+
+        if not settings.fred_api_key:
+            logger.warning("fred_api_key_not_set_for_vix")
+            return
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            vix = await fetch_and_store(redis_client, settings.fred_api_key)
+            logger.info("vix_updated", vix=vix)
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("update_vix_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=3_600)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.update_oanda_sentiment", bind=True, max_retries=3)
+def update_oanda_sentiment(self):
+    """Fetch OANDA positionBook for all instruments and cache in Redis.
+
+    Key: oanda_sentiment:{instrument}  TTL: 5 minutes per instrument.
+    Run every 5 minutes during market hours so signal scan always has fresh
+    sentiment data. Fail-open: engine returns 0.5 (neutral) on cache miss.
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.signals.oanda_sentiment import fetch_and_store
+        import redis.asyncio as aioredis
+
+        if not settings.oanda_api_key:
+            logger.warning("oanda_api_key_not_set_for_sentiment")
+            return
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            for instrument in settings.instruments:
+                try:
+                    long_pct = await fetch_and_store(
+                        redis_client,
+                        instrument,
+                        settings.oanda_api_key,
+                        settings.oanda_base_url,
+                    )
+                    logger.debug("oanda_sentiment_updated", instrument=instrument, long_pct=long_pct)
+                except Exception as exc:
+                    logger.warning("oanda_sentiment_instrument_failed", instrument=instrument, error=str(exc))
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("update_oanda_sentiment_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=60)
 
 
 @celery_app.task(name="anchor.scheduler.jobs.retrain_models", bind=True, max_retries=1)

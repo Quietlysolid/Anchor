@@ -31,6 +31,15 @@ def upgrade() -> None:
         sa.Column("source", sa.String(20), nullable=False, server_default="oanda"),
     )
     op.create_index("ix_market_data_instrument_tf_time", "market_data", ["instrument", "timeframe", "time"])
+    # UNIQUE constraint required for ON CONFLICT (time, instrument, timeframe) DO NOTHING.
+    # TimescaleDB requires the partition key (time) to be part of any unique index,
+    # which it is here — so this works on both plain Postgres and TimescaleDB.
+    op.create_index(
+        "uq_market_data_time_instrument_tf",
+        "market_data",
+        ["time", "instrument", "timeframe"],
+        unique=True,
+    )
 
     # TimescaleDB hypertable — only runs if extension is available
     try:

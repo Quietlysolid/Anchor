@@ -33,7 +33,7 @@ from hmmlearn import hmm
 
 logger = structlog.get_logger(__name__)
 
-DEFAULT_MODEL_PATH = Path("mlflow_artifacts/hmm_latest.pkl")
+DEFAULT_MODEL_PATH = Path("/app/models/hmm_latest.pkl")
 
 
 class HMMRegimeDetector:

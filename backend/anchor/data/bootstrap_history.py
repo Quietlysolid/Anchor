@@ -53,9 +53,15 @@ async def _import_instrument(
             )
 
             if not candles_df.empty:
+                def _to_utc(ts) -> datetime:
+                    dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
+
                 rows = [
                     MarketData(
-                        time=row.time.to_pydatetime() if hasattr(row.time, "to_pydatetime") else row.time,
+                        time=_to_utc(row.time),
                         instrument=instrument,
                         timeframe=_TIMEFRAME,
                         open=float(row.open),
@@ -71,17 +77,12 @@ async def _import_instrument(
 
                 async with get_session() as session:
                     repo = MarketDataRepository(session)
-                    # Skip rows that already exist (re-run safe)
-                    existing = await repo.get_candles(
-                        instrument, _TIMEFRAME, current, chunk_end, limit=50000
-                    )
-                    existing_times = {r.time for r in existing}
-                    new_rows = [r for r in rows if r.time not in existing_times]
-                    if new_rows:
-                        await repo.bulk_insert_candles(new_rows)
-                        await session.commit()
-                        total += len(new_rows)
-                        logger.info("bootstrap_inserted", instrument=instrument, rows=len(new_rows))
+                    # bulk_insert_candles uses ON CONFLICT DO NOTHING — idempotent,
+                    # no manual dedup needed (which had a tz-aware/naive mismatch risk).
+                    inserted = await repo.bulk_insert_candles(rows)
+                    await session.commit()
+                    total += inserted
+                    logger.info("bootstrap_inserted", instrument=instrument, rows=inserted)
 
             current = chunk_end + timedelta(seconds=1)
 

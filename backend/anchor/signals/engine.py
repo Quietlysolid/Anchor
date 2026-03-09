@@ -31,6 +31,8 @@ from anchor.signals.adx_filter        import compute_adx_score
 from anchor.signals.support_resistance import compute_sr_score
 from anchor.signals.multi_timeframe   import check_mtf_alignment
 from anchor.signals.currency_strength import compute_csi, csi_signal_score
+from anchor.signals.oanda_sentiment   import sentiment_signal_score, get_cached_score as get_sentiment_score
+from anchor.signals.vix_filter        import get_cached_multiplier as get_vix_multiplier, get_cached_vix
 from anchor.signals.session_filter    import check_session
 from anchor.signals.news_filter       import NewsFilter
 from anchor.utils.time_utils          import utcnow, get_session_name
@@ -63,22 +65,25 @@ class SignalResult:
     session:          str | None     = None
     suppressed:       bool           = True
     suppression_reason: str | None   = None
+    vix_multiplier:   float          = 1.0
     created_at:       datetime       = field(default_factory=utcnow)
     metadata:         dict           = field(default_factory=dict)
 
 
 # Signal component weights (must sum to 1.0)
-# CSI weight reduced from 0.10 → 0.05: with only 5 instruments in the DB the
-# currency strength index is too sparse (USD gets 4 pairs, others get 1-2) to
-# produce a reliable signal. The freed weight goes to S/R (direction-aware,
-# reliable at any sample size).
+# CSI dropped to 0.0: too sparse with only 5 instruments (USD gets 4 pairs,
+# others get 1-2), confirmed unreliable in practice.
+# Freed 0.05 weight goes to OANDA retail sentiment (contrarian, free from
+# broker, proven edge at extremes).
+# VIX is NOT a confluence component — it is a position-size multiplier only,
+# applied by the position sizer after signal generation.
 WEIGHTS = {
-    "rsi_divergence": 0.25,
-    "bb_kc_squeeze":  0.20,
-    "adx_filter":     0.15,
-    "sr_strength":    0.25,
-    "mtf_agreement":  0.10,
-    "csi_strength":   0.05,
+    "rsi_divergence":    0.25,
+    "bb_kc_squeeze":     0.20,
+    "adx_filter":        0.15,
+    "sr_strength":       0.25,
+    "mtf_agreement":     0.10,
+    "oanda_sentiment":   0.05,
 }
 
 
@@ -93,6 +98,7 @@ class ConfluenceEngine:
         feature_engineer: "FeatureEngineer" | None = None,
         hmm_detector:     "HMMRegimeDetector" | None = None,
         data_cache:       dict[str, dict[str, pd.DataFrame]] | None = None,
+        redis_client=None,
     ):
         self.news_filter      = news_filter or NewsFilter()
         self.spread_monitor   = spread_monitor
@@ -102,6 +108,7 @@ class ConfluenceEngine:
         self.feature_engineer = feature_engineer
         self.hmm_detector     = hmm_detector
         self.data_cache       = data_cache or {}
+        self.redis_client     = redis_client  # optional; used for sentiment + VIX
 
     async def evaluate(
         self,
@@ -228,9 +235,27 @@ class ConfluenceEngine:
         adx_score, adx_regime   = compute_adx_score(df_1h, rsi_confirmed=rsi_confirmed)
         sr_score, sr_level      = compute_sr_score(df_1h, direction=direction)
 
-        # CSI across all available pairs
+        # CSI is retained for metadata/logging only (weight = 0.0)
         csi = compute_csi(self.data_cache.get("H1", {}))
-        csi_score = csi_signal_score(instrument, csi, direction)
+
+        # ── OANDA retail sentiment (contrarian, free from broker) ─────────
+        # Reads from Redis cache (populated by scheduler every 5 min).
+        # Returns 0.5 (neutral) when Redis is unavailable.
+        if self.redis_client is not None:
+            raw_sentiment = await get_sentiment_score(self.redis_client, instrument)
+        else:
+            raw_sentiment = None
+        oanda_sentiment_score = sentiment_signal_score(raw_sentiment, direction)
+
+        # ── VIX position-size multiplier ──────────────────────────────────
+        # Reads from Redis cache (populated by scheduler every 4 h via FRED).
+        # Returns 1.0 (no reduction) when Redis or FRED is unavailable.
+        if self.redis_client is not None:
+            vix_mult = await get_vix_multiplier(self.redis_client)
+            vix_val  = await get_cached_vix(self.redis_client)
+        else:
+            vix_mult = 1.0
+            vix_val  = None
 
         # Weighted confluence.
         # When RSI divergence is absent (trend-following path), rsi_score = 0.0
@@ -243,20 +268,20 @@ class ConfluenceEngine:
             non_rsi_total = 1.0 - WEIGHTS["rsi_divergence"]  # = 0.75
             scale = 1.0 / non_rsi_total  # = 1/0.75 ≈ 1.333
             confluence = scale * (
-                WEIGHTS["bb_kc_squeeze"] * bb_kc_score
-                + WEIGHTS["adx_filter"]  * adx_score
-                + WEIGHTS["sr_strength"] * sr_score
+                WEIGHTS["bb_kc_squeeze"]  * bb_kc_score
+                + WEIGHTS["adx_filter"]   * adx_score
+                + WEIGHTS["sr_strength"]  * sr_score
                 + WEIGHTS["mtf_agreement"] * mtf_score
-                + WEIGHTS["csi_strength"] * csi_score
+                + WEIGHTS["oanda_sentiment"] * oanda_sentiment_score
             )
         else:
             confluence = (
-                WEIGHTS["rsi_divergence"] * rsi_score
-                + WEIGHTS["bb_kc_squeeze"]  * bb_kc_score
-                + WEIGHTS["adx_filter"]     * adx_score
-                + WEIGHTS["sr_strength"]    * sr_score
-                + WEIGHTS["mtf_agreement"]  * mtf_score
-                + WEIGHTS["csi_strength"]   * csi_score
+                WEIGHTS["rsi_divergence"]    * rsi_score
+                + WEIGHTS["bb_kc_squeeze"]   * bb_kc_score
+                + WEIGHTS["adx_filter"]      * adx_score
+                + WEIGHTS["sr_strength"]     * sr_score
+                + WEIGHTS["mtf_agreement"]   * mtf_score
+                + WEIGHTS["oanda_sentiment"] * oanda_sentiment_score
             )
 
         result.rsi_score   = round(rsi_score, 4)
@@ -264,13 +289,18 @@ class ConfluenceEngine:
         result.adx_score   = round(adx_score, 4)
         result.sr_score    = round(sr_score, 4)
         result.mtf_score   = round(mtf_score, 4)
-        result.csi_score   = round(csi_score, 4)
+        result.csi_score   = round(oanda_sentiment_score, 4)  # field reused for sentiment
         result.regime_state = adx_regime
+        result.vix_multiplier = round(vix_mult, 4)
         result.metadata.update({
-            "sr_level":      sr_level,
-            "squeeze_on":    squeeze_on,
-            "csi":           csi,
-            "rsi_confirmed": rsi_confirmed,
+            "sr_level":             sr_level,
+            "squeeze_on":           squeeze_on,
+            "csi":                  csi,          # kept for diagnostics
+            "rsi_confirmed":        rsi_confirmed,
+            "oanda_sentiment_raw":  raw_sentiment,
+            "oanda_sentiment_score": oanda_sentiment_score,
+            "vix":                  vix_val,
+            "vix_multiplier":       vix_mult,
         })
 
         # ── Step 6: ML confidence overlay ────────────────────────────────
@@ -325,6 +355,9 @@ class ConfluenceEngine:
             direction=direction,
             score=result.confluence_score,
             session=result.session,
+            vix=vix_val,
+            vix_multiplier=vix_mult,
+            sentiment_raw=raw_sentiment,
         )
         return result
 

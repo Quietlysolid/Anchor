@@ -48,6 +48,11 @@ class EventSeverity(str, enum.Enum):
 
 class MarketData(Base):
     __tablename__ = "market_data"
+    __table_args__ = (
+        # Required so ON CONFLICT (time, instrument, timeframe) DO NOTHING works.
+        # TimescaleDB requires the partition key (time) to be part of the unique index.
+        UniqueConstraint("time", "instrument", "timeframe", name="uq_market_data_time_instrument_tf"),
+    )
 
     id:         Mapped[int]      = mapped_column(BigInteger, primary_key=True)
     time:       Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

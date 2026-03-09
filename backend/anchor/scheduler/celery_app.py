@@ -30,6 +30,8 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.run_regime_detection": {"queue": "default"},
         "anchor.scheduler.jobs.import_candles": {"queue": "default"},
         "anchor.scheduler.jobs.close_stale_trades": {"queue": "default"},
+        "anchor.scheduler.jobs.update_vix": {"queue": "default"},
+        "anchor.scheduler.jobs.update_oanda_sentiment": {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -72,6 +74,14 @@ celery_app.conf.update(
         "close-stale-trades-every-hour": {
             "task": "anchor.scheduler.jobs.close_stale_trades",
             "schedule": 3_600.0,  # hourly check — 12h threshold means no urgency
+        },
+        "update-vix-every-4-hours": {
+            "task": "anchor.scheduler.jobs.update_vix",
+            "schedule": 14_400.0,  # 4 hours — VIX is daily, refresh 6x/day is plenty
+        },
+        "update-oanda-sentiment-every-5-min": {
+            "task": "anchor.scheduler.jobs.update_oanda_sentiment",
+            "schedule": 300.0,  # 5 min — aligns with signal scan cadence
         },
     },
     worker_prefetch_multiplier=1,

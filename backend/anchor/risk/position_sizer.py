@@ -72,12 +72,17 @@ class PositionSizer:
         kelly_fraction:    float | None = None,
         correlation_scale: float = 1.0,
         drawdown_scale:    float = 1.0,
+        vix_scale:         float = 1.0,
         current_atr:       float | None = None,
         reference_atr:     float | None = None,
     ) -> int:
         """
         Returns position size in units (OANDA native).
         Always a multiple of MICRO_LOT (1,000 units).
+
+        vix_scale: VIX position-size multiplier from vix_filter.get_cached_multiplier()
+            [0.25, 1.0] — reduces size when VIX is elevated (>20) to protect capital
+            in high-fear regimes where FX spreads widen and edge degrades.
 
         current_atr / reference_atr: when both are provided, applies
         volatility-regime normalization = reference_atr / current_atr,
@@ -109,8 +114,9 @@ class PositionSizer:
             if current_atr > 1e-10 and reference_atr > 1e-10:
                 vol_scale = max(0.5, min(1.5, reference_atr / current_atr))
 
-        # Scale factors (correlation, drawdown, volatility regime)
-        units_scaled = units_raw * correlation_scale * drawdown_scale * vol_scale
+        # Scale factors (correlation, drawdown, VIX, volatility regime)
+        vix_scale = max(0.25, min(1.0, vix_scale))  # clamp to safe range
+        units_scaled = units_raw * correlation_scale * drawdown_scale * vix_scale * vol_scale
 
         # Snap to micro-lot boundary
         units = int(units_scaled // MICRO_LOT) * MICRO_LOT
