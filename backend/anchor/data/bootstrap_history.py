@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 import structlog
 
 from anchor.config import settings
-from anchor.database.engine import get_session
+from anchor.database.engine import init_db, get_session
 from anchor.database.models import MarketData
 from anchor.database.repositories.market_data import MarketDataRepository
 from anchor.data.dukascopy import DukascopyDownloader
@@ -90,6 +90,7 @@ async def _import_instrument(
 
 
 async def main(start: datetime, end: datetime, retrain: bool) -> None:
+    await init_db()
     logger.info("bootstrap_start", instruments=settings.instruments, start=start.date(), end=end.date())
 
     grand_total = 0
