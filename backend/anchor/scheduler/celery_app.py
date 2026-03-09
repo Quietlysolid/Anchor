@@ -32,6 +32,7 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.close_stale_trades": {"queue": "default"},
         "anchor.scheduler.jobs.update_vix": {"queue": "default"},
         "anchor.scheduler.jobs.update_oanda_sentiment": {"queue": "default"},
+        "anchor.scheduler.jobs.startup_diagnostics": {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -83,7 +84,17 @@ celery_app.conf.update(
             "task": "anchor.scheduler.jobs.update_oanda_sentiment",
             "schedule": 300.0,  # 5 min — aligns with signal scan cadence
         },
+        "startup-diagnostics-daily": {
+            "task": "anchor.scheduler.jobs.startup_diagnostics",
+            "schedule": 86_400.0,  # runs once at startup then every 24h
+        },
     },
     worker_prefetch_multiplier=1,
     task_acks_late=True,
 )
+
+
+@celery_app.on_after_finalize.connect
+def _schedule_startup_diagnostics(sender, **kwargs):
+    """Fire startup_diagnostics immediately when the worker process is ready."""
+    sender.send_task("anchor.scheduler.jobs.startup_diagnostics")

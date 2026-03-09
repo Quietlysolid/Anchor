@@ -6,7 +6,14 @@ Spread monitor. Suppresses entries if:
      ensures the cost of entry does not eat an excessive fraction of the
      expected move. A 3-pip spread against a 10-pip ATR means 30% of your
      TP is gone before the trade starts.
+
+Cross-process note: the in-memory `_current` dict is only populated when the
+OANDA stream runs in the same process (FastAPI). The Celery worker is a separate
+process. To bridge the gap, `check()` reads from Redis key `spread:{instrument}`
+(written by the stream with a 30s TTL) when in-memory data is absent.
+Falls back to pass-through (returns True) if neither source has data.
 """
+import json
 import statistics
 from collections import defaultdict, deque
 
@@ -28,11 +35,34 @@ class SpreadMonitor:
     def __init__(self):
         self._history: dict[str, deque] = defaultdict(lambda: deque(maxlen=SPREAD_HISTORY_SIZE))
         self._current: dict[str, float] = {}
+        self._redis = None  # optional; set via set_redis()
+
+    def set_redis(self, redis_client) -> None:
+        """Wire a Redis client so the Celery worker can read cross-process spreads."""
+        self._redis = redis_client
 
     def update(self, instrument: str, bid: float, ask: float) -> None:
         spread = ask - bid
         self._current[instrument] = spread
         self._history[instrument].append(spread)
+
+    async def _get_current_spread(self, instrument: str) -> float | None:
+        """Return the live spread: in-memory first, then Redis fallback."""
+        if instrument in self._current:
+            return self._current[instrument]
+        if self._redis is not None:
+            try:
+                raw = await self._redis.get(f"spread:{instrument}")
+                if raw:
+                    data = json.loads(raw)
+                    spread = float(data["spread"])
+                    # Seed in-memory so rolling history builds over time
+                    self._current[instrument] = spread
+                    self._history[instrument].append(spread)
+                    return spread
+            except Exception:
+                pass
+        return None
 
     async def check(self, instrument: str, atr: float | None = None) -> tuple[bool, str | None]:
         """Returns (allowed: bool, reason: str | None).
@@ -41,7 +71,7 @@ class SpreadMonitor:
              spread / atr < _MAX_SPREAD_ATR_RATIO so the trade has enough
              room to breathe before the spread cost eats into the move.
         """
-        current_spread = self._current.get(instrument)
+        current_spread = await self._get_current_spread(instrument)
         if current_spread is None:
             return True, None
 

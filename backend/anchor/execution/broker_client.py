@@ -36,7 +36,7 @@ class BrokerClient:
 
     async def _run(self, endpoint):
         """Run a synchronous oandapyV20 request in a thread pool."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._executor,
             lambda: self._client.request(endpoint),

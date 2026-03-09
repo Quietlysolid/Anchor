@@ -121,6 +121,16 @@ class OANDAStreamClient:
         if self.spread_monitor:
             self.spread_monitor.update(instrument, bid, ask)
 
+        # Publish current spread to Redis so the Celery worker's SpreadMonitor
+        # can read it (worker is a separate process with no access to in-memory state)
+        if self.redis:
+            import json as _json
+            await self.redis.set(
+                f"spread:{instrument}",
+                _json.dumps({"bid": bid, "ask": ask, "spread": ask - bid}),
+                ex=30,  # 30s TTL — stale spread data is worse than no data
+            )
+
         # Write to DB (batched via repo)
         if self.tick_repo:
             await self.tick_repo.insert_tick(

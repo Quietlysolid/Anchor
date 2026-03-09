@@ -307,7 +307,7 @@ class ConfluenceEngine:
         if self.ml_classifier and self.feature_engineer:
             try:
                 features = self.feature_engineer.build(instrument, df_1h, df_4h)
-                ml_conf, ml_dir = await asyncio.get_event_loop().run_in_executor(
+                ml_conf, ml_dir = await asyncio.get_running_loop().run_in_executor(
                     None, self.ml_classifier.predict, features
                 )
                 result.ml_confidence = round(ml_conf, 4)

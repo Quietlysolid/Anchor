@@ -271,11 +271,26 @@ def run_signal_scan(self):
         account = await broker.get_account_summary()
         balance = float(account.get("balance", 0))
         equity  = float(account.get("NAV", balance))
+
+        # Bootstrap peak equity from DB on the first scan after a worker restart
+        # so the drawdown circuit breaker doesn't silently reset to the current equity.
+        if drawdown_monitor._peak_equity is None:
+            async with _db_engine.AsyncSessionFactory() as _bootstrap_session:
+                await drawdown_monitor.bootstrap_peak_equity(_bootstrap_session)
+
         drawdown_monitor.update(equity)
 
         redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
 
+        # Wire Redis into spread monitor so it can read cross-process spread data
+        # (stream runs in the FastAPI process; worker has a separate in-memory instance)
+        spread_monitor.set_redis(redis_client)
+
         def to_df(rows):
+            if not rows:
+                df = pd.DataFrame(columns=["open", "high", "low", "close"])
+                df.index.name = "time"
+                return df
             return pd.DataFrame([{
                 "time": r.time, "open": float(r.open), "high": float(r.high),
                 "low": float(r.low), "close": float(r.close),
@@ -309,7 +324,7 @@ def run_signal_scan(self):
 
             daily_closes = {}
             for inst in settings.instruments:
-                rows = await market_repo.get_latest_n_candles(inst, "D", 50)
+                rows = await market_repo.get_latest_n_candles(inst, "D", 250)
                 if len(rows) >= 2:
                     daily_closes[inst] = pd.Series(
                         [float(r.close) for r in rows],
@@ -322,29 +337,38 @@ def run_signal_scan(self):
         # Fails gracefully — engine skips the HMM gate when detector is not ready.
         from anchor.regime.hmm_detector import HMMRegimeDetector
         from pathlib import Path as _HMMPath
-        _hmm_detector = HMMRegimeDetector()
-        _hmm_detector.load(_HMMPath("/app/models/hmm_latest.pkl"))
 
-        # Shared engine instance; ML classifier + OOD detector swapped per-instrument below
+        # Load per-instrument HMM models (written by run_regime_detection).
+        # Falls back to the shared "hmm_latest.pkl" if the per-instrument file is missing,
+        # and to no HMM at all (engine skips the gate) if neither file exists.
+        _hmm_detectors: dict = {}
+        for _inst in settings.instruments:
+            _per_inst_path  = _HMMPath("/app/models") / f"hmm_{_inst}.pkl"
+            _fallback_path  = _HMMPath("/app/models/hmm_latest.pkl")
+            _det = HMMRegimeDetector()
+            if _det.load(_per_inst_path):
+                _hmm_detectors[_inst] = _det
+            else:
+                _det2 = HMMRegimeDetector()
+                if _det2.load(_fallback_path):
+                    _hmm_detectors[_inst] = _det2
+                    logger.debug("hmm_using_fallback_model", instrument=_inst)
+                else:
+                    logger.warning("hmm_model_missing", instrument=_inst)
+
+        # Shared engine instance; ML/HMM/OOD detectors swapped per-instrument below
         engine = ConfluenceEngine(
             news_filter=news_filter,
             spread_monitor=_spread_monitor,
             feature_engineer=feature_engineer,
             ood_detector=None,
-            hmm_detector=_hmm_detector,
+            hmm_detector=None,  # set per-instrument in the loop below
             redis_client=redis_client,  # enables OANDA sentiment + VIX lookups
         )
-
-        # Instruments with no confluence-only edge (backtest Sharpe < 0, WR < 30%).
-        # Re-enable once XGB models are trained (~60 days of live data).
-        _NO_TRADE_WITHOUT_ML = {"AUD_USD", "GBP_USD"}
 
         # Evaluate + persist each instrument in its own isolated session
         # so one DB error doesn't poison the others
         for instrument in settings.instruments:
-            if instrument in _NO_TRADE_WITHOUT_ML and instrument not in _classifiers:
-                logger.debug("signal_scan_skipped_no_ml", instrument=instrument)
-                continue
             try:
                 async with _db_engine.AsyncSessionFactory() as session:
                     market_repo   = MarketDataRepository(session)
@@ -353,7 +377,7 @@ def run_signal_scan(self):
 
                     h1 = await market_repo.get_latest_n_candles(instrument, "H1", 200)
                     h4 = await market_repo.get_latest_n_candles(instrument, "H4", 100)
-                    d1 = await market_repo.get_latest_n_candles(instrument, "D", 50)
+                    d1 = await market_repo.get_latest_n_candles(instrument, "D", 250)  # 200+ needed for SMA(200) MTF check
 
                     if len(h1) < 50:
                         logger.warning("signal_scan_insufficient_data", instrument=instrument)
@@ -363,8 +387,9 @@ def run_signal_scan(self):
                     engine.update_cache(instrument, "H4", to_df(h4))
                     engine.update_cache(instrument, "D",  to_df(d1))
 
-                    # Inject instrument-specific classifier (None → engine falls back gracefully)
-                    engine.ml_classifier = _classifiers.get(instrument)
+                    # Inject instrument-specific classifier and HMM (None → engine falls back gracefully)
+                    engine.hmm_detector   = _hmm_detectors.get(instrument)
+                    engine.ml_classifier  = _classifiers.get(instrument)
                     if not engine.ml_classifier:
                         engine.feature_engineer = None
                         engine.ood_detector = None
@@ -373,6 +398,28 @@ def run_signal_scan(self):
                         engine.ood_detector = _ood_detectors.get(instrument)
 
                     result = await engine.evaluate(instrument, dt=now)
+
+                    # Log component breakdown for every in-session evaluation so we
+                    # can diagnose exactly which gate is blocking each instrument.
+                    # Off-session suppression (no session name set) stays at DEBUG.
+                    _in_session = result.session in ("LONDON", "OVERLAP")
+                    (logger.info if _in_session else logger.debug)(
+                        "signal_evaluated",
+                        instrument=instrument,
+                        suppressed=result.suppressed,
+                        reason=result.suppression_reason,
+                        confluence=result.confluence_score,
+                        rsi=result.rsi_score,
+                        bb_kc=result.bb_kc_score,
+                        adx=result.adx_score,
+                        sr=result.sr_score,
+                        mtf=result.mtf_score,
+                        sentiment=result.csi_score,
+                        ml_confidence=result.ml_confidence,
+                        regime=result.regime_state,
+                        session=result.session,
+                        vix_mult=result.vix_multiplier,
+                    )
 
                     # Persist every evaluation for audit trail
                     row = SignalModel(
@@ -557,7 +604,7 @@ def import_candles(self):
         lookback = {
             "H1": timedelta(days=9),   # ~200 H1 bars
             "H4": timedelta(days=17),  # ~100 H4 bars
-            "D":  timedelta(days=65),  # ~60 D bars
+            "D":  timedelta(days=270), # ~250 D bars (need 200+ for SMA(200) in MTF check)
         }
 
         for instrument in settings.instruments:
@@ -613,8 +660,8 @@ def run_regime_detection(self):
 
         await init_db()
         import anchor.database.engine as _db_engine
+        from pathlib import Path as _HMMPath
         redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
-        detector = HMMRegimeDetector()
         regime_snapshot = {}
 
         async with _db_engine.AsyncSessionFactory() as session:
@@ -623,6 +670,7 @@ def run_regime_detection(self):
                 try:
                     rows = await repo.get_latest_n_candles(instrument, "D", 300)
                     if len(rows) < 60:
+                        logger.warning("regime_insufficient_data", instrument=instrument, rows=len(rows))
                         continue
 
                     df = pd.DataFrame([{
@@ -630,16 +678,22 @@ def run_regime_detection(self):
                         "low": float(r.low), "close": float(r.close),
                     } for r in rows]).set_index("time")
 
-                    if not detector.is_ready:
-                        detector.fit(df)
-                        # Persist so run_signal_scan can load it
-                        from pathlib import Path as _HMMSavePath
-                        detector.save(_HMMSavePath("/app/models/hmm_latest.pkl"))
+                    # Each instrument gets its own HMM — fit fresh each time so the
+                    # model reflects this instrument's specific volatility dynamics.
+                    detector = HMMRegimeDetector()
+                    detector.fit(df)
+
+                    # Save per-instrument model + a shared "latest" for backwards compat
+                    _model_dir = _HMMPath("/app/models")
+                    _model_dir.mkdir(parents=True, exist_ok=True)
+                    detector.save(_model_dir / f"hmm_{instrument}.pkl")
+                    # Also overwrite the shared fallback so single-model consumers still work
+                    detector.save(_model_dir / "hmm_latest.pkl")
 
                     state, confidence = detector.predict_current(df)
                     regime_snapshot[instrument] = {"state": state, "confidence": round(confidence, 4)}
 
-                    logger.debug("regime_detected", instrument=instrument, state=state, confidence=confidence)
+                    logger.info("regime_detected", instrument=instrument, state=state, confidence=round(confidence, 4))
 
                 except Exception as exc:
                     logger.error("regime_detection_failed", instrument=instrument, error=str(exc))
@@ -797,6 +851,97 @@ def update_oanda_sentiment(self):
     except Exception as exc:
         logger.error("update_oanda_sentiment_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=60)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.startup_diagnostics", bind=True, max_retries=1)
+def startup_diagnostics(self):
+    """Log system readiness at startup: candle counts, model files, session, account state.
+
+    Runs once on boot (via beat schedule) so you can immediately see what's missing
+    before the first signal scan fires.
+    """
+    async def _inner():
+        from pathlib import Path
+        from anchor.config import settings
+        from anchor.database.engine import init_db
+        from anchor.execution.broker_client import BrokerClient
+        from anchor.utils.time_utils import utcnow, get_session_name
+        from anchor.signals.session_filter import check_session
+
+        await init_db()
+        import anchor.database.engine as _db_engine
+        from anchor.database.repositories.market_data import MarketDataRepository
+
+        now = utcnow()
+        session_ok, session_reason = check_session(now)
+
+        # ── Account state ──────────────────────────────────────────────────
+        account_info = {}
+        try:
+            broker = BrokerClient()
+            acc = await broker.get_account_summary()
+            account_info = {
+                "balance":   float(acc.get("balance", 0)),
+                "equity":    float(acc.get("NAV", 0)),
+                "currency":  acc.get("currency", "?"),
+                "open_trade_count": acc.get("openTradeCount", 0),
+            }
+        except Exception as exc:
+            account_info = {"error": str(exc)}
+
+        # ── Candle counts per instrument/timeframe ─────────────────────────
+        candle_counts = {}
+        async with _db_engine.AsyncSessionFactory() as session:
+            repo = MarketDataRepository(session)
+            for inst in settings.instruments:
+                candle_counts[inst] = {}
+                for tf in ("H1", "H4", "D"):
+                    try:
+                        rows = await repo.get_latest_n_candles(inst, tf, 300)
+                        candle_counts[inst][tf] = len(rows)
+                    except Exception:
+                        candle_counts[inst][tf] = "ERROR"
+
+        # ── Model files ────────────────────────────────────────────────────
+        model_dir = Path("/app/models")
+        model_status = {}
+        for inst in settings.instruments:
+            model_status[inst] = {
+                "xgb":  (model_dir / f"{inst}_xgb.pkl").exists(),
+                "ood":  (model_dir / f"{inst}_ood.pkl").exists(),
+                "hmm":  (model_dir / f"hmm_{inst}.pkl").exists(),
+            }
+        model_status["hmm_latest"] = (model_dir / "hmm_latest.pkl").exists()
+
+        # ── Redis connectivity ─────────────────────────────────────────────
+        redis_ok = False
+        try:
+            import redis.asyncio as aioredis
+            rc = aioredis.from_url(settings.redis_url, decode_responses=True)
+            await rc.ping()
+            redis_ok = True
+            await rc.aclose()
+        except Exception:
+            redis_ok = False
+
+        logger.info(
+            "startup_diagnostics",
+            utc_time=now.isoformat(),
+            session=get_session_name(now),
+            session_active=session_ok,
+            session_reason=session_reason,
+            account=account_info,
+            candle_counts=candle_counts,
+            models=model_status,
+            redis_ok=redis_ok,
+            oanda_key_set=bool(settings.oanda_api_key),
+            fred_key_set=bool(settings.fred_api_key),
+        )
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("startup_diagnostics_failed", error=str(exc))
 
 
 @celery_app.task(name="anchor.scheduler.jobs.retrain_models", bind=True, max_retries=1)

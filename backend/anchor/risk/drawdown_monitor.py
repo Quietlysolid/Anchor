@@ -20,6 +20,23 @@ class DrawdownMonitor:
         self._halted: bool = False
         self._reduced: bool = False
 
+    async def bootstrap_peak_equity(self, session) -> None:
+        """Load historical peak equity from the DB so worker restarts don't reset the circuit breaker.
+
+        Call once during startup before the first update(). Safe to call multiple times.
+        """
+        try:
+            from anchor.database.repositories.equity import EquityRepository
+            repo = EquityRepository(session)
+            latest = await repo.get_latest()
+            if latest and latest.peak_equity:
+                db_peak = float(latest.peak_equity)
+                if self._peak_equity is None or db_peak > self._peak_equity:
+                    self._peak_equity = db_peak
+                    logger.info("drawdown_peak_bootstrapped", peak_equity=db_peak)
+        except Exception as exc:
+            logger.warning("drawdown_bootstrap_failed", error=str(exc))
+
     def update(self, equity: float) -> None:
         self._current_equity = equity
         if self._peak_equity is None or equity > self._peak_equity:
