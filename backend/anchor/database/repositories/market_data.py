@@ -19,7 +19,11 @@ class MarketDataRepository:
         await self.session.flush()
 
     async def bulk_insert(self, instrument: str, timeframe: str, df) -> int:
-        """Insert a pandas DataFrame of OHLCV candles (index=time). ON CONFLICT DO NOTHING."""
+        """Insert a pandas DataFrame of OHLCV candles (index=time). ON CONFLICT DO NOTHING.
+
+        Chunked at 500 rows to stay under asyncpg's 32767 bind-parameter limit
+        (9 columns × 500 rows = 4500 params, well within the limit).
+        """
         if df is None or df.empty:
             return 0
         rows = []
@@ -37,10 +41,13 @@ class MarketDataRepository:
                 "spread_avg": float(row["spread"]) if "spread" in row and row["spread"] else None,
                 "source": str(row["source"]) if "source" in row else "oanda",
             })
-        stmt = pg_insert(MarketData).values(rows).on_conflict_do_nothing(
-            index_elements=["time", "instrument", "timeframe"]
-        )
-        await self.session.execute(stmt)
+        chunk_size = 500
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i : i + chunk_size]
+            stmt = pg_insert(MarketData).values(chunk).on_conflict_do_nothing(
+                index_elements=["time", "instrument", "timeframe"]
+            )
+            await self.session.execute(stmt)
         await self.session.flush()
         return len(rows)
 
