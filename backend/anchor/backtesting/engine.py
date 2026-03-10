@@ -370,7 +370,7 @@ def analyze_trade_log(trade_log: list, output_csv: str | None = None) -> None:
     print(f"\n{'='*60}\n")
 
 
-async def _main() -> None:
+def _main() -> None:
     parser = argparse.ArgumentParser(description="Run backtest")
     parser.add_argument("--instrument", default="EUR_USD")
     parser.add_argument("--timeframe", default="H1")
@@ -402,4 +402,4 @@ async def _main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(_main())
+    _main()
