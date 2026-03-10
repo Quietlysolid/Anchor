@@ -94,7 +94,7 @@ class Signal(Base):
     csi_score:         Mapped[Decimal | None]  = mapped_column(Numeric(5, 4))
     ml_confidence:     Mapped[Decimal | None]  = mapped_column(Numeric(5, 4))
     regime_state:      Mapped[str | None]      = mapped_column(String(16))
-    session:           Mapped[str | None]      = mapped_column(String(16))
+    session:           Mapped[str | None]      = mapped_column(String(32))
     suppressed:        Mapped[bool]            = mapped_column(Boolean, nullable=False, default=False)
     suppression_reason: Mapped[str | None]     = mapped_column(Text)
     signal_metadata:   Mapped[dict | None]     = mapped_column(JSONB)
