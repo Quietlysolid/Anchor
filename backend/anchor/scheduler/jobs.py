@@ -284,7 +284,7 @@ def run_signal_scan(self):
 
         # Wire Redis into spread monitor so it can read cross-process spread data
         # (stream runs in the FastAPI process; worker has a separate in-memory instance)
-        spread_monitor.set_redis(redis_client)
+        _spread_monitor.set_redis(redis_client)
 
         def to_df(rows):
             if not rows:
