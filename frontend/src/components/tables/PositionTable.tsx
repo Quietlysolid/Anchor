@@ -16,7 +16,7 @@ export function PositionsTable() {
       <table className="w-full text-xs">
         <thead>
           <tr className="text-muted-foreground border-b border-border">
-            {['Instrument','Dir','Units','Entry','Current','P&L'].map(h => (
+            {['Instrument','Dir','Units','Entry','Current','SL','TP','P&L'].map(h => (
               <th key={h} className="text-left pb-2 pr-4 font-normal">{h}</th>
             ))}
           </tr>
@@ -31,6 +31,8 @@ export function PositionsTable() {
                 <td className="py-2 pr-4 font-mono">{p.units.toLocaleString()}</td>
                 <td className="py-2 pr-4 font-mono">{(p.avg_entry_price ?? 0).toFixed(5)}</td>
                 <td className="py-2 pr-4 font-mono">{p.current_price?.toFixed(5) ?? '—'}</td>
+                <td className="py-2 pr-4 font-mono text-red-400">{p.stop_loss?.toFixed(5) ?? '—'}</td>
+                <td className="py-2 pr-4 font-mono text-green-400">{p.take_profit?.toFixed(5) ?? '—'}</td>
                 <td className={`py-2 font-mono font-bold ${plColor}`}>
                   {(p.unrealized_pl ?? 0) >= 0 ? '+' : ''}{(p.unrealized_pl ?? 0).toFixed(2)}
                 </td>
