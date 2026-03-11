@@ -1,10 +1,8 @@
-import { useEffect } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { api } from '../client'
-import { wsClient } from '../websocket'
 import type {
   SystemHealth,
-  PerformanceSummary, EquityPoint, MonteCarloResult, Trade, EconomicEvent, LivePrice
+  PerformanceSummary, EquityPoint, MonteCarloResult, Trade, EconomicEvent
 } from '../../types'
 
 export const useSystemHealth = () =>
@@ -29,27 +27,14 @@ export const useCalendar = () =>
   useQuery({ queryKey: ['calendar'], queryFn: () => api.get<EconomicEvent[]>('/calendar/upcoming?hours_ahead=48&impact=HIGH,MEDIUM'), refetchInterval: 5 * 60_000 })
 
 export const useCandles = (instrument: string, timeframe: string) => {
-  const qc = useQueryClient()
   const key = ['candles', instrument, timeframe]
-
-  // Invalidate the candle query on each tick for this instrument so the
-  // chart stays current without waiting for the 5-second polling fallback.
-  useEffect(() => {
-    const unsub = wsClient.on('ticks', (d) => {
-      const tick = d as LivePrice
-      if (tick.instrument === instrument) {
-        qc.invalidateQueries({ queryKey: key })
-      }
-    })
-    return () => { unsub() }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instrument])
 
   return useQuery({
     queryKey: key,
     queryFn: () => api.get<{ time: number; open: number; high: number; low: number; close: number }[]>(
-      `/market-data/${instrument}/${timeframe}?limit=300`
+      `/market-data/${instrument}/${timeframe}?limit=500`
     ),
-    refetchInterval: 5_000, // fallback poll when WS is down
+    refetchInterval: 5_000,
+    staleTime: 2_000,
   })
 }
