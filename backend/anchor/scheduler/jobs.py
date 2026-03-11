@@ -243,6 +243,7 @@ def run_signal_scan(self):
         from anchor.database.repositories.positions import PositionRepository
         from anchor.database.models import Signal as SignalModel
         from anchor.signals.engine import ConfluenceEngine
+        from anchor.signals.mean_reversion_engine import MeanReversionEngine
         from anchor.signals.news_filter import NewsFilter
         from anchor.execution.broker_client import BrokerClient
         from anchor.execution.order_manager import OrderManager
@@ -369,6 +370,14 @@ def run_signal_scan(self):
             redis_client=redis_client,  # enables OANDA sentiment + VIX lookups
         )
 
+        # Mean-reversion engine: runs in parallel, only fires in RANGING regime
+        mr_engine = MeanReversionEngine(
+            news_filter=news_filter,
+            spread_monitor=_spread_monitor,
+            drawdown_monitor=drawdown_monitor,
+            hmm_detector=None,  # set per-instrument in the loop below
+        )
+
         # Evaluate + persist each instrument in its own isolated session
         # so one DB error doesn't poison the others
         for instrument in settings.instruments:
@@ -389,9 +398,12 @@ def run_signal_scan(self):
                     engine.update_cache(instrument, "H1", to_df(h1))
                     engine.update_cache(instrument, "H4", to_df(h4))
                     engine.update_cache(instrument, "D",  to_df(d1))
+                    mr_engine.update_cache(instrument, "H1", to_df(h1))
+                    mr_engine.update_cache(instrument, "D",  to_df(d1))
 
                     # Inject instrument-specific classifier and HMM (None → engine falls back gracefully)
                     engine.hmm_detector   = _hmm_detectors.get(instrument)
+                    mr_engine.hmm_detector = _hmm_detectors.get(instrument)
                     engine.ml_classifier  = _classifiers.get(instrument)
                     if not engine.ml_classifier:
                         engine.feature_engineer = None
@@ -581,6 +593,85 @@ def run_signal_scan(self):
             except Exception as exc:
                 logger.error("signal_scan_instrument_failed", instrument=instrument, error=str(exc))
                 await _alerts.send_warning(f"Signal scan failed for {instrument}\n{exc}")
+
+            # ── Mean-reversion scan (separate try block — trend failure must not block MR) ──
+            try:
+                async with _db_engine.AsyncSessionFactory() as mr_session:
+                    mr_order_repo    = OrderRepository(mr_session)
+                    mr_order_manager = OrderManager(mr_order_repo, broker, redis=redis_client)
+
+                    mr_result = await mr_engine.evaluate(instrument, dt=now)
+
+                    logger.debug(
+                        "mr_signal_evaluated",
+                        instrument=instrument,
+                        suppressed=mr_result.suppressed,
+                        reason=mr_result.suppression_reason,
+                        confluence=mr_result.confluence_score,
+                        regime=mr_result.regime_state,
+                        session=mr_result.session,
+                    )
+
+                    if mr_result.suppressed:
+                        continue
+
+                    # Execution gates (same as trend engine)
+                    if not drawdown_monitor.check()[0]:
+                        continue
+                    if daily_limiter.is_halted(balance):
+                        continue
+                    already_open = any(p.instrument == instrument for p in open_positions)
+                    if already_open:
+                        continue
+                    corr_ok, _ = correlation_mgr.check_new_position(
+                        instrument, mr_result.direction, open_positions
+                    )
+                    if not corr_ok:
+                        continue
+
+                    # R:R already validated inside mr_engine.evaluate()
+                    mr_units = sizer.compute(
+                        account_balance=balance,
+                        instrument=instrument,
+                        entry_price=mr_result.entry_price,
+                        stop_loss=mr_result.stop_loss,
+                        drawdown_scale=drawdown_monitor.scale_factor,
+                    )
+
+                    mr_direction = Direction.LONG if mr_result.direction == "LONG" else Direction.SHORT
+                    mr_order = OrderRequest(
+                        instrument=instrument,
+                        direction=mr_direction,
+                        units=mr_units,
+                        order_type=OrderType.LIMIT,
+                        stop_loss=mr_result.stop_loss,
+                        take_profit=mr_result.take_profit,
+                        limit_price=mr_result.entry_price,
+                        gtd_time=now + timedelta(hours=2),  # MR setups expire faster than trend
+                    )
+
+                    mr_order_id = await mr_order_manager.submit(mr_order)
+                    logger.info(
+                        "mr_order_submitted",
+                        instrument=instrument,
+                        direction=mr_result.direction,
+                        units=mr_units,
+                        entry=mr_result.entry_price,
+                        sl=mr_result.stop_loss,
+                        tp=mr_result.take_profit,
+                        confluence=mr_result.confluence_score,
+                        order_id=str(mr_order_id),
+                    )
+                    await _alerts.send_info(
+                        f"MR Order placed: {mr_result.direction} {instrument}\n"
+                        f"Entry: {mr_result.entry_price}  SL: {mr_result.stop_loss}  TP: {mr_result.take_profit}\n"
+                        f"Units: {mr_units}  Confluence: {mr_result.confluence_score:.2f}\n"
+                        f"Regime: RANGING  Expires: {(now + timedelta(hours=2)).strftime('%H:%M UTC')}"
+                    )
+                    await mr_session.commit()
+
+            except Exception as exc:
+                logger.error("mr_scan_instrument_failed", instrument=instrument, error=str(exc))
 
         await redis_client.aclose()
         sync_redis.close()

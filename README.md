@@ -1,6 +1,6 @@
 # Anchor — Autonomous Forex Trading System
 
-Fully automated forex trading system. OANDA practice account → live $200 account when validated.
+Fully automated forex trading system. OANDA practice account → live $1000 account when validated.
 Private system, personal funds only.
 
 ---
@@ -31,6 +31,22 @@ make import-history           # pull OANDA H1/H4/D candles into DB
 
 Dashboard: `http://localhost/`
 API: `http://localhost/api/v1/`
+
+---
+
+## Strategies
+
+Two strategies run in parallel, regime-gated by HMM:
+
+| Strategy | Regime | Engine | File |
+|----------|--------|--------|------|
+| **MTF Trend-Following** | TRENDING | `ConfluenceEngine` | `signals/engine.py` |
+| **BB Mean Reversion** | RANGING | `MeanReversionEngine` | `signals/mean_reversion_engine.py` |
+| *(nothing)* | VOLATILE | — | Both blocked |
+
+**Trend engine**: direction from 4H+Daily MTF alignment, RSI divergence as booster, 6-component confluence, threshold 0.65.
+
+**Mean-reversion engine**: fades price back to BB midband when price touches outer BB (2σ) with RSI extreme + pin bar rejection + ADX < 25. Threshold 0.60. SL beyond outer band + 0.5×ATR, TP at midband. GTD 2 hours (London only — resolves before NY open injects trend).
 
 ---
 
