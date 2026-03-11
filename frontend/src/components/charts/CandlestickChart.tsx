@@ -25,7 +25,7 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
       layout: { background: { type: ColorType.Solid, color: 'hsl(222,84%,5%)' }, textColor: '#94a3b8' },
       grid: { vertLines: { color: 'hsl(217,33%,13%)' }, horzLines: { color: 'hsl(217,33%,13%)' } },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: 'hsl(217,33%,17%)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+      rightPriceScale: { borderColor: 'hsl(217,33%,17%)', scaleMargins: { top: 0.1, bottom: 0.1 }, mode: 0 },
       timeScale: { borderColor: 'hsl(217,33%,17%)', timeVisible: true },
       height,
       width: containerRef.current.clientWidth,
@@ -54,7 +54,8 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
 
   // Reload historical bars whenever the candles array changes (pair/tf switch or REST refetch)
   useEffect(() => {
-    if (!seriesRef.current || !candles.length) return
+    if (!seriesRef.current) return
+    if (!candles.length) { seriesRef.current.setData([]); return }
     const data = candles.map(c => ({
       time: c.time as any,  // already Unix seconds from the API
       open: c.open, high: c.high, low: c.low, close: c.close,

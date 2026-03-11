@@ -11,11 +11,11 @@ import { useCandles, useEquityCurve, useTradeJournal } from '../api/hooks'
 import { useMarketStore } from '../store'
 
 const INSTRUMENTS = ['EUR_USD','GBP_USD','USD_JPY','AUD_USD','USD_CAD']
-const TIMEFRAMES  = ['15m','1h','4h']
+const TIMEFRAMES  = ['1h','4h']
 
 export default function Dashboard() {
   const [pair, setPair] = useState('EUR_USD')
-  const [tf,   setTf]   = useState('1h')
+  const [tf,   setTf]   = useState('1h')  // default to H1 (M15 not stored)
   const [now,  setNow]  = useState(() => new Date())
   const { data: candles } = useCandles(pair, tf)
   const { data: equity  } = useEquityCurve()
