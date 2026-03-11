@@ -17,10 +17,12 @@ logger = structlog.get_logger(__name__)
 from anchor.risk.drawdown_monitor import DrawdownMonitor as _DrawdownMonitor
 from anchor.risk.daily_limiter import DailyLimiter as _DailyLimiter
 from anchor.risk.spread_monitor import SpreadMonitor as _SpreadMonitor
+from anchor.monitoring.alerts import AlertService as _AlertService
 
 _drawdown_monitor = _DrawdownMonitor()
 _daily_limiter = _DailyLimiter()
 _spread_monitor = _SpreadMonitor()
+_alerts = _AlertService()
 
 
 def _run_async(coro):
@@ -453,12 +455,14 @@ def run_signal_scan(self):
                     dd_ok, dd_reason = drawdown_monitor.check()
                     if not dd_ok:
                         logger.warning("trade_blocked_drawdown", instrument=instrument, reason=dd_reason)
+                        await _alerts.send_critical(f"Drawdown circuit breaker triggered\n{dd_reason}\nBalance: ${balance:.2f}")
                         await session.commit()
                         continue
 
                     # 2. Daily loss limit
                     if daily_limiter.is_halted(balance):
                         logger.warning("trade_blocked_daily_limit", instrument=instrument)
+                        await _alerts.send_critical(f"Daily loss limit hit — trading halted for today\nBalance: ${balance:.2f}")
                         await session.commit()
                         continue
 
@@ -566,10 +570,17 @@ def run_signal_scan(self):
                         expires=gtd_time.isoformat(),
                         order_id=str(order_id),
                     )
+                    await _alerts.send_info(
+                        f"Order placed: {result.direction} {instrument}\n"
+                        f"Entry: {entry}  SL: {stop_loss}  TP: {take_profit}\n"
+                        f"Units: {units}  Confluence: {result.confluence_score:.2f}\n"
+                        f"Expires: {gtd_time.strftime('%H:%M UTC')}"
+                    )
                     await session.commit()
 
             except Exception as exc:
                 logger.error("signal_scan_instrument_failed", instrument=instrument, error=str(exc))
+                await _alerts.send_warning(f"Signal scan failed for {instrument}\n{exc}")
 
         await redis_client.aclose()
         sync_redis.close()
