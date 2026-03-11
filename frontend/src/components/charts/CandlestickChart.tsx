@@ -60,19 +60,14 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
       open: c.open, high: c.high, low: c.low, close: c.close,
     }))
     seriesRef.current.setData(data)
-    chartRef.current?.timeScale().fitContent()
 
-    // Force price scale to fit the actual data range (not start from 0)
-    const prices = data.flatMap(c => [c.open, c.high, c.low, c.close])
-    const minP = Math.min(...prices)
-    const maxP = Math.max(...prices)
-    const pad  = (maxP - minP) * 0.1
-    seriesRef.current.applyOptions({
-      autoscaleInfoProvider: () => ({
-        priceRange: { minValue: minP - pad, maxValue: maxP + pad },
-        margins: { above: 10, below: 10 },
-      }),
-    })
+    // Show only the last 100 candles so the price scale auto-fits the visible range
+    const ts = chartRef.current?.timeScale()
+    if (ts && data.length > 0) {
+      const last  = data[data.length - 1].time as number
+      const first = data[Math.max(0, data.length - 100)].time as number
+      ts.setVisibleRange({ from: first as any, to: last as any })
+    }
   }, [candles])
 
   // Draw trade entry/exit markers whenever trades or candles change
