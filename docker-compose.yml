@@ -49,6 +49,7 @@ services:
       - SERVICE_NAME=engine
     volumes:
       - mlflow_artifacts:/app/mlflow_artifacts
+      - ./data:/app/data
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -73,6 +74,7 @@ services:
     command: celery -A anchor.scheduler.celery_app worker --loglevel=info -Q ml_tasks,default
     volumes:
       - mlflow_artifacts:/app/mlflow_artifacts
+      - ./data:/app/data
 
   celery_beat:
     build:

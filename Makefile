@@ -1,4 +1,4 @@
-.PHONY: up down dev logs shell-engine shell-db migrate upgrade seed backtest lint test         download-history ablation walk-forward
+.PHONY: up down dev logs shell-engine shell-db migrate upgrade seed backtest backtest-all lint test         download-history ablation walk-forward
 
 up:
 	docker compose up -d
@@ -84,7 +84,34 @@ import-cot:
 	docker compose exec engine python -m anchor.data.cot_parser
 
 backtest:
-	docker compose exec engine python -m anchor.backtesting.engine
+	docker compose exec engine python -m anchor.backtesting.engine \
+		--instrument $(PAIR) \
+		--csv /app/data/$(PAIR)_H1.csv \
+		--balance 100000 \
+		--analyze \
+		--export-csv /app/data/backtest_$(PAIR).csv
+
+backtest-all:
+	@mkdir -p data
+	@echo "Step 1/2: downloading 2018-2026 H1/H4/D data via Polygon for all 5 pairs..."
+	docker compose exec engine python -m anchor.data.polygon_history \
+		--pairs EUR_USD GBP_USD USD_JPY AUD_USD USD_CAD \
+		--start 2018-01-01 \
+		--end 2026-01-01 \
+		--output-dir /app/data
+	@echo "Step 2/2: ablation backtest across all 5 live pairs (balance=100000)..."
+	@for pair in EUR_USD GBP_USD USD_JPY AUD_USD USD_CAD; do \
+		echo "========== $$pair =========="; \
+		docker compose exec engine python -m anchor.backtesting.ablation_runner \
+			--instrument $$pair \
+			--h1-csv  /app/data/$${pair}_H1.csv \
+			--h4-csv  /app/data/$${pair}_H4.csv \
+			--d-csv   /app/data/$${pair}_D.csv \
+			--balance 100000 \
+			--suggest-weights \
+			--export-csv /app/data/ablation_$${pair}.csv; \
+	done
+	@echo "Done. Results in data/ablation_*.csv"
 
 retrain:
 	docker compose exec celery_worker celery -A anchor.scheduler.celery_app call anchor.ml.retraining.run_retraining
