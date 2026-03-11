@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     daily_loss_limit_pct: float = 0.03     # 3% daily loss limit → halt for the day
     drawdown_reduce_pct: float = 0.08      # 8% → halve position size
     drawdown_halt_pct: float = 0.15        # 15% → halt all trading
-    min_confluence_score: float = 0.70
+    min_confluence_score: float = 0.72  # raised from 0.70 — fewer but higher quality signals
     min_ml_confidence: float = 0.58
     max_position_pct: float = 0.05         # 5% hard cap per position notional
     correlation_block_threshold: float = 0.70
@@ -75,8 +75,9 @@ class Settings(BaseSettings):
 
     # ── Instruments ───────────────────────────────────────────
     instruments: list[str] = [
-        # Tier-1 majors (original 5)
-        "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
+        # Tier-1 majors (USD_CAD disabled — OOS PF 0.98, net negative after spread)
+        # Re-enable when 3 months of live data shows PF > 1.05
+        "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD",
         # Tier-2 expansion: low correlation to tier-1, sufficient liquidity
         "NZD_USD",  # low correlation to AUD_USD (~0.65) — different central bank
         "USD_CHF",  # safe-haven inverse — near-zero correlation with JPY pairs

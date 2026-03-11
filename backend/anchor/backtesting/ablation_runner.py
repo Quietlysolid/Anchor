@@ -1,19 +1,29 @@
 """Ablation study runner.
 
-Runs 6 pre-defined ablation tests against a historical CSV dataset and prints
+Runs 13 pre-defined ablation tests against a historical CSV dataset and prints
 a side-by-side comparison table so you can see exactly which components
 contribute positive expectancy.
 
 Tests:
-  1. BASELINE       — full system, all components enabled
-  2. NO_SENTIMENT   — remove OANDA retail sentiment signal
-  3. NO_HMM         — remove HMM VOLATILE regime gate
-  4. NO_ML          — remove ML confidence gate
-  5. NO_SESSION     — remove session filter (trade all hours)
-  6. SENTIMENT_ONLY — only sentiment drives confluence; all other scores neutral
+  1.  BASELINE       — full system, all components enabled
+  2.  NO_RSI         — remove RSI divergence component
+  3.  NO_BB_KC       — remove BB/KC squeeze component
+  4.  NO_ADX         — remove ADX filter component
+  5.  NO_SR          — remove support/resistance component
+  6.  NO_MTF         — remove multi-timeframe agreement component
+  7.  NO_SENTIMENT   — remove OANDA retail sentiment signal
+  8.  NO_HMM         — remove HMM VOLATILE regime gate
+  9.  NO_ML          — remove ML confidence gate
+  10. NO_SESSION     — remove session filter (trade all hours)
+  11. SENTIMENT_ONLY — only sentiment drives confluence
+  12. ADX_MTF_ONLY   — only ADX + MTF (hypothesis: strongest pair)
+  13. SR_ADX_ONLY    — only S/R + ADX (structure + momentum)
 
 For each test, Sharpe, MaxDD, Win%, Profit Factor, and trade count are reported.
 The delta vs BASELINE is shown in green (improvement) or red (degradation).
+
+After running, use --suggest-weights to print optimized weights based on
+per-component Sharpe contribution, ready to paste into engine.py WEIGHTS dict.
 
 Usage:
     python -m anchor.backtesting.ablation_runner \\
@@ -22,14 +32,17 @@ Usage:
         --h4-csv  data/EURUSD_H4_2018_2024.csv \\
         --d-csv   data/EURUSD_D_2018_2024.csv \\
         --balance 10000 \\
+        --suggest-weights \\
         --export-csv ablation_results.csv
 
-    # Run across all 5 pairs:
-    for pair in EUR_USD GBP_USD USD_JPY AUD_USD USD_CAD; do
+    # Run across all 9 pairs:
+    for pair in EUR_USD GBP_USD USD_JPY AUD_USD NZD_USD USD_CHF EUR_GBP GBP_JPY; do
         python -m anchor.backtesting.ablation_runner \\
             --instrument $pair \\
             --h1-csv data/${pair}_H1.csv \\
-            --balance 10000
+            --balance 10000 \\
+            --suggest-weights \\
+            --export-csv ablation_${pair}.csv
     done
 """
 from __future__ import annotations
@@ -60,11 +73,40 @@ ABLATION_TESTS: list[AblationTest] = [
         description="Full system — all components enabled",
         flags={},
     ),
+    # ── Individual component knock-outs ──────────────────────────────────────
+    # Interpretation: if removing X causes Sharpe to DROP → X adds edge (keep it)
+    #                 if removing X causes Sharpe to RISE  → X hurts edge (remove/reduce)
+    AblationTest(
+        name="NO_RSI",
+        description="Remove RSI divergence component",
+        flags={"ablation_rsi": False},
+    ),
+    AblationTest(
+        name="NO_BB_KC",
+        description="Remove BB/KC squeeze component",
+        flags={"ablation_bb_kc": False},
+    ),
+    AblationTest(
+        name="NO_ADX",
+        description="Remove ADX filter component",
+        flags={"ablation_adx": False},
+    ),
+    AblationTest(
+        name="NO_SR",
+        description="Remove support/resistance component",
+        flags={"ablation_sr": False},
+    ),
+    AblationTest(
+        name="NO_MTF",
+        description="Remove multi-timeframe agreement component",
+        flags={"ablation_mtf": False},
+    ),
     AblationTest(
         name="NO_SENTIMENT",
         description="Remove OANDA retail sentiment (weight redistributed)",
         flags={"ablation_sentiment": False},
     ),
+    # ── Gate knock-outs ───────────────────────────────────────────────────────
     AblationTest(
         name="NO_HMM",
         description="Remove HMM VOLATILE gate (all regimes tradeable)",
@@ -80,6 +122,7 @@ ABLATION_TESTS: list[AblationTest] = [
         description="Remove session filter (trade all 24 hours)",
         flags={"ablation_session": False},
     ),
+    # ── Isolated single-component tests ──────────────────────────────────────
     AblationTest(
         name="SENTIMENT_ONLY",
         description="Sentiment alone — all other components disabled",
@@ -89,11 +132,35 @@ ABLATION_TESTS: list[AblationTest] = [
             "ablation_adx":   False,
             "ablation_sr":    False,
             "ablation_mtf":   False,
-            # sentiment stays True
-            "ablation_ml":    False,   # ML can't confirm what rule-based doesn't score
+            "ablation_ml":    False,
+        },
+    ),
+    AblationTest(
+        name="ADX_MTF_ONLY",
+        description="ADX + MTF only (momentum + structure hypothesis)",
+        flags={
+            "ablation_rsi":       False,
+            "ablation_bb_kc":     False,
+            "ablation_sr":        False,
+            "ablation_sentiment": False,
+            "ablation_ml":        False,
+        },
+    ),
+    AblationTest(
+        name="SR_ADX_ONLY",
+        description="S/R + ADX only (price structure + trend strength)",
+        flags={
+            "ablation_rsi":       False,
+            "ablation_bb_kc":     False,
+            "ablation_mtf":       False,
+            "ablation_sentiment": False,
+            "ablation_ml":        False,
         },
     ),
 ]
+
+# Components that have individual ablation knock-out tests (used for weight suggestion)
+_KNOCKABLE_COMPONENTS = ["rsi", "bb_kc", "adx", "sr", "mtf", "sentiment"]
 
 
 # ── Engine factory that injects ablation flags ────────────────────────────────
@@ -320,6 +387,95 @@ def print_ablation_table(rows: list[AblationResult], instrument: str) -> None:
     print(f"{'='*90}\n")
 
 
+# ── Weight suggestion ─────────────────────────────────────────────────────────
+
+def suggest_weights(rows: list[AblationResult]) -> dict[str, float]:
+    """Derive optimized component weights from ablation results.
+
+    Method:
+      - For each component C, compute: baseline_sharpe - no_C_sharpe
+      - This is the "Sharpe contribution" of C: positive = adds edge.
+      - Components with negative contribution (hurts edge) get weight floored to 0.05
+        (never fully zero — keeps score normalisation stable).
+      - Remaining weight is distributed proportionally to positive contributions.
+      - Weights are normalised to sum to 1.0.
+      - COT is excluded (no ablation test, fail-open at 0.5 — always 0.05).
+    """
+    from anchor.signals.engine import WEIGHTS as _CURRENT_WEIGHTS
+
+    baseline = next((r.results for r in rows if r.test.name == "BASELINE"), None)
+    if baseline is None:
+        return {}
+
+    contributions: dict[str, float] = {}
+    for comp in _KNOCKABLE_COMPONENTS:
+        test_name = f"NO_{comp.upper()}"
+        no_comp = next((r.results for r in rows if r.test.name == test_name), None)
+        if no_comp is None:
+            # Test not run — keep current weight
+            key = {"rsi": "rsi_divergence", "bb_kc": "bb_kc_squeeze",
+                   "adx": "adx_filter", "sr": "sr_strength",
+                   "mtf": "mtf_agreement", "sentiment": "oanda_sentiment"}.get(comp, comp)
+            contributions[comp] = _CURRENT_WEIGHTS.get(key, 0.10)
+        else:
+            contributions[comp] = baseline.sharpe_ratio - no_comp.sharpe_ratio
+
+    # Floor negative contributors at 0.05 (keep them but minimise)
+    MIN_WEIGHT = 0.05
+    COT_WEIGHT = 0.05
+    usable = 1.0 - COT_WEIGHT
+
+    floored: dict[str, float] = {}
+    positive_total = 0.0
+    for comp, contrib in contributions.items():
+        if contrib <= 0:
+            floored[comp] = MIN_WEIGHT
+        else:
+            floored[comp] = contrib
+            positive_total += contrib
+
+    # Distribute remaining weight proportionally among positive contributors
+    allocated = sum(v for v in floored.values() if v == MIN_WEIGHT)
+    remaining = usable - allocated
+    if positive_total > 0 and remaining > 0:
+        for comp in floored:
+            if floored[comp] != MIN_WEIGHT:
+                floored[comp] = remaining * (floored[comp] / positive_total)
+
+    # Normalise to sum = 1.0 - COT_WEIGHT
+    total = sum(floored.values())
+    if total > 0:
+        floored = {k: v / total * usable for k, v in floored.items()}
+
+    _KEY_MAP = {
+        "rsi":       "rsi_divergence",
+        "bb_kc":     "bb_kc_squeeze",
+        "adx":       "adx_filter",
+        "sr":        "sr_strength",
+        "mtf":       "mtf_agreement",
+        "sentiment": "oanda_sentiment",
+    }
+    result = {_KEY_MAP[k]: round(v, 4) for k, v in floored.items()}
+    result["cot_signal"] = COT_WEIGHT
+    # Re-normalise after rounding
+    total = sum(result.values())
+    result = {k: round(v / total, 4) for k, v in result.items()}
+    return result
+
+
+def print_weight_suggestion(weights: dict[str, float], instrument: str) -> None:
+    H = "\033[1m"
+    N = "\033[0m"
+    print(f"\n{H}SUGGESTED WEIGHTS for {instrument}{N}")
+    print("  Paste into backend/anchor/signals/engine.py WEIGHTS dict:\n")
+    print("  WEIGHTS = {")
+    for k, v in weights.items():
+        print(f'      "{k}": {v},')
+    print("  }")
+    total = sum(weights.values())
+    print(f"\n  Sum = {total:.4f} {'✓' if abs(total - 1.0) < 0.01 else '✗ WARNING: does not sum to 1.0'}")
+
+
 # ── CSV export ────────────────────────────────────────────────────────────────
 
 def export_csv(rows: list[AblationResult], instrument: str, path: str) -> None:
@@ -356,10 +512,14 @@ def _main() -> None:
     parser.add_argument("--h4-csv",     default=None,   help="Path to H4 OHLCV CSV (optional)")
     parser.add_argument("--d-csv",      default=None,   help="Path to Daily OHLCV CSV (optional)")
     parser.add_argument("--balance",    type=float, default=10_000.0)
-    parser.add_argument("--export-csv", default=None,   help="Save summary to CSV path")
-    parser.add_argument("--tests",      default=None,
+    parser.add_argument("--export-csv",      default=None, help="Save summary to CSV path")
+    parser.add_argument("--suggest-weights", action="store_true",
+                        help="Print optimized WEIGHTS dict based on per-component Sharpe contribution")
+    parser.add_argument("--tests",           default=None,
                         help="Comma-separated test names to run (default: all). "
-                             "Options: BASELINE,NO_SENTIMENT,NO_HMM,NO_ML,NO_SESSION,SENTIMENT_ONLY")
+                             "Options: BASELINE,NO_RSI,NO_BB_KC,NO_ADX,NO_SR,NO_MTF,"
+                             "NO_SENTIMENT,NO_HMM,NO_ML,NO_SESSION,SENTIMENT_ONLY,"
+                             "ADX_MTF_ONLY,SR_ADX_ONLY")
     args = parser.parse_args()
 
     # Filter tests if requested
@@ -411,6 +571,13 @@ def _main() -> None:
         )
 
     print_ablation_table(ablation_results, args.instrument)
+
+    if args.suggest_weights:
+        weights = suggest_weights(ablation_results)
+        if weights:
+            print_weight_suggestion(weights, args.instrument)
+        else:
+            print("  Not enough ablation data to suggest weights. Run BASELINE + all NO_* tests.")
 
     if args.export_csv:
         export_csv(ablation_results, args.instrument, args.export_csv)

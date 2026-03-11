@@ -35,6 +35,7 @@ from anchor.signals.currency_strength import compute_csi, csi_signal_score
 from anchor.signals.oanda_sentiment   import sentiment_signal_score, get_cached_score as get_sentiment_score
 from anchor.signals.cot_signal        import get_cot_score
 from anchor.signals.vix_filter        import get_cached_multiplier as get_vix_multiplier, get_cached_vix
+from anchor.data.fred_rates           import get_rate_divergence_score
 from anchor.signals.session_filter    import check_session
 from anchor.signals.news_filter       import NewsFilter
 from anchor.utils.time_utils          import utcnow, get_session_name
@@ -74,19 +75,22 @@ class SignalResult:
 
 # Signal component weights (must sum to 1.0)
 # CSI dropped to 0.0: too sparse (USD gets 4 pairs, others 1-2), unreliable.
-# COT (institutional positioning, weekly CFTC) added at 0.05 — macro filter.
-#   Confirms trade direction aligns with speculative/institutional bias.
+# COT (institutional positioning, weekly CFTC) at 0.05 — macro filter, fail-open.
+# Rate divergence (FRED central bank rate diff) at 0.05 — carry-trade macro filter.
+#   Positive rate_diff (base rate > quote) confirms LONG; negative confirms SHORT.
 #   Fail-open at 0.5 (neutral) when data unavailable — never blocks alone.
-# MTF reduced from 0.10 → 0.05 to make room for COT (still meaningful signal).
+# MTF reduced from 0.10 → 0.05 → 0.03 to make room for macro filters.
 # VIX is NOT a confluence component — position-size multiplier only.
+# Run make ablation-all after collecting 3 months of live data to auto-optimize weights.
 WEIGHTS = {
-    "rsi_divergence":    0.25,
+    "rsi_divergence":    0.24,
     "bb_kc_squeeze":     0.20,
     "adx_filter":        0.15,
-    "sr_strength":       0.25,
-    "mtf_agreement":     0.05,
-    "oanda_sentiment":   0.05,
+    "sr_strength":       0.24,
+    "mtf_agreement":     0.04,
+    "oanda_sentiment":   0.04,
     "cot_signal":        0.05,
+    "rate_divergence":   0.04,
 }
 
 
@@ -107,15 +111,16 @@ class ConfluenceEngine:
         # Disabled components score 0.0 and their weight is redistributed
         # proportionally across the remaining active components so the
         # confluence score always spans [0, 1] and the threshold is stable.
-        ablation_rsi:       bool = True,
-        ablation_bb_kc:     bool = True,
-        ablation_adx:       bool = True,
-        ablation_sr:        bool = True,
-        ablation_mtf:       bool = True,
-        ablation_sentiment: bool = True,
-        ablation_hmm_gate:  bool = True,   # False → skip VOLATILE block
-        ablation_session:   bool = True,   # False → trade all hours
-        ablation_ml:        bool = True,   # False → skip ML gate entirely
+        ablation_rsi:            bool = True,
+        ablation_bb_kc:          bool = True,
+        ablation_adx:            bool = True,
+        ablation_sr:             bool = True,
+        ablation_mtf:            bool = True,
+        ablation_sentiment:      bool = True,
+        ablation_rate_divergence: bool = True,
+        ablation_hmm_gate:       bool = True,   # False → skip VOLATILE block
+        ablation_session:        bool = True,   # False → trade all hours
+        ablation_ml:             bool = True,   # False → skip ML gate entirely
     ):
         self.news_filter      = news_filter or NewsFilter()
         self.spread_monitor   = spread_monitor
@@ -127,15 +132,16 @@ class ConfluenceEngine:
         self.data_cache       = data_cache or {}
         self.redis_client     = redis_client  # optional; used for sentiment + VIX
         # Ablation state
-        self._abl_rsi       = ablation_rsi
-        self._abl_bb_kc     = ablation_bb_kc
-        self._abl_adx       = ablation_adx
-        self._abl_sr        = ablation_sr
-        self._abl_mtf       = ablation_mtf
-        self._abl_sentiment = ablation_sentiment
-        self._abl_hmm_gate  = ablation_hmm_gate
-        self._abl_session   = ablation_session
-        self._abl_ml        = ablation_ml
+        self._abl_rsi            = ablation_rsi
+        self._abl_bb_kc          = ablation_bb_kc
+        self._abl_adx            = ablation_adx
+        self._abl_sr             = ablation_sr
+        self._abl_mtf            = ablation_mtf
+        self._abl_sentiment      = ablation_sentiment
+        self._abl_rate_divergence = ablation_rate_divergence
+        self._abl_hmm_gate       = ablation_hmm_gate
+        self._abl_session        = ablation_session
+        self._abl_ml             = ablation_ml
 
     async def evaluate(
         self,
@@ -291,6 +297,15 @@ class ConfluenceEngine:
         else:
             cot_score = 0.5
 
+        # ── Central bank rate divergence (FRED, daily refresh) ────────────────
+        # Carry-trade macro filter: base rate > quote rate → LONG confirmed.
+        # Reads from Redis key "fred_rate_diff" (populated by update_fred_rates task).
+        # Returns 0.5 (neutral) when data unavailable — fail-open, never blocks.
+        if self.redis_client is not None:
+            rate_div_score = await get_rate_divergence_score(self.redis_client, instrument, direction)
+        else:
+            rate_div_score = 0.5
+
         # ── VIX position-size multiplier ──────────────────────────────────
         # Reads from Redis cache (populated by scheduler every 4 h via FRED).
         # Returns 1.0 (no reduction) when Redis or FRED is unavailable.
@@ -313,8 +328,9 @@ class ConfluenceEngine:
             "adx_filter":      (adx_score,              self._abl_adx),
             "sr_strength":     (sr_score,               self._abl_sr),
             "mtf_agreement":   (mtf_score,              self._abl_mtf),
-            "oanda_sentiment": (oanda_sentiment_score,  self._abl_sentiment),
-            "cot_signal":      (cot_score,              True),  # no ablation flag — always on, fail-open
+            "oanda_sentiment":  (oanda_sentiment_score,  self._abl_sentiment),
+            "cot_signal":       (cot_score,              True),  # always on, fail-open
+            "rate_divergence":  (rate_div_score,         self._abl_rate_divergence),
         }
         active_weight_total = sum(
             WEIGHTS[k] for k, (_, active) in _components.items() if active
@@ -346,6 +362,7 @@ class ConfluenceEngine:
             "oanda_sentiment_raw":  raw_sentiment,
             "oanda_sentiment_score": oanda_sentiment_score,
             "cot_score":            cot_score,
+            "rate_divergence_score": rate_div_score,
             "vix":                  vix_val,
             "vix_multiplier":       vix_mult,
         })

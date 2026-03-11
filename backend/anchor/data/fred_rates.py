@@ -47,6 +47,8 @@ _RATE_SERIES: Dict[str, str] = {
     "JPY": "IR3TIB01JPM156N",
     "AUD": "IRSTCI01AUM156N",
     "CAD": "IRSTCB01CAM156N",
+    "NZD": "IRSTCI01NZM156N",   # OECD short-term rate New Zealand (RBNZ OCR proxy)
+    "CHF": "IRSTCI01CHM156N",   # OECD short-term rate Switzerland (SNB policy proxy)
 }
 
 # Instrument → (base_currency, quote_currency)
@@ -56,6 +58,10 @@ _INSTRUMENT_CURRENCIES: Dict[str, tuple] = {
     "USD_JPY": ("USD", "JPY"),
     "AUD_USD": ("AUD", "USD"),
     "USD_CAD": ("USD", "CAD"),
+    "NZD_USD": ("NZD", "USD"),
+    "USD_CHF": ("USD", "CHF"),
+    "EUR_GBP": ("EUR", "GBP"),
+    "GBP_JPY": ("GBP", "JPY"),
 }
 
 # Normalise raw rate differentials to roughly [-1, 1].
@@ -156,3 +162,55 @@ async def fetch_and_store(redis_client, api_key: str) -> Dict[str, Dict]:
         ex=25 * 3_600,  # 25-hour TTL
     )
     return differentials
+
+
+async def get_rate_divergence_score(
+    redis_client,
+    instrument: str,
+    direction: str,
+) -> float:
+    """Return a rate-divergence confluence score [0.0, 1.0].
+
+    Logic (Carry trade theory — Uncovered Interest Rate Parity):
+      - Positive rate_diff (base rate > quote rate) → base currency expected to
+        strengthen → confirms LONG signal.
+      - Negative rate_diff → base currency expected to weaken → confirms SHORT.
+      - Magnitude matters: a 5pp differential is stronger than 0.5pp.
+
+    Score mapping:
+      1.0 → strong rate differential confirms signal direction
+      0.5 → neutral / data unavailable (fail-open, never blocks alone)
+      0.0 → rate differential opposes signal direction
+
+    Normalisation: ±_RATE_DIFF_SCALE (10pp) maps to ±1.0.
+    """
+    if redis_client is None:
+        return 0.5
+
+    try:
+        raw = await redis_client.get("fred_rate_diff")
+        if not raw:
+            return 0.5
+
+        data = json.loads(raw)
+        entry = data.get(instrument)
+        if not entry or not entry.get("available"):
+            return 0.5
+
+        rate_diff = float(entry["rate_diff"])
+        # Normalize to [-1, 1]
+        norm = max(-1.0, min(1.0, rate_diff / _RATE_DIFF_SCALE))
+
+        # Convert to directional score [0, 1]
+        if direction == "LONG":
+            # positive diff (base > quote) confirms LONG
+            score = 0.5 + norm * 0.5
+        else:
+            # negative diff (base < quote) confirms SHORT
+            score = 0.5 - norm * 0.5
+
+        return round(max(0.0, min(1.0, score)), 4)
+
+    except Exception as exc:
+        logger.warning("rate_divergence_score_failed", instrument=instrument, error=str(exc))
+        return 0.5

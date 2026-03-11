@@ -46,10 +46,20 @@ download-history:
 
 PAIR ?= EUR_USD
 ablation:
-	docker compose exec engine python -m anchor.backtesting.ablation_runner 		--instrument $(PAIR) 		--h1-csv  data/$(PAIR)_H1.csv 		--h4-csv  data/$(PAIR)_H4.csv 		--d-csv   data/$(PAIR)_D.csv 		--balance 10000 		--export-csv data/ablation_$(PAIR).csv
+	docker compose exec engine python -m anchor.backtesting.ablation_runner \
+		--instrument $(PAIR) \
+		--h1-csv  data/$(PAIR)_H1.csv \
+		--h4-csv  data/$(PAIR)_H4.csv \
+		--d-csv   data/$(PAIR)_D.csv \
+		--balance 10000 \
+		--suggest-weights \
+		--export-csv data/ablation_$(PAIR).csv
 
 ablation-all:
-	@for pair in EUR_USD GBP_USD USD_JPY AUD_USD USD_CAD; do 		echo "========== ABLATION: $$pair =========="; 		$(MAKE) ablation PAIR=$$pair; 	done
+	@for pair in EUR_USD GBP_USD USD_JPY AUD_USD NZD_USD USD_CHF EUR_GBP GBP_JPY; do \
+		echo "========== ABLATION: $$pair =========="; \
+		$(MAKE) ablation PAIR=$$pair; \
+	done
 
 walk-forward:
 	docker compose exec engine python -m anchor.backtesting.walk_forward_backtest 		--instrument $(PAIR) 		--h1-csv  data/$(PAIR)_H1.csv 		--h4-csv  data/$(PAIR)_H4.csv 		--d-csv   data/$(PAIR)_D.csv 		--train-end  2021-12-31 		--val-end    2023-12-31 		--balance    10000

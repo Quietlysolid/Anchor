@@ -21,6 +21,7 @@ import structlog
 from anchor.config import settings
 from anchor.database.engine import get_session
 from anchor.database.repositories import MarketDataRepository
+from anchor.database.models import Position, Signal as SignalModel
 from anchor.ml.feature_engineer import FeatureEngineer
 from anchor.ml.walk_forward import walk_forward_validate, WalkForwardResult
 from anchor.ml.xgb_classifier import XGBDirectionClassifier, DEFAULT_MODEL_DIR
@@ -127,6 +128,109 @@ def _make_labels(
     return labels
 
 
+# Minimum number of closed trades before we switch to outcome-based labelling.
+# Below this threshold, synthetic SL/TP simulation is used instead.
+MIN_TRADE_OUTCOMES = 100
+
+
+async def _fetch_trade_outcome_labels(
+    session,
+    instrument: str,
+    engineer: FeatureEngineer,
+    repo: MarketDataRepository,
+) -> Optional[tuple]:
+    """Build (X, y, timestamps) from real closed trade outcomes.
+
+    For each closed position with a signal_id:
+      - Fetch the H1 candle window leading up to the signal time
+      - Compute features from that window
+      - Label: 1 if realized_pl > 0 (winner), 0 if realized_pl <= 0 (loser)
+
+    Returns (X, y, ts) arrays or None if insufficient data.
+    This produces signal-quality labels rather than raw candle-direction labels,
+    which is what the ML model should actually be predicting.
+    """
+    from sqlalchemy import select, and_
+    from decimal import Decimal
+
+    result = await session.execute(
+        select(Position, SignalModel)
+        .join(SignalModel, Position.signal_id == SignalModel.id, isouter=True)
+        .where(
+            and_(
+                Position.instrument == instrument,
+                Position.status == "CLOSED",
+                Position.signal_id.isnot(None),
+                Position.closed_at.isnot(None),
+            )
+        )
+        .order_by(Position.closed_at)
+    )
+    rows = result.all()
+
+    if len(rows) < MIN_TRADE_OUTCOMES:
+        logger.info(
+            "retraining_using_synthetic_labels",
+            instrument=instrument,
+            trade_outcomes=len(rows),
+            min_required=MIN_TRADE_OUTCOMES,
+        )
+        return None
+
+    logger.info(
+        "retraining_using_trade_outcome_labels",
+        instrument=instrument,
+        trade_outcomes=len(rows),
+    )
+
+    feature_rows = []
+    labels_out = []
+    timestamps_out = []
+
+    for position, signal in rows:
+        if signal is None:
+            continue
+        signal_time = signal.created_at
+        # Fetch 60 H1 candles ending at signal time
+        candle_end   = signal_time
+        candle_start = candle_end - timedelta(hours=65)
+        candles = await repo.get_candles(instrument, "H1", candle_start, candle_end, limit=70)
+        if len(candles) < 60:
+            continue
+
+        import pandas as pd
+        df_window = pd.DataFrame({
+            "time":   [c.time for c in candles],
+            "open":   [float(c.open) for c in candles],
+            "high":   [float(c.high) for c in candles],
+            "low":    [float(c.low) for c in candles],
+            "close":  [float(c.close) for c in candles],
+            "volume": [float(c.volume or 0) for c in candles],
+        }).set_index("time").sort_index()
+
+        window = df_window.iloc[-60:]
+        try:
+            feat = engineer.compute(window, instrument)
+        except Exception:
+            continue
+
+        # Label: 1 = winning trade, 0 = losing trade
+        pl = float(position.realized_pl or 0)
+        label = 1 if pl > 0 else 0
+
+        feature_rows.append(feat)
+        labels_out.append(label)
+        timestamps_out.append(signal_time)
+
+    if len(feature_rows) < MIN_TRADE_OUTCOMES:
+        return None
+
+    X  = np.array(feature_rows, dtype=np.float32)
+    y  = np.array(labels_out,   dtype=np.int32)
+    ts = np.array([t.strftime("%Y-%m") for t in timestamps_out])
+    return X, y, ts
+
+
 async def run_retraining(instrument: Optional[str] = None) -> Dict:
     """Run full retraining pipeline. Returns results summary."""
     instruments = [instrument] if instrument else settings.instruments
@@ -166,31 +270,46 @@ async def run_retraining(instrument: Optional[str] = None) -> Dict:
             )
             df = df.set_index("time").sort_index()
 
-            feature_rows = []
-            timestamps = []
-            for i in range(60, len(df)):
-                window = df.iloc[i - 60: i]
-                try:
-                    feat = engineer.compute(window, instr)
-                    feature_rows.append(feat)
-                    timestamps.append(df.index[i])
-                except Exception:
+            # ── Prefer trade-outcome labels (signal quality) over synthetic ──
+            # After 100+ closed trades, switch to outcome labels so the model
+            # learns to predict "will this specific signal setup win" rather
+            # than "will price go up next 48 bars". This is the real objective.
+            outcome_data = await _fetch_trade_outcome_labels(session, instr, engineer, repo)
+
+            if outcome_data is not None:
+                X, y, ts = outcome_data
+                label_source = "trade_outcomes"
+            else:
+                # Synthetic SL/TP simulation — used until enough live trades exist
+                feature_rows = []
+                timestamps = []
+                for i in range(60, len(df)):
+                    window = df.iloc[i - 60: i]
+                    try:
+                        feat = engineer.compute(window, instr)
+                        feature_rows.append(feat)
+                        timestamps.append(df.index[i])
+                    except Exception:
+                        continue
+
+                if not feature_rows:
                     continue
 
-            if not feature_rows:
-                continue
+                X = np.array(feature_rows, dtype=np.float32)
+                offset = 60
+                n_rows = len(feature_rows)
+                highs  = df["high"].values[offset: offset + n_rows]
+                lows   = df["low"].values[offset: offset + n_rows]
+                closes = df["close"].values[offset: offset + n_rows]
+                labels = _make_labels(highs, lows, closes)
+                valid_mask = labels >= 0
+                X = X[valid_mask]
+                y = labels[valid_mask]
+                ts = np.array(timestamps)[valid_mask].astype("datetime64[M]")
+                label_source = "synthetic_sl_tp"
 
-            X = np.array(feature_rows, dtype=np.float32)
-            offset = 60
-            n_rows = len(feature_rows)
-            highs  = df["high"].values[offset: offset + n_rows]
-            lows   = df["low"].values[offset: offset + n_rows]
-            closes = df["close"].values[offset: offset + n_rows]
-            labels = _make_labels(highs, lows, closes)
-            valid_mask = labels >= 0
-            X = X[valid_mask]
-            y = labels[valid_mask]
-            ts = np.array(timestamps)[valid_mask].astype("datetime64[M]")
+            logger.info("retraining_labels_ready", instrument=instr,
+                        n_samples=len(X), label_source=label_source)
 
             feature_names = engineer.get_feature_names()
 
@@ -202,6 +321,7 @@ async def run_retraining(instrument: Optional[str] = None) -> Dict:
                 mlflow.log_metric("n_folds", len(wf_result.folds))
                 mlflow.log_param("instrument", instr)
                 mlflow.log_param("train_samples", len(X))
+                mlflow.log_param("label_source", label_source)
 
                 if wf_result.oos_accuracy >= MIN_OOS_ACCURACY:
                     # Train final model on all data
