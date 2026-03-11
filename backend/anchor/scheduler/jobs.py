@@ -37,11 +37,12 @@ def snapshot_equity(self):
     """Write an equity curve point every 15 minutes."""
     async def _inner():
         from anchor.config import settings
-        from anchor.database.engine import get_session
+        from anchor.database.engine import init_db, get_session
         from anchor.database.repositories import EquityRepository
         from anchor.database.models import EquityCurvePoint
         from anchor.execution.broker_client import BrokerClient
 
+        await init_db()
         client = BrokerClient()
         account = await client.get_account_summary()
         if not account:
@@ -517,11 +518,11 @@ def run_signal_scan(self):
                     if result.direction == "LONG":
                         entry       = round(close_price - pullback, 5)
                         stop_loss   = round(entry - 1.5 * atr, 5)
-                        take_profit = round(entry + 3.0 * atr, 5)
+                        take_profit = round(entry + 2.0 * atr, 5)
                     else:
                         entry       = round(close_price + pullback, 5)
                         stop_loss   = round(entry + 1.5 * atr, 5)
-                        take_profit = round(entry - 3.0 * atr, 5)
+                        take_profit = round(entry - 2.0 * atr, 5)
 
                     # Limit order expires after 4 hours — prevents stale fills
                     # in the next session under completely different conditions.

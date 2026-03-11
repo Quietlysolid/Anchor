@@ -112,7 +112,7 @@ class Order(Base):
     direction:              Mapped[str]             = mapped_column(String(5), nullable=False)
     order_type:             Mapped[str]             = mapped_column(String(12), nullable=False, default="MARKET")
     requested_units:        Mapped[Decimal]         = mapped_column(Numeric(18, 2), nullable=False)
-    state:                  Mapped[str]             = mapped_column(String(16), nullable=False, default="PENDING")
+    state:                  Mapped[str]             = mapped_column(Enum(OrderState, name="order_state", create_type=False), nullable=False, default=OrderState.PENDING)
     oanda_order_id:         Mapped[str | None]      = mapped_column(String(64))
     limit_price:            Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     stop_price:             Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
