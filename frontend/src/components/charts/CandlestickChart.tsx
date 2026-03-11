@@ -25,7 +25,7 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
       layout: { background: { type: ColorType.Solid, color: 'hsl(222,84%,5%)' }, textColor: '#94a3b8' },
       grid: { vertLines: { color: 'hsl(217,33%,13%)' }, horzLines: { color: 'hsl(217,33%,13%)' } },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: 'hsl(217,33%,17%)', autoScale: true },
+      rightPriceScale: { borderColor: 'hsl(217,33%,17%)', autoScale: true, scaleMargins: { top: 0.1, bottom: 0.1 } },
       timeScale: { borderColor: 'hsl(217,33%,17%)', timeVisible: true },
       height,
       width: containerRef.current.clientWidth,
@@ -35,6 +35,7 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
       upColor: '#22c55e', downColor: '#ef4444',
       borderUpColor: '#22c55e', borderDownColor: '#ef4444',
       wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+      priceFormat: { type: 'price', precision: 5, minMove: 0.00001 },
     })
 
     chartRef.current   = chart
