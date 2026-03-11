@@ -1,4 +1,12 @@
 {
   "css.lint.unknownAtRules": "ignore",
-  "python.analysis.ignore": ["backend/**"]
+  "python.analysis.ignore": ["backend/**"],
+  "sonarlint.rules": {
+    "Web:InlineStyleCheck": { "level": "off" }
+  },
+  "markdownlint.config": {
+    "MD055": false,
+    "MD060": false
+  },
+  "vscode-edge-devtools.webhint": false
 }
