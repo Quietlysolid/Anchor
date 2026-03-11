@@ -245,6 +245,7 @@ def run_signal_scan(self):
         from anchor.signals.engine import ConfluenceEngine
         from anchor.signals.mean_reversion_engine import MeanReversionEngine
         from anchor.signals.news_filter import NewsFilter
+        from anchor.database.repositories import EconomicCalendarRepository
         from anchor.execution.broker_client import BrokerClient
         from anchor.execution.order_manager import OrderManager
         from anchor.execution.order_types import OrderRequest, Direction, OrderType
@@ -386,6 +387,9 @@ def run_signal_scan(self):
                     market_repo   = MarketDataRepository(session)
                     order_repo    = OrderRepository(session)
                     order_manager = OrderManager(order_repo, broker, redis=redis_client)
+
+                    # Wire live calendar repo so the news filter actually queries the DB
+                    news_filter.calendar_repo = EconomicCalendarRepository(session)
 
                     h1 = await market_repo.get_latest_n_candles(instrument, "H1", 200)
                     h4 = await market_repo.get_latest_n_candles(instrument, "H4", 100)
@@ -599,6 +603,7 @@ def run_signal_scan(self):
                 async with _db_engine.AsyncSessionFactory() as mr_session:
                     mr_order_repo    = OrderRepository(mr_session)
                     mr_order_manager = OrderManager(mr_order_repo, broker, redis=redis_client)
+                    news_filter.calendar_repo = EconomicCalendarRepository(mr_session)
 
                     mr_result = await mr_engine.evaluate(instrument, dt=now)
 
@@ -683,6 +688,7 @@ def run_signal_scan(self):
                     m15_market_repo  = MarketDataRepository(m15_session)
                     m15_order_repo   = OrderRepository(m15_session)
                     m15_order_manager = OrderManager(m15_order_repo, broker, redis=redis_client)
+                    news_filter.calendar_repo = EconomicCalendarRepository(m15_session)
 
                     m15 = await m15_market_repo.get_latest_n_candles(instrument, "M15", 300)
                     if len(m15) < 50:
