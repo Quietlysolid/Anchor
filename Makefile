@@ -1,4 +1,5 @@
-.PHONY: up down dev logs shell-engine shell-db migrate upgrade seed backtest backtest-all lint test         download-history ablation walk-forward
+.PHONY: up down dev logs shell-engine shell-db migrate upgrade seed backtest backtest-all lint test \
+        download-history ablation walk-forward fit-weights instrument-confidence monte-carlo lcr-backtest
 
 up:
 	docker compose up -d
@@ -79,6 +80,55 @@ mr-backtest-all:
 		echo "========== MR BACKTEST: $$pair =========="; \
 		$(MAKE) mr-backtest PAIR=$$pair; \
 	done
+
+## ── Math fixes & new strategies ─────────────────────────────────────────────
+
+# Replace hand-tuned WEIGHTS in engine.py with L1 logistic regression coefficients.
+# Uses in-sample trade data (before 2024-01-01) to find data-optimal component weights.
+# Run with --apply to auto-patch engine.py. Re-run after 3 months of new live data.
+fit-weights:
+	docker compose exec engine python -m anchor.backtesting.fit_weights \
+		--instruments EUR_USD,GBP_USD,USD_JPY,AUD_USD,GBP_JPY \
+		--end 2024-01-01
+
+fit-weights-apply:
+	docker compose exec engine python -m anchor.backtesting.fit_weights \
+		--instruments EUR_USD,GBP_USD,USD_JPY,AUD_USD,GBP_JPY \
+		--end 2024-01-01 \
+		--apply
+
+# IC-based instrument ranking: which pairs to keep, deprioritize, or drop.
+# Removes guesswork from pair selection using statistical signal reliability.
+instrument-confidence:
+	docker compose exec engine python -m anchor.backtesting.instrument_confidence \
+		--instruments EUR_USD,GBP_USD,USD_JPY,AUD_USD,NZD_USD,USD_CHF,EUR_GBP,GBP_JPY \
+		--end 2024-01-01
+
+# Monte Carlo validation: bootstrap CIs + permutation test + forward equity sims.
+# Answers: "Is my edge real?" and "What's my realistic 6-month outcome range?"
+# Use --forward-months and --trades-per-month to match your expected trade frequency.
+monte-carlo:
+	docker compose exec engine python -m anchor.backtesting.monte_carlo \
+		--instrument $(or $(PAIR),EUR_USD) \
+		--end 2024-01-01 \
+		--forward-months 6 \
+		--trades-per-month 20
+
+monte-carlo-all:
+	@for pair in EUR_USD GBP_USD USD_JPY AUD_USD GBP_JPY; do \
+		echo "========== MONTE CARLO: $$pair =========="; \
+		docker compose exec engine python -m anchor.backtesting.monte_carlo \
+			--instrument $$pair --end 2024-01-01 --forward-months 6; \
+	done
+
+# Backtest the London Close Reversal (NY session) strategy in isolation.
+# Tests EUR_USD, GBP_USD, USD_JPY only — the pairs with documented LCR edge.
+lcr-backtest:
+	docker compose exec engine python -m anchor.backtesting.mr_backtest \
+		--instrument $(or $(PAIR),EUR_USD) \
+		--h1-csv  data/$(or $(PAIR),EUR_USD)_H1.csv \
+		--d-csv   data/$(or $(PAIR),EUR_USD)_D.csv \
+		--balance 10000
 
 import-cot:
 	docker compose exec engine python -m anchor.data.cot_parser

@@ -35,7 +35,9 @@
       "Bash(/c/Users/z-Nwosu.Ozichi.G/AppData/Local/Programs/Python/Python312/python -m pip install paramiko -q)",
       "Bash(/c/Users/z-Nwosu.Ozichi.G/AppData/Local/Programs/Python/Python312/python -c \":*)",
       "Bash(ssh -o StrictHostKeyChecking=no root@89.167.82.233 'cat /opt/anchor/deploy.sh')",
-      "Bash(ssh -o:*)"
+      "Bash(ssh -o:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker cp:*)"
     ]
   }
 }
