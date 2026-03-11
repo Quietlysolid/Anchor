@@ -48,9 +48,8 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
     ro.observe(containerRef.current)
 
     return () => { chart.remove(); ro.disconnect(); chartRef.current = null; seriesRef.current = null; markersRef.current = null }
-  // Recreate chart when instrument or height changes to avoid stale series data
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [height, instrument])
+  }, [height])
 
   // Reload historical bars whenever the candles array changes (pair/tf switch or REST refetch)
   useEffect(() => {

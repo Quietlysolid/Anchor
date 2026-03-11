@@ -64,6 +64,7 @@ export default function Dashboard() {
           )}
         </div>
         <CandlestickChart
+          key={`${pair}-${tf}`}
           candles={candles ?? []}
           instrument={pair}
           trades={(trades ?? []).filter(t => t.instrument === pair)}
