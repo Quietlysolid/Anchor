@@ -33,7 +33,9 @@ export interface Signal {
   adx_score: number | null
   sr_score: number | null
   mtf_score: number | null
-  csi_score: number | null
+  csi_score: number | null        // OANDA sentiment score (field reused)
+  cot_score: number | null        // COT institutional positioning
+  rate_divergence_score: number | null  // FRED central bank rate divergence
   ml_confidence: number | null
   regime_state: Regime | null
   session: Session | null

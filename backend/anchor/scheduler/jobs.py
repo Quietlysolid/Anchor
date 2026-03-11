@@ -235,6 +235,7 @@ def run_signal_scan(self):
     submit an order to OANDA via the OrderManager execution pipeline.
     """
     async def _inner():
+        import json
         import pandas as pd
         from anchor.config import settings
         from anchor.database.engine import init_db
@@ -457,9 +458,40 @@ def run_signal_scan(self):
                         session=result.session,
                         suppressed=result.suppressed,
                         suppression_reason=result.suppression_reason,
+                        signal_metadata=result.metadata or {},
                     )
                     session.add(row)
                     await session.flush()  # get row.id assigned
+
+                    # Broadcast signal to dashboard via Redis → WebSocket fanout
+                    try:
+                        meta = result.metadata or {}
+                        await redis_client.publish("signals", json.dumps({
+                            "channel": "signals",
+                            "data": {
+                                "id":                    str(row.id),
+                                "created_at":            row.created_at.isoformat() if row.created_at else None,
+                                "instrument":            instrument,
+                                "timeframe":             "H1",
+                                "direction":             result.direction,
+                                "confluence_score":      float(result.confluence_score),
+                                "rsi_score":             float(result.rsi_score)       if result.rsi_score       is not None else None,
+                                "bb_kc_score":           float(result.bb_kc_score)     if result.bb_kc_score     is not None else None,
+                                "adx_score":             float(result.adx_score)       if result.adx_score       is not None else None,
+                                "sr_score":              float(result.sr_score)        if result.sr_score        is not None else None,
+                                "mtf_score":             float(result.mtf_score)       if result.mtf_score       is not None else None,
+                                "csi_score":             float(result.csi_score)       if result.csi_score       is not None else None,
+                                "cot_score":             float(meta["cot_score"])             if meta.get("cot_score")             is not None else None,
+                                "rate_divergence_score": float(meta["rate_divergence_score"]) if meta.get("rate_divergence_score") is not None else None,
+                                "ml_confidence":         float(result.ml_confidence)   if result.ml_confidence   is not None else None,
+                                "regime_state":          result.regime_state,
+                                "session":               result.session,
+                                "suppressed":            result.suppressed,
+                                "suppression_reason":    result.suppression_reason,
+                            },
+                        }))
+                    except Exception as _ws_exc:
+                        logger.warning("signal_ws_publish_failed", error=str(_ws_exc))
 
                     if result.suppressed:
                         await session.commit()

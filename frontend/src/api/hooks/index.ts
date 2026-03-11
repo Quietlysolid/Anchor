@@ -26,6 +26,9 @@ export const useRegime = () =>
 export const useCalendar = () =>
   useQuery({ queryKey: ['calendar'], queryFn: () => api.get<EconomicEvent[]>('/calendar/upcoming?hours_ahead=48&impact=HIGH,MEDIUM'), refetchInterval: 5 * 60_000 })
 
+export const useLatestSignals = () =>
+  useQuery({ queryKey: ['signals-latest'], queryFn: () => api.get<import('../../types').Signal[]>('/signals/latest?limit=50'), refetchInterval: 60_000 })
+
 export const useCandles = (instrument: string, timeframe: string) => {
   const key = ['candles', instrument, timeframe]
 
