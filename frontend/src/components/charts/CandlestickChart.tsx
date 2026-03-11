@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
-import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightweight-charts'
-import type { IChartApi, ISeriesApi, SeriesMarker, Time } from 'lightweight-charts'
+import { createChart, ColorType, CrosshairMode, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts'
+import type { IChartApi, ISeriesApi, SeriesMarker, Time, ISeriesMarkersPluginApi } from 'lightweight-charts'
 import { wsClient } from '../../api/websocket'
 import type { Candle, LivePrice, Trade } from '../../types'
 
@@ -12,9 +12,10 @@ interface Props {
 }
 
 export function CandlestickChart({ candles, instrument, trades = [], height = 300 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const chartRef     = useRef<IChartApi | null>(null)
-  const seriesRef    = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const containerRef  = useRef<HTMLDivElement>(null)
+  const chartRef      = useRef<IChartApi | null>(null)
+  const seriesRef     = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const markersRef    = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
 
   // Create chart once
   useEffect(() => {
@@ -36,15 +37,16 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
       wickUpColor: '#22c55e', wickDownColor: '#ef4444',
     })
 
-    chartRef.current  = chart
-    seriesRef.current = series
+    chartRef.current   = chart
+    seriesRef.current  = series
+    markersRef.current = createSeriesMarkers(series, [])
 
     const ro = new ResizeObserver(([e]) => {
       chart.applyOptions({ width: e.contentRect.width })
     })
     ro.observe(containerRef.current)
 
-    return () => { chart.remove(); ro.disconnect(); chartRef.current = null; seriesRef.current = null }
+    return () => { chart.remove(); ro.disconnect(); chartRef.current = null; seriesRef.current = null; markersRef.current = null }
   // height only — we intentionally keep the chart instance stable
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [height])
@@ -63,7 +65,7 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
 
   // Draw trade entry/exit markers whenever trades or candles change
   useEffect(() => {
-    if (!seriesRef.current || !candles.length) return
+    if (!markersRef.current || !candles.length) return
 
     const markers: SeriesMarker<Time>[] = []
 
@@ -106,7 +108,7 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
 
     // Markers must be sorted by time
     markers.sort((a, b) => (a.time as number) - (b.time as number))
-    seriesRef.current.setMarkers(markers)
+    markersRef.current?.setMarkers(markers)
   }, [trades, candles])
 
   // Update the live (last) candle on every WebSocket tick for this instrument
