@@ -19,6 +19,7 @@ import numpy as np
 import structlog
 
 from anchor.config import settings
+from anchor.utils.math_utils import wilder_atr
 from anchor.database.engine import get_session
 from anchor.database.repositories import MarketDataRepository
 from anchor.database.models import Position, Signal as SignalModel
@@ -40,23 +41,6 @@ _TP_ATR_MULT = 3.0
 _MAX_FORWARD_BARS = 48  # cap look-forward at 48 H1 bars (2 trading days)
 
 
-def _wilder_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
-    """Wilder's smoothed ATR — matches the `ta` library used in live trading."""
-    n = len(closes)
-    tr = np.zeros(n)
-    for i in range(1, n):
-        tr[i] = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i]  - closes[i - 1]),
-        )
-    atr = np.full(n, np.nan)
-    if n > period:
-        atr[period] = float(np.mean(tr[1: period + 1]))
-        alpha = 1.0 / period
-        for i in range(period + 1, n):
-            atr[i] = alpha * tr[i] + (1.0 - alpha) * atr[i - 1]
-    return atr
 
 
 def _make_labels(
@@ -85,7 +69,7 @@ def _make_labels(
     """
     n = len(closes)
     labels = np.full(n, -1, dtype=int)
-    atr = _wilder_atr(highs, lows, closes)
+    atr = wilder_atr(highs, lows, closes)
 
     for k in range(14, n - 1):
         if np.isnan(atr[k]):

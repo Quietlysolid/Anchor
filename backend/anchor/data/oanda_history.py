@@ -3,7 +3,7 @@ Fetches historical OHLCV candles from OANDA REST API.
 Used to seed the database on first run and to backfill missing data.
 """
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pandas as pd
@@ -231,7 +231,6 @@ async def bootstrap_from_oanda(
 
 if __name__ == "__main__":
     import argparse
-    from datetime import timezone
 
     parser = argparse.ArgumentParser(description="Bootstrap OANDA history into DB")
     parser.add_argument(
@@ -247,7 +246,6 @@ if __name__ == "__main__":
     parser.add_argument("--no-retrain", action="store_true", help="Skip ML retraining")
     args = parser.parse_args()
 
-    from datetime import timezone
     start_dt = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     end_dt   = datetime.strptime(args.end,   "%Y-%m-%d").replace(tzinfo=timezone.utc)
 

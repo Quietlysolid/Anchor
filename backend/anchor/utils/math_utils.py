@@ -1,6 +1,41 @@
 import numpy as np
 
 
+def wilder_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
+    """Wilder's smoothed ATR as a full array. matches the `ta` library used in live trading.
+
+    Returns an array of length len(closes) where the first `period` values are NaN.
+    Use float(result[-1]) to get the current ATR value.
+    """
+    n = len(closes)
+    tr = np.zeros(n)
+    for i in range(1, n):
+        tr[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i]  - closes[i - 1]),
+        )
+    atr = np.full(n, np.nan)
+    if n > period:
+        atr[period] = float(np.mean(tr[1: period + 1]))
+        alpha = 1.0 / period
+        for i in range(period + 1, n):
+            atr[i] = alpha * tr[i] + (1.0 - alpha) * atr[i - 1]
+    return atr
+
+
+def wilder_atr_scalar(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
+    """Returns the single current ATR value (last element of wilder_atr)."""
+    prev_closes = np.roll(closes, 1)
+    prev_closes[0] = closes[0]
+    tr = np.maximum(highs - lows, np.maximum(np.abs(highs - prev_closes), np.abs(lows - prev_closes)))
+    atr = float(np.mean(tr[:period]))
+    alpha = 1.0 / period
+    for tv in tr[period:]:
+        atr = alpha * float(tv) + (1.0 - alpha) * atr
+    return atr
+
+
 PIP_SIZES: dict[str, float] = {
     "EUR_USD": 0.0001, "GBP_USD": 0.0001, "AUD_USD": 0.0001,
     "NZD_USD": 0.0001, "USD_CAD": 0.0001, "USD_CHF": 0.0001,

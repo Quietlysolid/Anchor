@@ -8,7 +8,6 @@ Usage: python -m anchor.backtesting.engine --instrument EUR_USD --start 2020-01-
 from __future__ import annotations
 
 import argparse
-import asyncio
 from datetime import datetime, timezone
 
 import asyncio as _asyncio
@@ -28,6 +27,7 @@ from anchor.risk.weekend_guard import WeekendGuard as _WG
 from anchor.risk.holiday_calendar import is_holiday
 from anchor.ml.xgb_classifier import XGBDirectionClassifier
 from anchor.ml.feature_engineer import FeatureEngineer
+from anchor.utils.math_utils import wilder_atr_scalar
 
 MODEL_DIR = Path("/app/models")
 
@@ -190,21 +190,7 @@ class BacktestEngine:
                 closes = h1_window["close"].values
                 highs = h1_window["high"].values
                 lows = h1_window["low"].values
-                prev_closes = np.roll(closes, 1)
-                prev_closes[0] = closes[0]  # avoid roll wrap artifact
-                tr = np.maximum(
-                    highs - lows,
-                    np.maximum(
-                        np.abs(highs - prev_closes),
-                        np.abs(lows - prev_closes),
-                    ),
-                )
-                # Wilder's: seed with 14-bar mean, then apply EMA with α=1/14
-                _atr_period = 14
-                atr = float(np.mean(tr[:_atr_period]))
-                _alpha = 1.0 / _atr_period
-                for _tr_val in tr[_atr_period:]:
-                    atr = _alpha * float(_tr_val) + (1.0 - _alpha) * atr
+                atr = wilder_atr_scalar(highs, lows, closes)
 
                 # Queue fill for next bar's open — no lookahead on price.
                 pending_fill = {

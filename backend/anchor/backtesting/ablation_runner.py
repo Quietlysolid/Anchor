@@ -50,7 +50,6 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
-import os
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -61,6 +60,7 @@ logging.disable(logging.CRITICAL)
 from anchor.backtesting.engine import BacktestEngine
 from anchor.backtesting.results import BacktestResults
 from anchor.signals.engine import ConfluenceEngine
+from anchor.utils.math_utils import wilder_atr_scalar
 
 
 # ── Ablation test definitions ─────────────────────────────────────────────────
@@ -286,17 +286,10 @@ class _AblatedBacktestEngine(BacktestEngine):
                 if result.suppressed or result.direction is None:
                     continue
 
-                closes     = h1_window["close"].values
-                highs      = h1_window["high"].values
-                lows       = h1_window["low"].values
-                prev_c     = np.roll(closes, 1); prev_c[0] = closes[0]
-                tr         = np.maximum(highs - lows, np.maximum(
-                    np.abs(highs - prev_c), np.abs(lows - prev_c)))
-                _p = 14
-                atr = float(np.mean(tr[:_p]))
-                _a  = 1.0 / _p
-                for _v in tr[_p:]:
-                    atr = _a * float(_v) + (1.0 - _a) * atr
+                closes = h1_window["close"].values
+                highs  = h1_window["high"].values
+                lows   = h1_window["low"].values
+                atr    = wilder_atr_scalar(highs, lows, closes)
 
                 pending_fill = {
                     "direction":       result.direction,
