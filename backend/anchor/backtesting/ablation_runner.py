@@ -49,9 +49,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import logging
+import os
 from dataclasses import dataclass, field
 
 import pandas as pd
+
+# Suppress all logging output during backtests — structlog uses stdlib under the hood
+logging.disable(logging.CRITICAL)
 
 from anchor.backtesting.engine import BacktestEngine
 from anchor.backtesting.results import BacktestResults
