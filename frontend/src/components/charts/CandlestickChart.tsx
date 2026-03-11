@@ -1,16 +1,17 @@
 import { useEffect, useRef } from 'react'
 import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightweight-charts'
-import type { IChartApi, ISeriesApi } from 'lightweight-charts'
+import type { IChartApi, ISeriesApi, SeriesMarker, Time } from 'lightweight-charts'
 import { wsClient } from '../../api/websocket'
-import type { Candle, LivePrice } from '../../types'
+import type { Candle, LivePrice, Trade } from '../../types'
 
 interface Props {
   candles: Candle[]
   instrument: string
+  trades?: Trade[]
   height?: number
 }
 
-export function CandlestickChart({ candles, instrument, height = 300 }: Props) {
+export function CandlestickChart({ candles, instrument, trades = [], height = 300 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef     = useRef<IChartApi | null>(null)
   const seriesRef    = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -23,7 +24,7 @@ export function CandlestickChart({ candles, instrument, height = 300 }: Props) {
       layout: { background: { type: ColorType.Solid, color: 'hsl(222,84%,5%)' }, textColor: '#94a3b8' },
       grid: { vertLines: { color: 'hsl(217,33%,13%)' }, horzLines: { color: 'hsl(217,33%,13%)' } },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: 'hsl(217,33%,17%)' },
+      rightPriceScale: { borderColor: 'hsl(217,33%,17%)', autoScale: true },
       timeScale: { borderColor: 'hsl(217,33%,17%)', timeVisible: true },
       height,
       width: containerRef.current.clientWidth,
@@ -57,7 +58,56 @@ export function CandlestickChart({ candles, instrument, height = 300 }: Props) {
     }))
     seriesRef.current.setData(data)
     chartRef.current?.timeScale().fitContent()
+    chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
   }, [candles])
+
+  // Draw trade entry/exit markers whenever trades or candles change
+  useEffect(() => {
+    if (!seriesRef.current || !candles.length) return
+
+    const markers: SeriesMarker<Time>[] = []
+
+    for (const trade of trades) {
+      const entryTs = Math.floor(new Date(trade.opened_at).getTime() / 1000)
+      const exitTs  = Math.floor(new Date(trade.closed_at).getTime() / 1000)
+
+      // Snap to the nearest candle time that exists in the series
+      const snap = (ts: number) => {
+        let best = candles[0].time as number
+        for (const c of candles) {
+          if (Math.abs((c.time as number) - ts) < Math.abs(best - ts)) best = c.time as number
+        }
+        return best as Time
+      }
+
+      const isLong  = trade.direction === 'LONG'
+      const isWin   = trade.net_pl > 0
+
+      // Entry marker — triangle pointing in direction of trade
+      markers.push({
+        time:     snap(entryTs),
+        position: isLong ? 'belowBar' : 'aboveBar',
+        shape:    isLong ? 'arrowUp'  : 'arrowDown',
+        color:    '#3b82f6',   // blue — entry
+        text:     `${isLong ? '▲' : '▼'} ${trade.entry_price.toFixed(5)}`,
+        size:     1,
+      })
+
+      // Exit marker — circle, green for win, red for loss
+      markers.push({
+        time:     snap(exitTs),
+        position: isLong ? 'aboveBar' : 'belowBar',
+        shape:    'circle',
+        color:    isWin ? '#22c55e' : '#ef4444',
+        text:     `${isWin ? '+' : ''}${trade.net_pl.toFixed(2)}`,
+        size:     1,
+      })
+    }
+
+    // Markers must be sorted by time
+    markers.sort((a, b) => (a.time as number) - (b.time as number))
+    seriesRef.current.setMarkers(markers)
+  }, [trades, candles])
 
   // Update the live (last) candle on every WebSocket tick for this instrument
   useEffect(() => {

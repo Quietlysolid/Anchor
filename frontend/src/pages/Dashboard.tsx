@@ -7,7 +7,7 @@ import { RiskMetricsPanel } from '../components/panels/RiskMetricsPanel'
 import { SystemHealthPanel } from '../components/panels/SystemHealthPanel'
 import { EconomicCalendarPanel } from '../components/panels/EconomicCalendarPanel'
 import { PositionsTable } from '../components/tables/PositionTable'
-import { useCandles, useEquityCurve } from '../api/hooks'
+import { useCandles, useEquityCurve, useTradeJournal } from '../api/hooks'
 import { useMarketStore } from '../store'
 
 const INSTRUMENTS = ['EUR_USD','GBP_USD','USD_JPY','AUD_USD','USD_CAD']
@@ -19,6 +19,7 @@ export default function Dashboard() {
   const [now,  setNow]  = useState(() => new Date())
   const { data: candles } = useCandles(pair, tf)
   const { data: equity  } = useEquityCurve()
+  const { data: trades  } = useTradeJournal()
   const prices = useMarketStore(s => s.prices)
   const live = prices[pair]
 
@@ -62,7 +63,12 @@ export default function Dashboard() {
             </div>
           )}
         </div>
-        <CandlestickChart candles={candles ?? []} instrument={pair} height={280} />
+        <CandlestickChart
+          candles={candles ?? []}
+          instrument={pair}
+          trades={(trades ?? []).filter(t => t.instrument === pair)}
+          height={280}
+        />
       </div>
 
       {/* Panels row */}
