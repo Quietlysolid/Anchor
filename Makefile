@@ -57,6 +57,19 @@ walk-forward:
 walk-forward-all:
 	@for pair in EUR_USD GBP_USD USD_JPY AUD_USD USD_CAD; do 		echo "========== WALK-FORWARD: $$pair =========="; 		$(MAKE) walk-forward PAIR=$$pair; 	done
 
+mr-backtest:
+	docker compose exec engine python -m anchor.backtesting.mr_backtest \
+		--instrument $(PAIR) \
+		--h1-csv  data/$(PAIR)_H1.csv \
+		--d-csv   data/$(PAIR)_D.csv \
+		--balance 10000
+
+mr-backtest-all:
+	@for pair in EUR_USD GBP_USD USD_JPY AUD_USD USD_CAD NZD_USD USD_CHF EUR_GBP GBP_JPY; do \
+		echo "========== MR BACKTEST: $$pair =========="; \
+		$(MAKE) mr-backtest PAIR=$$pair; \
+	done
+
 import-cot:
 	docker compose exec engine python -m anchor.data.cot_parser
 

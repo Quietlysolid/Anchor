@@ -673,6 +673,130 @@ def run_signal_scan(self):
             except Exception as exc:
                 logger.error("mr_scan_instrument_failed", instrument=instrument, error=str(exc))
 
+            # ── M15 trend-following scan (same engine, shorter timeframe) ──
+            # M15 uses H1 as the higher-timeframe confirmation (instead of H4+D).
+            # This generates 3-4× more signals per day. Same confluence threshold (0.65).
+            # SL/TP use M15 ATR — smaller in $ terms but same 1% risk sizing.
+            # GTD 1 hour (M15 setups go stale much faster than H1).
+            try:
+                async with _db_engine.AsyncSessionFactory() as m15_session:
+                    m15_market_repo  = MarketDataRepository(m15_session)
+                    m15_order_repo   = OrderRepository(m15_session)
+                    m15_order_manager = OrderManager(m15_order_repo, broker, redis=redis_client)
+
+                    m15 = await m15_market_repo.get_latest_n_candles(instrument, "M15", 300)
+                    if len(m15) < 50:
+                        continue
+
+                    # For M15 signals: use H1 as the "4H equivalent" and H4 as "Daily equivalent"
+                    # The engine._get_data() reads from data_cache, so we inject M15 as H1
+                    # and shift the existing H1 into the H4 slot for this scan only.
+                    m15_cache = {
+                        "H1": {instrument: to_df(m15)},   # M15 bars → signal timeframe
+                        "H4": {instrument: to_df(h1)},    # H1 bars  → MTF confirmation
+                        "D":  {instrument: to_df(d1)},    # Daily stays as macro filter
+                    }
+                    engine.data_cache    = m15_cache
+                    engine.hmm_detector  = _hmm_detectors.get(instrument)
+                    engine.ml_classifier = None  # skip ML on M15 — not enough labeled data
+                    engine.feature_engineer = None
+                    engine.ood_detector  = None
+
+                    m15_result = await engine.evaluate(instrument, dt=now)
+
+                    # Restore H1 cache for next instrument iteration
+                    engine.data_cache = {}
+
+                    logger.debug(
+                        "m15_signal_evaluated",
+                        instrument=instrument,
+                        suppressed=m15_result.suppressed,
+                        reason=m15_result.suppression_reason,
+                        confluence=m15_result.confluence_score,
+                        session=m15_result.session,
+                    )
+
+                    if m15_result.suppressed:
+                        continue
+
+                    # Execution gates
+                    if not drawdown_monitor.check()[0]:
+                        continue
+                    if daily_limiter.is_halted(balance):
+                        continue
+                    already_open = any(p.instrument == instrument for p in open_positions)
+                    if already_open:
+                        continue
+                    corr_ok, _ = correlation_mgr.check_new_position(
+                        instrument, m15_result.direction, open_positions
+                    )
+                    if not corr_ok:
+                        continue
+
+                    # ATR from M15 data
+                    m15_df = to_df(m15)
+                    prev_close_m15 = m15_df["close"].shift(1)
+                    tr_m15 = pd.concat([
+                        m15_df["high"] - m15_df["low"],
+                        (m15_df["high"] - prev_close_m15).abs(),
+                        (m15_df["low"]  - prev_close_m15).abs(),
+                    ], axis=1).max(axis=1)
+                    atr_m15 = tr_m15.rolling(14).mean().iloc[-1]
+
+                    close_m15 = float(m15_df["close"].iloc[-1])
+                    if m15_result.direction == "LONG":
+                        m15_entry = round(close_m15 - atr_m15 * 0.3, 5)
+                        m15_sl    = round(m15_entry - 1.5 * atr_m15, 5)
+                        m15_tp    = round(m15_entry + 2.0 * atr_m15, 5)
+                    else:
+                        m15_entry = round(close_m15 + atr_m15 * 0.3, 5)
+                        m15_sl    = round(m15_entry + 1.5 * atr_m15, 5)
+                        m15_tp    = round(m15_entry - 2.0 * atr_m15, 5)
+
+                    m15_units = sizer.compute(
+                        account_balance=balance,
+                        instrument=instrument,
+                        entry_price=m15_entry,
+                        stop_loss=m15_sl,
+                        drawdown_scale=drawdown_monitor.scale_factor,
+                        vix_scale=m15_result.vix_multiplier,
+                    )
+
+                    m15_direction = Direction.LONG if m15_result.direction == "LONG" else Direction.SHORT
+                    m15_order = OrderRequest(
+                        instrument=instrument,
+                        direction=m15_direction,
+                        units=m15_units,
+                        order_type=OrderType.LIMIT,
+                        stop_loss=m15_sl,
+                        take_profit=m15_tp,
+                        limit_price=m15_entry,
+                        gtd_time=now + timedelta(hours=1),  # M15 setups go stale fast
+                    )
+
+                    m15_order_id = await m15_order_manager.submit(m15_order)
+                    logger.info(
+                        "m15_order_submitted",
+                        instrument=instrument,
+                        direction=m15_result.direction,
+                        units=m15_units,
+                        entry=m15_entry,
+                        sl=m15_sl,
+                        tp=m15_tp,
+                        confluence=m15_result.confluence_score,
+                        order_id=str(m15_order_id),
+                    )
+                    await _alerts.send_info(
+                        f"M15 Order: {m15_result.direction} {instrument}\n"
+                        f"Entry: {m15_entry}  SL: {m15_sl}  TP: {m15_tp}\n"
+                        f"Units: {m15_units}  Score: {m15_result.confluence_score:.2f}\n"
+                        f"Expires: {(now + timedelta(hours=1)).strftime('%H:%M UTC')}"
+                    )
+                    await m15_session.commit()
+
+            except Exception as exc:
+                logger.error("m15_scan_instrument_failed", instrument=instrument, error=str(exc))
+
         await redis_client.aclose()
         sync_redis.close()
 
@@ -705,9 +829,10 @@ def import_candles(self):
 
         # How far back to pull per timeframe (enough to keep signal scan fed)
         lookback = {
-            "H1": timedelta(days=9),   # ~200 H1 bars
-            "H4": timedelta(days=17),  # ~100 H4 bars
-            "D":  timedelta(days=270), # ~250 D bars (need 200+ for SMA(200) in MTF check)
+            "M15": timedelta(days=3),  # ~288 M15 bars (3 days × 96 bars/day)
+            "H1":  timedelta(days=9),  # ~200 H1 bars
+            "H4":  timedelta(days=17), # ~100 H4 bars
+            "D":   timedelta(days=270),# ~250 D bars (need 200+ for SMA(200) in MTF check)
         }
 
         for instrument in settings.instruments:
@@ -1045,6 +1170,46 @@ def startup_diagnostics(self):
         _run_async(_inner())
     except Exception as exc:
         logger.error("startup_diagnostics_failed", error=str(exc))
+
+
+@celery_app.task(name="anchor.scheduler.jobs.run_partial_tp", bind=True, max_retries=2)
+def run_partial_tp(self):
+    """Check all open positions and execute partial TP where the 1×ATR trigger has been hit.
+
+    Runs every 5 minutes. At 1×ATR profit:
+      - Close 50% of position at market
+      - Move SL to breakeven on remaining 50%
+      - Let remainder run to original TP
+    """
+    async def _inner():
+        from anchor.database.engine import init_db
+        from anchor.database.repositories.positions import PositionRepository
+        from anchor.execution.broker_client import BrokerClient
+        from anchor.execution.partial_tp_manager import PartialTPManager
+
+        await init_db()
+        import anchor.database.engine as _db_engine
+
+        broker = BrokerClient()
+
+        async with _db_engine.AsyncSessionFactory() as session:
+            pos_repo = PositionRepository(session)
+            manager  = PartialTPManager(
+                broker_client=broker,
+                position_repo=pos_repo,
+                alerts=_alerts,
+            )
+            executed = await manager.run()
+            await session.commit()
+
+        if executed:
+            logger.info("partial_tp_cycle_complete", partial_closes=executed)
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("run_partial_tp_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=60)
 
 
 @celery_app.task(name="anchor.scheduler.jobs.retrain_models", bind=True, max_retries=1)

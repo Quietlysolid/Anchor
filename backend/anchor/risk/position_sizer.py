@@ -37,8 +37,12 @@ USD_BASE_PAIRS = {"USD_JPY", "USD_CHF", "USD_CAD"}
 # Instruments quoted in JPY (need extra conversion approximation)
 JPY_QUOTE_PAIRS = {"EUR_JPY", "GBP_JPY", "AUD_JPY", "NZD_JPY"}
 
-# Approximate USD/JPY to convert JPY-pip values to USD (updated at runtime if possible)
+# GBP-quoted pairs: 1 pip = pip_size GBP → approximate in USD via GBP/USD
+GBP_QUOTE_PAIRS = {"EUR_GBP"}
+
+# Approximate rates for cross-pair pip conversion (conservative — updated at runtime if possible)
 _APPROX_USDJPY = 150.0
+_APPROX_GBPUSD = 1.27  # conservative (low end) — over-estimates risk slightly, keeps us safe
 
 
 def set_usdjpy_rate(rate: float) -> None:
@@ -57,6 +61,10 @@ def _pip_value_per_unit(instrument: str, entry_price: float, pip_size: float) ->
     if instrument in JPY_QUOTE_PAIRS:
         # e.g. EUR_JPY: 1 pip in JPY, convert to USD
         return (pip_size / _APPROX_USDJPY) if _APPROX_USDJPY > 0 else pip_size
+
+    if instrument in GBP_QUOTE_PAIRS:
+        # e.g. EUR_GBP: 1 pip in GBP, convert to USD via GBP/USD rate
+        return pip_size * _APPROX_GBPUSD if _APPROX_GBPUSD > 0 else pip_size
 
     # Default: USD is the quote currency (EUR_USD, GBP_USD, AUD_USD, NZD_USD, USD_CHF treated above)
     return pip_size

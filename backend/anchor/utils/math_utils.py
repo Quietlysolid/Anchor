@@ -4,8 +4,10 @@ import numpy as np
 PIP_SIZES: dict[str, float] = {
     "EUR_USD": 0.0001, "GBP_USD": 0.0001, "AUD_USD": 0.0001,
     "NZD_USD": 0.0001, "USD_CAD": 0.0001, "USD_CHF": 0.0001,
+    "EUR_GBP": 0.0001, "EUR_CAD": 0.0001, "GBP_CAD": 0.0001,
     "USD_JPY": 0.01,   "EUR_JPY": 0.01,   "GBP_JPY": 0.01,
     "AUD_JPY": 0.01,   "CHF_JPY": 0.01,   "CAD_JPY": 0.01,
+    "NZD_JPY": 0.01,
 }
 
 

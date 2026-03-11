@@ -33,6 +33,7 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.update_vix": {"queue": "default"},
         "anchor.scheduler.jobs.update_oanda_sentiment": {"queue": "default"},
         "anchor.scheduler.jobs.startup_diagnostics": {"queue": "default"},
+        "anchor.scheduler.jobs.run_partial_tp": {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -87,6 +88,10 @@ celery_app.conf.update(
         "startup-diagnostics-daily": {
             "task": "anchor.scheduler.jobs.startup_diagnostics",
             "schedule": 86_400.0,  # runs once at startup then every 24h
+        },
+        "partial-tp-every-5-min": {
+            "task": "anchor.scheduler.jobs.run_partial_tp",
+            "schedule": 300.0,  # aligns with signal scan — checks open positions every 5 min
         },
     },
     worker_prefetch_multiplier=1,

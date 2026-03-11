@@ -75,7 +75,13 @@ class Settings(BaseSettings):
 
     # ── Instruments ───────────────────────────────────────────
     instruments: list[str] = [
+        # Tier-1 majors (original 5)
         "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
+        # Tier-2 expansion: low correlation to tier-1, sufficient liquidity
+        "NZD_USD",  # low correlation to AUD_USD (~0.65) — different central bank
+        "USD_CHF",  # safe-haven inverse — near-zero correlation with JPY pairs
+        "EUR_GBP",  # pure EUR vs GBP — almost zero USD correlation
+        "GBP_JPY",  # high vol, wide range, excellent for trend-following
     ]
 
     # ── Timeframes ────────────────────────────────────────────

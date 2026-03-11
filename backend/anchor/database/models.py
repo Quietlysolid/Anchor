@@ -183,6 +183,8 @@ class Position(Base):
     trailing_stop_distance: Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     oanda_trade_id:         Mapped[str | None]      = mapped_column(String(64), unique=True)
     status:                 Mapped[str]             = mapped_column(String(8), nullable=False, default="OPEN")
+    partial_tp_done:        Mapped[bool]            = mapped_column(Boolean, nullable=False, default=False)
+    initial_units:          Mapped[Decimal | None]  = mapped_column(Numeric(18, 2))  # units at open, before partial close
     signal_id:              Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("signals.id"))
 
     trade: Mapped["Trade | None"] = relationship("Trade", back_populates="position", uselist=False)

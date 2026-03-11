@@ -121,7 +121,7 @@ class MeanReversionEngine:
         result = MRSignalResult(instrument=instrument, created_at=dt)
 
         # ── Gate 1: Session ───────────────────────────────────────────────
-        session_ok, session_reason = check_session(dt)
+        session_ok, session_reason = check_session(dt, instrument=instrument)
         if not session_ok:
             result.suppression_reason = session_reason
             result.session = session_reason

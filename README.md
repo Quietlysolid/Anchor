@@ -44,9 +44,11 @@ Two strategies run in parallel, regime-gated by HMM:
 | **BB Mean Reversion** | RANGING | `MeanReversionEngine` | `signals/mean_reversion_engine.py` |
 | *(nothing)* | VOLATILE | — | Both blocked |
 
-**Trend engine**: direction from 4H+Daily MTF alignment, RSI divergence as booster, 6-component confluence, threshold 0.65.
+**Trend engine** (H1 + M15): direction from 4H+Daily MTF alignment, RSI divergence as booster, 7-component confluence (RSI, BB/KC, ADX, S/R, MTF, sentiment, COT), threshold 0.65. M15 signals use H1 as confirmation timeframe, GTD 1h.
 
-**Mean-reversion engine**: fades price back to BB midband when price touches outer BB (2σ) with RSI extreme + pin bar rejection + ADX < 25. Threshold 0.60. SL beyond outer band + 0.5×ATR, TP at midband. GTD 2 hours (London only — resolves before NY open injects trend).
+**Mean-reversion engine** (H1): fades price back to BB midband when price touches outer BB (2σ) with RSI extreme (65/35) + pin bar rejection + ADX < 25. Threshold 0.60. SL beyond outer band + 0.5×ATR, TP at midband. GTD 2 hours.
+
+**Partial TP**: at 1×ATR profit, close 50% of any open position and move SL to breakeven on the remaining 50%. Runs every 5 minutes.
 
 ---
 
@@ -58,7 +60,7 @@ These are non-negotiable. Every rule has a data-driven reason.
 |---|------|-------|
 | 1 | Confluence threshold | ≥ 0.65 |
 | 2 | Risk per trade | 1% of account (fixed fractional) |
-| 3 | Session | **London only** (07:00–12:00 UTC) — overlap removed (consistently losing) |
+| 3 | Session | **London 07:15–12:00 UTC** (first 15 min skipped — fake moves); **Asian 00:00–03:00 UTC for JPY pairs only** |
 | 4 | Direction | **MTF trend-following** (RSI divergence is a booster, never a direction driver) |
 | 5 | Stop loss | 1.5× ATR |
 | 6 | Take profit | 2.0× ATR → 1.33:1 R:R |
@@ -67,6 +69,8 @@ These are non-negotiable. Every rule has a data-driven reason.
 | 9 | Daily loss limit | 3% → halt rest of day |
 | 10 | Correlation block | Block new positions if existing correlation > 0.70 |
 | 11 | ML fallback | ML unavailable → rule-based only (no penalty) |
+| 12 | Partial TP | Close 50% at 1×ATR profit; move SL to breakeven on remainder |
+| 13 | COT filter | Institutional positioning (CFTC weekly) as confluence component (5% weight) |
 
 **Why MTF, not RSI divergence as direction?**
 RSI-divergence-led mean-reversion trades showed ~11% WR in backtests.
@@ -77,7 +81,11 @@ booster only — it adds score when it agrees with the trend.
 
 ## Instruments
 
-EUR_USD, GBP_USD, USD_JPY, AUD_USD, USD_CAD (tier-1 majors only)
+**Tier-1** (original 5): EUR_USD, GBP_USD, USD_JPY, AUD_USD, USD_CAD
+
+**Tier-2** (added): NZD_USD, USD_CHF, EUR_GBP, GBP_JPY
+
+Total: 9 instruments. Correlation block (>0.70) prevents simultaneous correlated trades.
 
 ---
 
@@ -113,20 +121,24 @@ HMM regime detector (3 states: TRENDING / RANGING / VOLATILE):
 
 ```
 backend/anchor/
-  config.py                    # all settings via .env, instruments list
-  signals/engine.py            # confluence engine — main trading logic
-  signals/session_filter.py    # London-only gate
-  risk/position_sizer.py       # 1% fixed fractional, correct pip values per pair
-  regime/hmm_detector.py       # 3-state HMM save/load
-  backtesting/engine.py        # backtest runner (data_cache pattern)
-  backtesting/ablation_runner.py   # sweeps all components on/off → CSV
+  config.py                          # all settings via .env, instruments list (9 pairs)
+  signals/engine.py                  # confluence engine — trend-following (H1 + M15)
+  signals/mean_reversion_engine.py   # BB-fade engine — RANGING regime only
+  signals/session_filter.py          # London 07:15-12:00 + Asian 00:00-03:00 for JPY
+  signals/cot_signal.py              # COT institutional positioning scorer (5% weight)
+  risk/position_sizer.py             # 1% fixed fractional, correct pip values per pair
+  execution/partial_tp_manager.py    # partial TP at 1×ATR, SL → breakeven on remainder
+  regime/hmm_detector.py             # 3-state HMM save/load
+  backtesting/engine.py              # trend backtest runner
+  backtesting/mr_backtest.py         # mean-reversion backtest runner
+  backtesting/ablation_runner.py     # sweeps all components on/off → CSV
   backtesting/walk_forward_backtest.py  # train/val/OOS walk-forward harness
-  data/oanda_history.py        # OANDA H1/H4/D candle importer
-  data/polygon_history.py      # Polygon.io 8-year CSV downloader
-  ml/retraining.py             # monthly Celery retraining task
-  execution/broker_client.py   # OANDA order execution
-  scheduler/jobs.py            # all scheduled tasks
-  scheduler/celery_app.py      # Celery config
+  data/oanda_history.py              # OANDA H1/H4/D/M15 candle importer
+  data/polygon_history.py            # Polygon.io 8-year CSV downloader
+  ml/retraining.py                   # monthly Celery retraining task
+  execution/broker_client.py         # OANDA order execution
+  scheduler/jobs.py                  # all scheduled tasks (trend + MR + M15 + partial TP)
+  scheduler/celery_app.py            # Celery config
 ```
 
 ---
@@ -145,12 +157,14 @@ make retrain                   # trigger ML retrain via Celery
 make lint                      # ruff + mypy
 make test                      # all tests
 
-# Ablation (requires data CSVs in data/)
-make download-history          # download 8yr history via Dukascopy
-make ablation PAIR=EUR_USD     # ablate one pair
-make ablation-all              # ablate all pairs
-make walk-forward PAIR=EUR_USD # walk-forward backtest one pair
-make walk-forward-all          # walk-forward all pairs
+# Backtesting (requires data CSVs in data/)
+make download-history              # download 8yr history via Dukascopy
+make ablation PAIR=EUR_USD         # trend ablation — one pair
+make ablation-all                  # trend ablation — all pairs
+make walk-forward PAIR=EUR_USD     # walk-forward — one pair
+make walk-forward-all              # walk-forward — all pairs
+make mr-backtest PAIR=EUR_USD      # MR backtest — one pair
+make mr-backtest-all               # MR backtest — all 9 pairs
 ```
 
 ---

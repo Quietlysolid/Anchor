@@ -113,6 +113,26 @@ class PositionRepository:
         self.session.add(trade)
         await self.session.flush()
 
+    async def mark_partial_tp_done(self, position_id: UUID, units_closed: int) -> None:
+        """Record that the first partial TP close has been executed."""
+        position = await self.get_by_id(position_id)
+        if position is None:
+            return
+        position.partial_tp_done = True
+        # Reduce tracked units by the amount closed
+        remaining = max(Decimal(0), position.units - Decimal(str(units_closed)))
+        if position.initial_units is None:
+            position.initial_units = position.units
+        position.units = remaining
+        await self.session.flush()
+
+    async def update_stop_loss(self, position_id: UUID, new_sl: float) -> None:
+        """Update stop loss after moving to breakeven."""
+        position = await self.get_by_id(position_id)
+        if position:
+            position.stop_loss = Decimal(str(new_sl))
+            await self.session.flush()
+
     async def create_from_broker_trade(self, broker_trade: dict) -> Position:
         """Reconstruct a Position from an OANDA trade dict (for crash recovery)."""
         position = Position(

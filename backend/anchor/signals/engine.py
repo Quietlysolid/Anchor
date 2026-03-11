@@ -33,6 +33,7 @@ from anchor.signals.support_resistance import compute_sr_score
 from anchor.signals.multi_timeframe   import check_mtf_alignment
 from anchor.signals.currency_strength import compute_csi, csi_signal_score
 from anchor.signals.oanda_sentiment   import sentiment_signal_score, get_cached_score as get_sentiment_score
+from anchor.signals.cot_signal        import get_cot_score
 from anchor.signals.vix_filter        import get_cached_multiplier as get_vix_multiplier, get_cached_vix
 from anchor.signals.session_filter    import check_session
 from anchor.signals.news_filter       import NewsFilter
@@ -72,19 +73,20 @@ class SignalResult:
 
 
 # Signal component weights (must sum to 1.0)
-# CSI dropped to 0.0: too sparse with only 5 instruments (USD gets 4 pairs,
-# others get 1-2), confirmed unreliable in practice.
-# Freed 0.05 weight goes to OANDA retail sentiment (contrarian, free from
-# broker, proven edge at extremes).
-# VIX is NOT a confluence component — it is a position-size multiplier only,
-# applied by the position sizer after signal generation.
+# CSI dropped to 0.0: too sparse (USD gets 4 pairs, others 1-2), unreliable.
+# COT (institutional positioning, weekly CFTC) added at 0.05 — macro filter.
+#   Confirms trade direction aligns with speculative/institutional bias.
+#   Fail-open at 0.5 (neutral) when data unavailable — never blocks alone.
+# MTF reduced from 0.10 → 0.05 to make room for COT (still meaningful signal).
+# VIX is NOT a confluence component — position-size multiplier only.
 WEIGHTS = {
     "rsi_divergence":    0.25,
     "bb_kc_squeeze":     0.20,
     "adx_filter":        0.15,
     "sr_strength":       0.25,
-    "mtf_agreement":     0.10,
+    "mtf_agreement":     0.05,
     "oanda_sentiment":   0.05,
+    "cot_signal":        0.05,
 }
 
 
@@ -144,7 +146,7 @@ class ConfluenceEngine:
         result = SignalResult(instrument=instrument, created_at=dt)
 
         # ── Step 1: Pre-filters (fast rejection) ─────────────────────────
-        session_ok, session_reason = check_session(dt)
+        session_ok, session_reason = check_session(dt, instrument=instrument)
         if not session_ok:
             if self._abl_session:
                 result.suppression_reason = session_reason
@@ -281,6 +283,14 @@ class ConfluenceEngine:
             raw_sentiment = None
         oanda_sentiment_score = sentiment_signal_score(raw_sentiment, direction)
 
+        # ── COT institutional positioning (weekly CFTC, macro trend filter) ─
+        # Reads from Redis cache (populated by update_cot_data task, weekly).
+        # Returns 0.5 (neutral) when data unavailable — fail-open, never blocks.
+        if self.redis_client is not None:
+            cot_score = await get_cot_score(self.redis_client, instrument, direction)
+        else:
+            cot_score = 0.5
+
         # ── VIX position-size multiplier ──────────────────────────────────
         # Reads from Redis cache (populated by scheduler every 4 h via FRED).
         # Returns 1.0 (no reduction) when Redis or FRED is unavailable.
@@ -304,6 +314,7 @@ class ConfluenceEngine:
             "sr_strength":     (sr_score,               self._abl_sr),
             "mtf_agreement":   (mtf_score,              self._abl_mtf),
             "oanda_sentiment": (oanda_sentiment_score,  self._abl_sentiment),
+            "cot_signal":      (cot_score,              True),  # no ablation flag — always on, fail-open
         }
         active_weight_total = sum(
             WEIGHTS[k] for k, (_, active) in _components.items() if active
@@ -334,6 +345,7 @@ class ConfluenceEngine:
             "rsi_confirmed":        rsi_confirmed,
             "oanda_sentiment_raw":  raw_sentiment,
             "oanda_sentiment_score": oanda_sentiment_score,
+            "cot_score":            cot_score,
             "vix":                  vix_val,
             "vix_multiplier":       vix_mult,
         })
