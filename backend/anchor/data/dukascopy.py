@@ -36,12 +36,13 @@ PAIR_MAP = {
     "EUR_JPY": "EURJPY",
 }
 
-# Pip multiplier for JPY pairs vs others
+# Dukascopy stores prices as integers in 1/100000 units (5 decimal places).
+# Multiply by 0.00001 for non-JPY pairs, 0.001 for JPY pairs (2 decimal places).
 PIP_FACTORS = {
-    "USDJPY": 0.01,
-    "EURJPY": 0.01,
+    "USDJPY": 0.001,
+    "EURJPY": 0.001,
 }
-DEFAULT_PIP_FACTOR = 0.0001
+DEFAULT_PIP_FACTOR = 0.00001
 
 TICK_STRUCT = struct.Struct(">IIIff")  # time_ms, ask, bid, ask_vol, bid_vol
 TICK_SIZE = TICK_STRUCT.size  # 20 bytes
@@ -167,6 +168,8 @@ async def _main() -> None:
     parser.add_argument("--start", default="2020-01-01")
     parser.add_argument("--end", default=None)
     parser.add_argument("--timeframe", default="H1")
+    parser.add_argument("--output", default=None,
+                        help="Output CSV path (default: dukascopy_<PAIR>_<TF>.csv)")
     args = parser.parse_args()
 
     start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -181,8 +184,7 @@ async def _main() -> None:
 
     logger.info("dukascopy_import_done", rows=len(candles), instrument=args.instrument)
 
-    # Save to CSV for inspection
-    out = f"dukascopy_{args.instrument}_{args.timeframe}.csv"
+    out = args.output or f"dukascopy_{args.instrument}_{args.timeframe}.csv"
     candles.to_csv(out, index=False)
     logger.info("saved", file=out)
 
