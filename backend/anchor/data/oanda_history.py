@@ -53,7 +53,12 @@ class OANDAHistoryClient:
                     f"&count={MAX_CANDLES}"
                     f"&price=M"
                 )
-                resp = await client.get(url, headers=self.headers)
+                for _attempt in range(5):
+                    resp = await client.get(url, headers=self.headers)
+                    if resp.status_code in (502, 503, 504):
+                        await asyncio.sleep(10 * (_attempt + 1))
+                        continue
+                    break
 
                 if resp.status_code == 404:
                     logger.warning("no_data", instrument=instrument, granularity=granularity)
@@ -138,7 +143,7 @@ async def bootstrap_from_oanda(
 
     client = OANDAHistoryClient()
     instruments = settings.instruments
-    timeframes = ["H1"]
+    timeframes = ["H1", "H4", "D"]
 
     grand_total = 0
 
@@ -177,34 +182,36 @@ async def bootstrap_from_oanda(
             conn = await asyncpg.connect(db_url)
             try:
                 # Use a temp table + INSERT ON CONFLICT DO NOTHING so re-runs are idempotent.
-                await conn.execute("""
-                    CREATE TEMP TABLE _md_stage (
-                        time        TIMESTAMPTZ,
-                        instrument  TEXT,
-                        timeframe   TEXT,
-                        open        NUMERIC,
-                        high        NUMERIC,
-                        low         NUMERIC,
-                        close       NUMERIC,
-                        volume      INTEGER,
-                        spread_avg  NUMERIC,
-                        source      TEXT
-                    ) ON COMMIT DROP
-                """)
-                await conn.copy_to_table(
-                    "_md_stage",
-                    source=io.BytesIO(buf.getvalue().encode()),
-                    columns=["time", "instrument", "timeframe", "open", "high", "low", "close", "volume", "spread_avg", "source"],
-                    format="csv",
-                )
-                result = await conn.execute("""
-                    INSERT INTO market_data
-                        (time, instrument, timeframe, open, high, low, close, volume, spread_avg, source)
-                    SELECT time, instrument, timeframe, open, high, low, close, volume, spread_avg, source
-                    FROM _md_stage
-                    ON CONFLICT (time, instrument, timeframe) DO NOTHING
-                """)
-                inserted = int(result.split()[-1]) if result else 0
+                # All statements run inside one explicit transaction so ON COMMIT DROP works.
+                async with conn.transaction():
+                    await conn.execute("""
+                        CREATE TEMP TABLE _md_stage (
+                            time        TIMESTAMPTZ,
+                            instrument  TEXT,
+                            timeframe   TEXT,
+                            open        NUMERIC,
+                            high        NUMERIC,
+                            low         NUMERIC,
+                            close       NUMERIC,
+                            volume      INTEGER,
+                            spread_avg  NUMERIC,
+                            source      TEXT
+                        ) ON COMMIT DROP
+                    """)
+                    await conn.copy_to_table(
+                        "_md_stage",
+                        source=io.BytesIO(buf.getvalue().encode()),
+                        columns=["time", "instrument", "timeframe", "open", "high", "low", "close", "volume", "spread_avg", "source"],
+                        format="csv",
+                    )
+                    result = await conn.execute("""
+                        INSERT INTO market_data
+                            (time, instrument, timeframe, open, high, low, close, volume, spread_avg, source)
+                        SELECT time, instrument, timeframe, open, high, low, close, volume, spread_avg, source
+                        FROM _md_stage
+                        ON CONFLICT (time, instrument, timeframe) DO NOTHING
+                    """)
+                    inserted = int(result.split()[-1]) if result else 0
             finally:
                 await conn.close()
 

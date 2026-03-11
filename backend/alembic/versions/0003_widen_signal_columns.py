@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "0003_widen_signal_columns"
-down_revision = "0002_market_data_unique_constraint"
+down_revision = "0002"
 branch_labels = None
 depends_on = None
 

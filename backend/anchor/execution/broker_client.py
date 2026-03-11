@@ -46,8 +46,8 @@ class BrokerClient:
         self,
         order_id: uuid.UUID,
         request: "OrderRequest",
-    ) -> str:
-        """Submit order to OANDA. Returns OANDA order ID."""
+    ) -> tuple[str, float | None, str | None]:
+        """Submit order to OANDA. Returns (oanda_order_id, fill_price, trade_id)."""
         units_str = str(request.units) if request.direction.value == "LONG" else str(-request.units)
 
         if request.order_type.value == "LIMIT" and request.gtd_time is not None:

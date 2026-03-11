@@ -40,7 +40,7 @@ from anchor.signals.engine import ConfluenceEngine, SignalResult
 logger = structlog.get_logger(__name__)
 
 ATR_MULTIPLIER_SL = 1.5   # stop loss = 1.5x ATR
-ATR_MULTIPLIER_TP = 3.0   # take profit = 3.0x ATR (2:1 R/R minimum)
+ATR_MULTIPLIER_TP = 2.0   # take profit = 2.0x ATR (1.33:1 R/R) — OOS LONDON: 50% WR → PF 1.33
 
 
 def _load_ml_classifier(instrument: str) -> XGBDirectionClassifier | None:

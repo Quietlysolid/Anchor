@@ -157,11 +157,11 @@ async def run_retraining(instrument: Optional[str] = None) -> Dict:
             df = pd.DataFrame(
                 {
                     "time": [c.time for c in candles],
-                    "open": [c.open for c in candles],
-                    "high": [c.high for c in candles],
-                    "low": [c.low for c in candles],
-                    "close": [c.close for c in candles],
-                    "volume": [c.volume or 0 for c in candles],
+                    "open": [float(c.open) for c in candles],
+                    "high": [float(c.high) for c in candles],
+                    "low": [float(c.low) for c in candles],
+                    "close": [float(c.close) for c in candles],
+                    "volume": [float(c.volume or 0) for c in candles],
                 }
             )
             df = df.set_index("time").sort_index()

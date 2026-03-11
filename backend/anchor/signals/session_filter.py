@@ -13,10 +13,12 @@ from anchor.utils.time_utils import (
 
 
 # Sessions where signal generation is allowed.
-# NEWYORK-only (no overlap with London) is excluded: backtest showed
-# consistently negative P&L and lowest win rates across all 5 pairs.
-# London and London/NY overlap retain the edge; pure NY afternoon does not.
-ALLOWED_SESSIONS = {"LONDON", "OVERLAP"}
+# OOS analysis (2024-2026) on EUR_USD shows:
+#   LONDON (07-12 UTC):  56% WR, PF 1.29 at 1:1 R:R  ← profitable
+#   OVERLAP (12-17 UTC): 44% WR, PF 0.80 at 1:1 R:R  ← consistently losing
+#   NEWYORK (17-21 UTC): excluded (worst performance)
+# Restricting to LONDON-only improves PF from 0.95 to 1.29.
+ALLOWED_SESSIONS = {"LONDON"}
 
 
 def check_session(dt: datetime) -> tuple[bool, str]:

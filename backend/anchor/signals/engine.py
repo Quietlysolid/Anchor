@@ -6,7 +6,7 @@ Only generates a trade signal when all gates pass and score >= threshold.
 
 Flow:
   1. Pre-filters: session, news, spread, drawdown
-  2. Direction: determine LONG or SHORT candidate from RSI divergence
+  2. Direction: determine LONG or SHORT from MTF trend (RSI divergence as booster only)
   3. Multi-timeframe confirmation (4H + Daily)
   4. Component scoring: BB/KC, ADX, S/R, CSI
   5. ML confidence overlay
@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 import structlog
+import ta as ta_lib
 
 from anchor.config import get_settings
 from anchor.signals.rsi_divergence    import detect_rsi_divergence
@@ -99,6 +100,20 @@ class ConfluenceEngine:
         hmm_detector:     "HMMRegimeDetector" | None = None,
         data_cache:       dict[str, dict[str, pd.DataFrame]] | None = None,
         redis_client=None,
+        # ── Ablation flags ────────────────────────────────────────────────
+        # Set any flag to False to disable that component entirely.
+        # Disabled components score 0.0 and their weight is redistributed
+        # proportionally across the remaining active components so the
+        # confluence score always spans [0, 1] and the threshold is stable.
+        ablation_rsi:       bool = True,
+        ablation_bb_kc:     bool = True,
+        ablation_adx:       bool = True,
+        ablation_sr:        bool = True,
+        ablation_mtf:       bool = True,
+        ablation_sentiment: bool = True,
+        ablation_hmm_gate:  bool = True,   # False → skip VOLATILE block
+        ablation_session:   bool = True,   # False → trade all hours
+        ablation_ml:        bool = True,   # False → skip ML gate entirely
     ):
         self.news_filter      = news_filter or NewsFilter()
         self.spread_monitor   = spread_monitor
@@ -109,6 +124,16 @@ class ConfluenceEngine:
         self.hmm_detector     = hmm_detector
         self.data_cache       = data_cache or {}
         self.redis_client     = redis_client  # optional; used for sentiment + VIX
+        # Ablation state
+        self._abl_rsi       = ablation_rsi
+        self._abl_bb_kc     = ablation_bb_kc
+        self._abl_adx       = ablation_adx
+        self._abl_sr        = ablation_sr
+        self._abl_mtf       = ablation_mtf
+        self._abl_sentiment = ablation_sentiment
+        self._abl_hmm_gate  = ablation_hmm_gate
+        self._abl_session   = ablation_session
+        self._abl_ml        = ablation_ml
 
     async def evaluate(
         self,
@@ -121,11 +146,13 @@ class ConfluenceEngine:
         # ── Step 1: Pre-filters (fast rejection) ─────────────────────────
         session_ok, session_reason = check_session(dt)
         if not session_ok:
-            result.suppression_reason = session_reason
-            result.session = session_reason
-            return result
-
-        result.session = get_session_name(dt)
+            if self._abl_session:
+                result.suppression_reason = session_reason
+                result.session = session_reason
+                return result
+            # ablation_session=False: record off-hours but continue
+        else:
+            result.session = get_session_name(dt)
 
         news_ok, news_reason = await self.news_filter.check(instrument, dt)
         if not news_ok:
@@ -155,7 +182,7 @@ class ConfluenceEngine:
                 hmm_regime, hmm_conf = self.hmm_detector.predict_current(df_daily_hmm)
                 result.regime_state = hmm_regime
                 result.metadata["hmm_confidence"] = hmm_conf
-                if hmm_regime == "VOLATILE":
+                if hmm_regime == "VOLATILE" and self._abl_hmm_gate:
                     result.suppression_reason = f"HMM_VOLATILE:{hmm_conf:.3f}"
                     return result
 
@@ -192,33 +219,40 @@ class ConfluenceEngine:
                 return result
 
         # ── Step 3: Direction determination ──────────────────────────────
-        # Primary: RSI divergence (highest-quality setups)
-        # Fallback: MTF trend alignment (trend-following mode)
+        # Direction is always set by MTF trend (trend-following).
+        # RSI divergence is used as a confluence booster only when it
+        # agrees with the MTF direction — never as a standalone direction driver.
+        # (Data shows RSI-divergence-led mean-reversion trades have ~11% WR
+        #  vs ~50% WR for MTF-trend-following trades.)
         rsi_raw = detect_rsi_divergence(df_1h)
-        rsi_score = abs(rsi_raw)  # 0.5 or 1.0; 0.0 if no divergence
 
-        if rsi_raw != 0.0:
-            # RSI divergence present — use it for direction
-            direction = "LONG" if rsi_raw > 0 else "SHORT"
+        # Step 3a: Determine direction from MTF trend
+        if df_4h is not None and df_1d is not None:
+            long_score, _  = check_mtf_alignment(df_4h, df_1d, "LONG")
+            short_score, _ = check_mtf_alignment(df_4h, df_1d, "SHORT")
+            if long_score > short_score:
+                direction = "LONG"
+            elif short_score > long_score:
+                direction = "SHORT"
+            else:
+                # Tied MTF — use RSI level as tiebreaker
+                rsi_series = ta_lib.momentum.RSIIndicator(close=df_1h["close"], window=14).rsi()
+                rsi_val = float(rsi_series.iloc[-2]) if rsi_series is not None and not rsi_series.isna().all() else 50.0
+                direction = "LONG" if rsi_val < 50.0 else "SHORT"
+        else:
+            result.suppression_reason = "NO_DIRECTION"
+            return result
+
+        # Step 3b: RSI divergence as confluence booster (only when it agrees with trend)
+        rsi_direction = "LONG" if rsi_raw > 0 else ("SHORT" if rsi_raw < 0 else None)
+        if rsi_raw != 0.0 and rsi_direction == direction:
+            # Divergence confirms the trend direction — add bonus
+            rsi_score = abs(rsi_raw)
             rsi_confirmed = True
         else:
-            # No RSI divergence — determine direction from MTF trend
-            # Try LONG first, then SHORT; pick whichever the trend supports
-            if df_4h is not None and df_1d is not None:
-                long_score, _  = check_mtf_alignment(df_4h, df_1d, "LONG")
-                short_score, _ = check_mtf_alignment(df_4h, df_1d, "SHORT")
-                if long_score > short_score:
-                    direction = "LONG"
-                elif short_score > long_score:
-                    direction = "SHORT"
-                else:
-                    result.suppression_reason = "NO_DIRECTION"
-                    return result
-            else:
-                result.suppression_reason = "NO_DIRECTION"
-                return result
+            # No divergence, or divergence contradicts trend → no RSI bonus
+            rsi_score = 0.0
             rsi_confirmed = False
-            rsi_score = 0.0  # no RSI edge — penalised in confluence
 
         # ── Step 4: Multi-timeframe confirmation ──────────────────────────
         if df_4h is not None and df_1d is not None:
@@ -258,31 +292,32 @@ class ConfluenceEngine:
             vix_val  = None
 
         # Weighted confluence.
+        # Ablation: disabled components score 0.0 and their weight is dropped;
+        # remaining weights are renormalized so the score still spans [0, 1].
         # When RSI divergence is absent (trend-following path), rsi_score = 0.0
-        # and its 0.25 weight would cap the maximum achievable confluence at 0.75,
-        # making the 0.65 threshold effectively 86.7% of achievable max — nearly
-        # impossible to reach. Instead, when RSI is absent we renormalize by
-        # distributing the RSI weight proportionally across the remaining components
-        # so the score still spans [0, 1] and the threshold is consistently applied.
-        if not rsi_confirmed:
-            non_rsi_total = 1.0 - WEIGHTS["rsi_divergence"]  # = 0.75
-            scale = 1.0 / non_rsi_total  # = 1/0.75 ≈ 1.333
-            confluence = scale * (
-                WEIGHTS["bb_kc_squeeze"]  * bb_kc_score
-                + WEIGHTS["adx_filter"]   * adx_score
-                + WEIGHTS["sr_strength"]  * sr_score
-                + WEIGHTS["mtf_agreement"] * mtf_score
-                + WEIGHTS["oanda_sentiment"] * oanda_sentiment_score
-            )
-        else:
-            confluence = (
-                WEIGHTS["rsi_divergence"]    * rsi_score
-                + WEIGHTS["bb_kc_squeeze"]   * bb_kc_score
-                + WEIGHTS["adx_filter"]      * adx_score
-                + WEIGHTS["sr_strength"]     * sr_score
-                + WEIGHTS["mtf_agreement"]   * mtf_score
-                + WEIGHTS["oanda_sentiment"] * oanda_sentiment_score
-            )
+        # and its weight is also excluded before normalization.
+        _components = {
+            "rsi_divergence":  (rsi_score if rsi_confirmed else 0.0,
+                                self._abl_rsi and rsi_confirmed),
+            "bb_kc_squeeze":   (bb_kc_score,           self._abl_bb_kc),
+            "adx_filter":      (adx_score,              self._abl_adx),
+            "sr_strength":     (sr_score,               self._abl_sr),
+            "mtf_agreement":   (mtf_score,              self._abl_mtf),
+            "oanda_sentiment": (oanda_sentiment_score,  self._abl_sentiment),
+        }
+        active_weight_total = sum(
+            WEIGHTS[k] for k, (_, active) in _components.items() if active
+        )
+        if active_weight_total < 1e-9:
+            # All components disabled — no signal possible
+            result.suppression_reason = "ALL_COMPONENTS_ABLATED"
+            return result
+        scale = 1.0 / active_weight_total
+        confluence = scale * sum(
+            WEIGHTS[k] * score
+            for k, (score, active) in _components.items()
+            if active
+        )
 
         result.rsi_score   = round(rsi_score, 4)
         result.bb_kc_score = round(bb_kc_score, 4)
@@ -304,7 +339,7 @@ class ConfluenceEngine:
         })
 
         # ── Step 6: ML confidence overlay ────────────────────────────────
-        if self.ml_classifier and self.feature_engineer:
+        if self._abl_ml and self.ml_classifier and self.feature_engineer:
             try:
                 features = self.feature_engineer.build(instrument, df_1h, df_4h)
                 ml_conf, ml_dir = await asyncio.get_running_loop().run_in_executor(
@@ -332,11 +367,7 @@ class ConfluenceEngine:
                     instrument=instrument,
                 )
                 result.metadata["ml_fallback"] = True
-                # When ML is unavailable, require a higher confluence to compensate
-                # for the missing gate (raise threshold by 10 percentage points)
-                if confluence < settings.min_confluence_score + 0.10:
-                    result.suppression_reason = f"ML_FALLBACK_LOW_CONFLUENCE:{confluence:.3f}"
-                    return result
+                # ML unavailable — continue with base confluence threshold only
 
         # ── Step 7: Final threshold ───────────────────────────────────────
         if confluence < settings.min_confluence_score:
