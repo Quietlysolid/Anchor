@@ -25,7 +25,7 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
       layout: { background: { type: ColorType.Solid, color: 'hsl(222,84%,5%)' }, textColor: '#94a3b8' },
       grid: { vertLines: { color: 'hsl(217,33%,13%)' }, horzLines: { color: 'hsl(217,33%,13%)' } },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: 'hsl(217,33%,17%)', autoScale: true, scaleMargins: { top: 0.1, bottom: 0.1 } },
+      rightPriceScale: { borderColor: 'hsl(217,33%,17%)', scaleMargins: { top: 0.1, bottom: 0.1 } },
       timeScale: { borderColor: 'hsl(217,33%,17%)', timeVisible: true },
       height,
       width: containerRef.current.clientWidth,
@@ -61,7 +61,18 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
     }))
     seriesRef.current.setData(data)
     chartRef.current?.timeScale().fitContent()
-    chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
+
+    // Force price scale to fit the actual data range (not start from 0)
+    const prices = data.flatMap(c => [c.open, c.high, c.low, c.close])
+    const minP = Math.min(...prices)
+    const maxP = Math.max(...prices)
+    const pad  = (maxP - minP) * 0.1
+    seriesRef.current.applyOptions({
+      autoscaleInfoProvider: () => ({
+        priceRange: { minValue: minP - pad, maxValue: maxP + pad },
+        margins: { above: 10, below: 10 },
+      }),
+    })
   }, [candles])
 
   // Draw trade entry/exit markers whenever trades or candles change
