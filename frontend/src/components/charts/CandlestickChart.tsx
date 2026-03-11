@@ -35,7 +35,6 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
       upColor: '#22c55e', downColor: '#ef4444',
       borderUpColor: '#22c55e', borderDownColor: '#ef4444',
       wickUpColor: '#22c55e', wickDownColor: '#ef4444',
-      priceFormat: { type: 'price', precision: 5, minMove: 0.00001 },
     })
 
     chartRef.current   = chart
@@ -67,6 +66,10 @@ export function CandlestickChart({ candles, instrument, trades = [], height = 30
       const last  = data[data.length - 1].time as number
       const first = data[Math.max(0, data.length - 100)].time as number
       ts.setVisibleRange({ from: first as any, to: last as any })
+      // Re-apply after a tick to ensure price scale recalculates from visible bars only
+      setTimeout(() => {
+        ts.setVisibleRange({ from: first as any, to: last as any })
+      }, 0)
     }
   }, [candles])
 
