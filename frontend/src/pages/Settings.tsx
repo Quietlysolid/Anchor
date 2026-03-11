@@ -29,7 +29,7 @@ export default function Settings() {
         <InfoRow label="Max Risk Per Trade" value="1.0%" />
         <InfoRow label="Drawdown Reduce Threshold" value="8%" />
         <InfoRow label="Drawdown Halt Threshold" value="15%" />
-        <InfoRow label="Min Confluence Score" value="65%" />
+        <InfoRow label="Min Confluence Score" value="72%" />
         <InfoRow label="Min ML Confidence" value="58%" />
         <InfoRow label="Max Leverage" value="10:1 effective" />
         <InfoRow label="Spread Block (vs median)" value="3x" />
@@ -43,7 +43,7 @@ export default function Settings() {
       </Section>
 
       <Section title="Instruments Monitored">
-        {['EUR_USD','GBP_USD','USD_JPY','AUD_USD','USD_CAD'].map(i => (
+        {['EUR_USD','GBP_USD','USD_JPY','AUD_USD','NZD_USD','USD_CHF','EUR_GBP','GBP_JPY'].map(i => (
           <div key={i} className="py-1.5 border-b border-border/40 last:border-0 text-sm font-mono text-muted-foreground">
             {i.replace('_','/')}
           </div>

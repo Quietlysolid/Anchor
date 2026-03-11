@@ -42,7 +42,7 @@ export default function Backtest() {
             <label htmlFor="bt-instrument" className="text-xs text-muted-foreground mb-1 block">Instrument</label>
             <select id="bt-instrument" title="Instrument" value={instrument} onChange={e => setInstrument(e.target.value)}
               className="w-full bg-muted border border-border rounded px-2 py-1.5 text-sm text-foreground">
-              {['EUR_USD','GBP_USD','USD_JPY','AUD_USD','USD_CAD'].map(i => (
+              {['EUR_USD','GBP_USD','USD_JPY','AUD_USD','NZD_USD','USD_CHF','EUR_GBP','GBP_JPY'].map(i => (
                 <option key={i} value={i}>{i.replace('_','/')}</option>
               ))}
             </select>
@@ -89,7 +89,7 @@ export default function Backtest() {
           </div>
 
           <div className="mt-4 text-xs text-muted-foreground">
-            Requires ≥ 1,000 trades and Sharpe &gt; 1.0 before going live.
+            Target: Sharpe &gt; 1.0, Profit Factor &gt; 1.3, Win Rate &gt; 50% before going live.
           </div>
         </div>
       )}

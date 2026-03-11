@@ -5,8 +5,8 @@ const IMPACT_COLORS: Record<string, string> = {
   MEDIUM: 'text-amber-400 bg-amber-400/10 border-amber-400/30',
 }
 
-// Currencies relevant to our 5 instruments
-const WATCHED = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD'])
+// Currencies relevant to our 8 instruments
+const WATCHED = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'NZD', 'CHF'])
 
 function formatTime(iso: string) {
   const d = new Date(iso)
