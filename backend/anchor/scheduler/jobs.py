@@ -965,6 +965,20 @@ def run_regime_detection(self):
                     logger.error("regime_detection_failed", instrument=instrument, error=str(exc))
 
         if regime_snapshot:
+            # Persist to DB so /regime/current REST endpoint has data on page load
+            from anchor.database.models import RegimeHistory
+            from anchor.utils.time_utils import utcnow as _utcnow
+            _now = _utcnow()
+            async with _db_engine.AsyncSessionFactory() as rh_session:
+                for _inst, _snap in regime_snapshot.items():
+                    rh_session.add(RegimeHistory(
+                        time=_now,
+                        instrument=_inst,
+                        regime=_snap["state"],
+                        confidence=_snap["confidence"],
+                    ))
+                await rh_session.commit()
+
             # Publish to Redis → WebSocket fanout so dashboard updates in real time
             await redis_client.publish("regime", json.dumps({
                 "channel": "regime",

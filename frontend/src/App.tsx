@@ -8,7 +8,7 @@ import Journal     from './pages/Journal'
 import Backtest    from './pages/Backtest'
 import Settings    from './pages/Settings'
 import { wsClient } from './api/websocket'
-import { useLatestSignals } from './api/hooks'
+import { useLatestSignals, useRegime } from './api/hooks'
 import { useMarketStore, useSystemStore, useSignalStore, usePositionStore } from './store'
 import type { LivePrice, Signal, Position } from './types'
 
@@ -18,6 +18,7 @@ function WsBootstrap() {
   const pushSignal   = useSignalStore(s => s.pushSignal)
   const setPositions = usePositionStore(s => s.setPositions)
   const { data: seedSignals } = useLatestSignals()
+  const { data: seedRegime  } = useRegime()
 
   // Seed signal store from REST on page load (before first WS event arrives)
   useEffect(() => {
@@ -28,6 +29,16 @@ function WsBootstrap() {
       }
     }
   }, [seedSignals])
+
+  // Seed regime store from REST on page load
+  useEffect(() => {
+    if (seedRegime && Object.keys(seedRegime).length > 0) {
+      if (Object.keys(useSystemStore.getState().currentRegime).length === 0) {
+        // REST returns {instrument: {state, confidence}} — matches setRegime shape
+        setRegime(seedRegime)
+      }
+    }
+  }, [seedRegime])
 
   useEffect(() => {
     wsClient.connect()

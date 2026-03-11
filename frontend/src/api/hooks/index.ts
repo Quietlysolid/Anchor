@@ -21,7 +21,15 @@ export const useTradeJournal = () =>
   useQuery({ queryKey: ['trade-journal'], queryFn: () => api.get<Trade[]>('/performance/trade-journal'), staleTime: 60_000 })
 
 export const useRegime = () =>
-  useQuery({ queryKey: ['regime'], queryFn: () => api.get<Record<string, { state: string; confidence: number }>>('/regime/current'), refetchInterval: 30_000 })
+  useQuery({
+    queryKey: ['regime'],
+    queryFn: async () => {
+      const rows = await api.get<{ instrument: string; regime: string; confidence: number }[]>('/regime/current')
+      // Transform array → Record<instrument, {state, confidence}> to match WS/store shape
+      return Object.fromEntries(rows.map(r => [r.instrument, { state: r.regime, confidence: r.confidence }])) as Record<string, { state: string; confidence: number }>
+    },
+    refetchInterval: 30_000,
+  })
 
 export const useCalendar = () =>
   useQuery({ queryKey: ['calendar'], queryFn: () => api.get<EconomicEvent[]>('/calendar/upcoming?hours_ahead=48&impact=HIGH,MEDIUM'), refetchInterval: 5 * 60_000 })
