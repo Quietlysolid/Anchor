@@ -1,5 +1,6 @@
 .PHONY: up down dev logs shell-engine shell-db migrate upgrade seed backtest backtest-all lint test \
-        download-history ablation walk-forward fit-weights instrument-confidence monte-carlo lcr-backtest
+        download-history ablation walk-forward fit-weights instrument-confidence monte-carlo lcr-backtest lcr-backtest-all \
+        lcr-walkforward lcr-walkforward-all
 
 up:
 	docker compose up -d
@@ -124,11 +125,26 @@ monte-carlo-all:
 # Backtest the London Close Reversal (NY session) strategy in isolation.
 # Tests EUR_USD, GBP_USD, USD_JPY only — the pairs with documented LCR edge.
 lcr-backtest:
-	docker compose exec engine python -m anchor.backtesting.mr_backtest \
+	docker compose exec engine python -m anchor.backtesting.lcr_backtest \
 		--instrument $(or $(PAIR),EUR_USD) \
 		--h1-csv  data/$(or $(PAIR),EUR_USD)_H1.csv \
-		--d-csv   data/$(or $(PAIR),EUR_USD)_D.csv \
 		--balance 10000
+
+lcr-backtest-all:
+	@for pair in EUR_USD GBP_USD USD_JPY; do \
+		echo "========== LCR BACKTEST: $$pair =========="; \
+		$(MAKE) lcr-backtest PAIR=$$pair; \
+	done
+
+lcr-walkforward:
+	docker compose exec engine python -m anchor.backtesting.lcr_walkforward \
+		--instrument $(or $(PAIR),EUR_USD) \
+		--h1-csv data/$(or $(PAIR),EUR_USD)_H1.csv
+
+lcr-walkforward-all:
+	@for pair in EUR_USD GBP_USD USD_JPY; do \
+		$(MAKE) lcr-walkforward PAIR=$$pair; \
+	done
 
 import-cot:
 	docker compose exec engine python -m anchor.data.cot_parser

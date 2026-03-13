@@ -5,6 +5,7 @@ coefficients derived from historical trade outcomes (Maximum Likelihood Estimati
 
 Method:
   1. Run BacktestEngine on all available instruments (in-sample period only).
+     OR: query closed live trades from PostgreSQL (--live-trades flag).
   2. Collect per-trade component scores + binary outcome (TP hit = 1, SL hit = 0).
   3. Fit LogisticRegression(penalty='l1') — L1 regularization drives irrelevant
      component weights toward zero, exposing which factors genuinely predict wins.
@@ -21,11 +22,19 @@ Why L1 logistic regression:
 COT and rate_divergence are excluded from regression (not in trade log because
 they fail-open at 0.5, adding no variance). Their weights are preserved as-is.
 
-Run:
+Run (backtest mode — CSV data):
     docker compose exec engine python -m anchor.backtesting.fit_weights
     docker compose exec engine python -m anchor.backtesting.fit_weights --apply
     docker compose exec engine python -m anchor.backtesting.fit_weights \\
         --instruments EUR_USD,GBP_USD,USD_JPY --end 2024-01-01 --apply
+
+Run (live trade mode — PostgreSQL):
+    docker compose exec engine python -m anchor.backtesting.fit_weights --live-trades
+    docker compose exec engine python -m anchor.backtesting.fit_weights --live-trades --apply
+
+    Use --live-trades once you have 200+ closed live trades in the DB.
+    This is the OOS validation path: live outcomes were not used to design the weights,
+    so the regression result is a genuine out-of-sample test.
 """
 from __future__ import annotations
 
@@ -33,13 +42,19 @@ import argparse
 import logging
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+import warnings
 
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import StandardScaler
+
+# Suppress sklearn 1.8 FutureWarning about deprecated 'penalty' parameter
+warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
 
 # Silence structlog / engine noise during runs
 logging.disable(logging.CRITICAL)
@@ -49,7 +64,7 @@ from anchor.backtesting.engine import BacktestEngine
 DATA_DIR = Path("/app/data")
 
 # Components stored in the trade log → their WEIGHTS key in engine.py
-# csi_score field is reused for oanda_sentiment in the trade log (see engine.py L354)
+# csi_score field is reused for oanda_sentiment in the trade log (see engine.py)
 COMPONENT_MAP: dict[str, str] = {
     "rsi_score":   "rsi_divergence",
     "bb_kc_score": "bb_kc_squeeze",
@@ -59,13 +74,14 @@ COMPONENT_MAP: dict[str, str] = {
     "csi_score":   "oanda_sentiment",
 }
 
-# Current weights — compared against optimized output
+# Current weights — must match WEIGHTS dict in engine.py exactly.
+# Update this whenever engine.py WEIGHTS change (--apply does it automatically).
 CURRENT_WEIGHTS: dict[str, float] = {
-    "rsi_divergence":  0.24,
-    "bb_kc_squeeze":   0.20,
+    "rsi_divergence":  0.20,
+    "bb_kc_squeeze":   0.22,
     "adx_filter":      0.15,
-    "sr_strength":     0.24,
-    "mtf_agreement":   0.04,
+    "sr_strength":     0.20,
+    "mtf_agreement":   0.10,
     "oanda_sentiment": 0.04,
     "cot_signal":      0.05,
     "rate_divergence": 0.04,
@@ -76,6 +92,8 @@ _MACRO_RESERVE = {
     "cot_signal":      CURRENT_WEIGHTS["cot_signal"],
     "rate_divergence": CURRENT_WEIGHTS["rate_divergence"],
 }
+
+_MIN_LIVE_TRADES = 200   # below this, warn strongly
 
 
 def _collect_trades(instruments: list[str], end_date: str) -> pd.DataFrame:
@@ -110,6 +128,56 @@ def _collect_trades(instruments: list[str], end_date: str) -> pd.DataFrame:
         all_trades.extend(in_sample)
 
     return pd.DataFrame(all_trades) if all_trades else pd.DataFrame()
+
+
+def _collect_live_trades() -> pd.DataFrame:
+    """
+    Query closed live trades from PostgreSQL, joined to signal component scores.
+
+    JOIN path: trades → signals (via trades.signal_id = signals.id)
+    Outcome: net_pl > 0 → win (1), net_pl <= 0 → loss (0)
+
+    Only trades with a linked signal are included — trades without signal_id
+    (manual or LCR trades from a different engine path) are excluded because
+    they don't have the confluence component scores needed for regression.
+
+    Returns a DataFrame with the same column names as _collect_trades() so
+    _fit() works identically regardless of data source.
+    """
+    from sqlalchemy import create_engine, text
+    from anchor.config import get_settings
+
+    settings = get_settings()
+
+    print("  Connecting to PostgreSQL ...", end=" ", flush=True)
+    db_engine = create_engine(settings.sync_database_url)
+
+    query = text("""
+        SELECT
+            s.rsi_score,
+            s.bb_kc_score,
+            s.adx_score,
+            s.sr_score,
+            s.mtf_score,
+            s.csi_score,
+            CASE WHEN t.net_pl > 0 THEN 1 ELSE 0 END AS outcome,
+            t.instrument,
+            t.session_at_entry,
+            t.closed_at,
+            t.net_pl
+        FROM trades t
+        JOIN signals s ON t.signal_id = s.id
+        WHERE t.closed_at IS NOT NULL
+          AND t.signal_id IS NOT NULL
+          AND s.suppressed = FALSE
+        ORDER BY t.closed_at
+    """)
+
+    with db_engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+
+    print(f"{len(df)} closed trades found")
+    return df
 
 
 def _fit(df: pd.DataFrame, C: float = 1.0) -> dict[str, float]:
@@ -213,57 +281,165 @@ def _patch_engine(new: dict[str, float], engine_path: Path) -> None:
     print(f"  Patched WEIGHTS in {engine_path}")
 
 
+def _patch_current_weights(new: dict[str, float], self_path: Path) -> None:
+    """Update CURRENT_WEIGHTS in this file to match the newly applied weights."""
+    src = self_path.read_text()
+
+    lines = ["CURRENT_WEIGHTS: dict[str, float] = {\n"]
+    for k, v in new.items():
+        lines.append(f'    "{k}": {v},\n')
+    lines.append("}\n")
+    new_block = "".join(lines).rstrip()
+
+    new_src = re.sub(
+        r"CURRENT_WEIGHTS\s*:\s*dict\[str,\s*float\]\s*=\s*\{[^}]+\}",
+        new_block,
+        src,
+        count=1,
+    )
+    if new_src == src:
+        print("  WARNING: could not locate CURRENT_WEIGHTS block — update fit_weights.py manually.")
+        return
+
+    self_path.write_text(new_src)
+    print(f"  Updated CURRENT_WEIGHTS in {self_path}")
+
+
+def _log_system_event(new: dict[str, float], source: str, n_trades: int) -> None:
+    """Write a WEIGHTS_UPDATED SystemEvent to PostgreSQL for audit trail."""
+    try:
+        from sqlalchemy import create_engine, text
+        from anchor.config import get_settings
+
+        settings = get_settings()
+        db_engine = create_engine(settings.sync_database_url)
+
+        now = datetime.now(tz=timezone.utc)
+        payload = {
+            "old_weights": CURRENT_WEIGHTS,
+            "new_weights": new,
+            "source": source,          # "backtest" or "live_trades"
+            "n_trades": n_trades,
+            "applied_at": now.isoformat(),
+        }
+
+        stmt = text("""
+            INSERT INTO system_events (event_at, event_type, severity, component, message, metadata)
+            VALUES (:event_at, 'WEIGHTS_UPDATED', 'INFO', 'fit_weights', :message, :metadata::jsonb)
+        """)
+
+        import json
+        with db_engine.begin() as conn:
+            conn.execute(stmt, {
+                "event_at": now,
+                "message": f"Confluence weights updated from {source} ({n_trades} trades)",
+                "metadata": json.dumps(payload),
+            })
+
+        print("  Audit event written to system_events table")
+
+    except Exception as exc:
+        print(f"  WARNING: could not write audit event to DB: {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Optimize confluence engine weights via L1 logistic regression"
     )
     parser.add_argument(
+        "--live-trades",
+        action="store_true",
+        help=(
+            "Use closed live trades from PostgreSQL instead of CSV backtest data. "
+            f"Requires ≥ {_MIN_LIVE_TRADES} closed trades in the DB. "
+            "This is the OOS validation path — use once you have sufficient live data."
+        ),
+    )
+    parser.add_argument(
         "--instruments",
         default="EUR_USD,GBP_USD,USD_JPY,AUD_USD,GBP_JPY",
-        help="Comma-separated pairs to use for training (default: 5 majors)",
+        help="Comma-separated pairs for backtest mode (ignored with --live-trades). "
+             "Default: 5 majors",
     )
     parser.add_argument(
         "--end",
         default="2024-01-01",
-        help="In-sample end date (exclusive). OOS = everything after this. (default: 2024-01-01)",
+        help="In-sample end date for backtest mode (ignored with --live-trades). "
+             "Default: 2024-01-01",
     )
     parser.add_argument(
         "--C",
         type=float,
         default=1.0,
-        help="L1 regularization strength. Lower = more sparse (fewer components). (default: 1.0)",
+        help="L1 regularization strength. Lower = more sparse (fewer components). Default: 1.0",
     )
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Automatically patch the WEIGHTS dict in engine.py",
+        help="Automatically patch WEIGHTS in engine.py and CURRENT_WEIGHTS in this file, "
+             "and write an audit event to the system_events table.",
     )
     args = parser.parse_args()
 
     instruments = [i.strip() for i in args.instruments.split(",")]
-    engine_path = Path("/app/anchor/signals/engine.py")
+    engine_path  = Path("/app/anchor/signals/engine.py")
+    self_path    = Path("/app/anchor/backtesting/fit_weights.py")
 
     print(f"\n{'='*62}")
     print("CONFLUENCE WEIGHT OPTIMIZER  (L1 Logistic Regression)")
     print(f"{'='*62}")
-    print(f"  Instruments : {instruments}")
-    print(f"  In-sample   : up to {args.end}")
-    print(f"  L1 strength : C={args.C}  (lower C → more sparsity)")
-    print(f"  Engine path : {engine_path}")
-    print()
 
-    print("Step 1 — Collecting trade data via BacktestEngine...")
-    df = _collect_trades(instruments, args.end)
+    if args.live_trades:
+        source = "live_trades"
+        print("  Mode        : LIVE TRADES (PostgreSQL OOS validation)")
+        print(f"  Minimum     : {_MIN_LIVE_TRADES} trades required")
+        print(f"  L1 strength : C={args.C}")
+        print(f"  Engine path : {engine_path}")
+        print()
 
-    if df.empty or len(df) < 50:
-        print(f"\nERROR: only {len(df)} trades — need ≥ 50 for reliable regression.")
-        print("Add more instruments or extend the date range.")
-        sys.exit(1)
+        print("Step 1 — Querying live trades from PostgreSQL...")
+        df = _collect_live_trades()
 
+        if df.empty or len(df) < 50:
+            print(f"\nERROR: only {len(df)} closed live trades — need ≥ 50 for regression.")
+            print("Keep the system running and retry when more trades have closed.")
+            sys.exit(1)
+
+        if len(df) < _MIN_LIVE_TRADES:
+            print(
+                f"\n  WARNING: {len(df)} trades found — below the {_MIN_LIVE_TRADES} minimum "
+                f"for statistically reliable L1 regression.\n"
+                f"  Results are indicative only. Re-run at {_MIN_LIVE_TRADES}+ trades.\n"
+            )
+
+    else:
+        source = "backtest"
+        print("  Mode        : BACKTEST (CSV in-sample data)")
+        print(f"  Instruments : {instruments}")
+        print(f"  In-sample   : up to {args.end}")
+        print(f"  L1 strength : C={args.C}  (lower C → more sparsity)")
+        print(f"  Engine path : {engine_path}")
+        print()
+
+        print("Step 1 — Collecting trade data via BacktestEngine...")
+        df = _collect_trades(instruments, args.end)
+
+        if df.empty or len(df) < 50:
+            print(f"\nERROR: only {len(df)} trades — need ≥ 50 for reliable regression.")
+            print("Add more instruments or extend the date range.")
+            sys.exit(1)
+
+    n_trades = len(df)
     vc = df["outcome"].value_counts()
-    print(f"\n  Total in-sample trades : {len(df)}")
-    print(f"  Wins  : {vc.get(1, 0)} ({vc.get(1, 0)/len(df)*100:.1f}%)")
-    print(f"  Losses: {vc.get(0, 0)} ({vc.get(0, 0)/len(df)*100:.1f}%)")
+    print(f"\n  Total trades : {n_trades}")
+    print(f"  Wins  : {vc.get(1, 0)} ({vc.get(1, 0)/n_trades*100:.1f}%)")
+    print(f"  Losses: {vc.get(0, 0)} ({vc.get(0, 0)/n_trades*100:.1f}%)")
+
+    if args.live_trades and "instrument" in df.columns:
+        print(f"\n  Breakdown by instrument:")
+        for inst, grp in df.groupby("instrument"):
+            wins = int((grp["outcome"] == 1).sum())
+            print(f"    {inst:<12}  {len(grp):>4} trades  WR {wins/len(grp)*100:.1f}%")
 
     print("\nStep 2 — Fitting L1 logistic regression...")
     new_weights = _fit(df, C=args.C)
@@ -278,13 +454,16 @@ def main() -> None:
     print("  }")
 
     if args.apply:
+        print("\nStep 4 — Patching files and writing audit trail...")
         if not engine_path.exists():
             print(f"\n  ERROR: {engine_path} not found — cannot auto-patch.")
         else:
-            print("\nStep 4 — Patching engine.py...")
             _patch_engine(new_weights, engine_path)
+        if self_path.exists():
+            _patch_current_weights(new_weights, self_path)
+        _log_system_event(new_weights, source, n_trades)
     else:
-        print("\n  Run with --apply to automatically update engine.py.")
+        print("\n  Run with --apply to automatically update engine.py and log the change.")
 
     print(f"\n{'='*62}\n")
 
