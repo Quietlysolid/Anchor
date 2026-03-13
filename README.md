@@ -1,6 +1,7 @@
 # Anchor — Autonomous Forex Trading System
 
-Fully automated forex trading system. OANDA practice account → live $1000 account when validated.
+Fully automated forex trading system running on OANDA practice account.
+Target: validate edge over 200+ live trades, then deploy to live $1,000 account.
 Private system, personal funds only.
 
 ---
@@ -14,13 +15,13 @@ Private system, personal funds only.
 | Task queue | Redis + Celery |
 | Frontend | React 18, TypeScript, Vite 5, TanStack Query 5, Zustand 4 |
 | Charts | lightweight-charts, Recharts |
-| Broker | OANDA (oandapyV20), practice first |
-| ML | XGBoost + LightGBM + 3-state Gaussian HMM |
-| Infra | Docker Compose (10 services), Hetzner VPS CX22 (~€4/mo) |
+| Broker | OANDA (oandapyV20), practice → live |
+| ML | XGBoost + 3-state Gaussian HMM regime detector |
+| Infra | Docker Compose (11 services), Hetzner VPS CX22 (~€4/mo) |
 
 ---
 
-## Quick Start (local dev)
+## Quick Start
 
 ```bash
 cp .env.example .env          # fill in OANDA keys + DB creds
@@ -30,90 +31,118 @@ make import-history           # pull OANDA H1/H4/D candles into DB
 ```
 
 Dashboard: `http://localhost/`
-API: `http://localhost/api/v1/`
+API docs: `http://localhost/api/v1/docs`
 
 ---
 
 ## Strategies
 
-Two strategies run in parallel, regime-gated by HMM:
+Two strategies run in parallel on EUR_USD, GBP_USD, USD_JPY:
 
-| Strategy | Regime | Engine | File |
-|----------|--------|--------|------|
-| **MTF Trend-Following** | TRENDING | `ConfluenceEngine` | `signals/engine.py` |
-| **BB Mean Reversion** | RANGING | `MeanReversionEngine` | `signals/mean_reversion_engine.py` |
-| *(nothing)* | VOLATILE | — | Both blocked |
+### Strategy 1 — London Trend (07:15–12:00 UTC)
 
-**Trend engine** (H1 + M15): direction from 4H+Daily MTF alignment, RSI divergence as booster, 7-component confluence (RSI, BB/KC, ADX, S/R, MTF, sentiment, COT), threshold 0.65. M15 signals use H1 as confirmation timeframe, GTD 1h.
+Direction set by H4+Daily MTF alignment. RSI divergence used as confluence booster only (never direction driver — RSI-led trades showed ~11% WR vs ~56% for MTF trend-following).
 
-**Mean-reversion engine** (H1): fades price back to BB midband when price touches outer BB (2σ) with RSI extreme (65/35) + pin bar rejection + ADX < 25. Threshold 0.60. SL beyond outer band + 0.5×ATR, TP at midband. GTD 2 hours.
+8-component weighted confluence score, threshold **0.72**:
 
-**Partial TP**: at 1×ATR profit, close 50% of any open position and move SL to breakeven on the remaining 50%. Runs every 5 minutes.
+| Component | Weight | Basis |
+|-----------|--------|-------|
+| BB/KC squeeze | 0.22 | Volatility compression precedes expansion (Bollinger 1992) |
+| RSI divergence | 0.20 | Entry timing booster — only when aligned with MTF direction |
+| S/R strength | 0.20 | Stop clustering at structural levels (Osler 2003) |
+| ADX filter | 0.15 | Trend strength gate (Wilder 1978) |
+| MTF agreement | 0.10 | Primary: 4H+Daily alignment (Lo & MacKinlay 1988) |
+| COT signal | 0.05 | CFTC institutional positioning (Leuthold et al. 1994) |
+| OANDA sentiment | 0.04 | Contrarian retail signal |
+| Rate divergence | 0.04 | Carry-trade macro filter (Lustig & Verdelhan 2007) |
+
+**TSMOM gate** (Moskowitz, Ooi & Pedersen 2012 JFE): 12-week sign-of-return direction filter. Blocks signals where MTF direction conflicts with 84-day momentum. Fail-open when daily data unavailable.
+
+**NR4 flag** (Crabel 1990): Asian-session compression metadata logged per signal for ML feature use.
+
+**HMM regime gate**: TRENDING → allow; RANGING → suppress; VOLATILE → suppress.
+
+OOS result: **56% WR, PF 1.29** (London session, spread-adjusted).
 
 ---
 
-## Trading Rules ("Casino Rules")
+### Strategy 2 — London Close Reversal / LCR (17:00–19:59 UTC)
 
-These are non-negotiable. Every rule has a data-driven reason.
+At London close, institutional traders liquidate intraday positions creating counter-trend pressure. Price reverts toward the session's statistical midpoint (Harris & Pisedtasalasai 2006, Breedon & Ranaldo 2013).
 
-| # | Rule | Value |
-|---|------|-------|
-| 1 | Confluence threshold | ≥ 0.65 |
-| 2 | Risk per trade | 1% of account (fixed fractional) |
-| 3 | Session | **London 07:15–12:00 UTC** (first 15 min skipped — fake moves); **Asian 00:00–03:00 UTC for JPY pairs only** |
-| 4 | Direction | **MTF trend-following** (RSI divergence is a booster, never a direction driver) |
-| 5 | Stop loss | 1.5× ATR |
-| 6 | Take profit | 2.0× ATR → 1.33:1 R:R |
-| 7 | Drawdown: halve size | 8% drawdown |
-| 8 | Drawdown: halt trading | 15% drawdown |
-| 9 | Daily loss limit | 3% → halt rest of day |
-| 10 | Correlation block | Block new positions if existing correlation > 0.70 |
-| 11 | ML fallback | ML unavailable → rule-based only (no penalty) |
-| 12 | Partial TP | Close 50% at 1×ATR profit; move SL to breakeven on remainder |
-| 13 | COT filter | Institutional positioning (CFTC weekly) as confluence component (5% weight) |
+**Mechanics:**
+- London range = H/L of 07:00–16:00 UTC bars
+- Direction: price in top 25% of range → SHORT; bottom 25% → LONG
+- TP = London midpoint (natural reversion target)
+- SL = London extreme + 0.5×ATR
 
-**Why MTF, not RSI divergence as direction?**
-RSI-divergence-led mean-reversion trades showed ~11% WR in backtests.
-MTF trend-following showed ~50% WR. RSI divergence is now a confluence
-booster only — it adds score when it agrees with the trend.
+4-component confluence, threshold **0.55** (0.65 in TRENDING regime):
+
+| Component | Weight | Basis |
+|-----------|--------|-------|
+| Range position | 0.40 | How extreme price is within London range |
+| RSI extreme | 0.30 | Momentum exhaustion at extreme (RSI 60/40 thresholds) |
+| Rejection candle | 0.20 | Pin bar / wick confirms momentum shift |
+| Range quality | 0.10 | London range ≥ 0.4×ATR (filters dead days) |
+
+**HMM regime gate**: VOLATILE → block; TRENDING → raise threshold 0.55→0.65.
+
+**8-year OOS results** (spread-adjusted, 3-pip minimum SL filter):
+
+| Pair | WR% | PF | Max DD | Trades/mo | Risk |
+|------|-----|----|--------|-----------|------|
+| EUR_USD | 46.9% | 1.669 | -23.6% | 13.3 | 1.0% |
+| GBP_USD | 43.8% | 1.434 | -20.9% | 13.5 | 1.0% |
+| USD_JPY | 42.9% | 1.367 | -22.8% | 14.0 | 0.5% |
+
+USD_JPY uses 0.5% risk due to higher drawdown profile.
 
 ---
 
 ## Instruments
 
-**Tier-1** (original 5): EUR_USD, GBP_USD, USD_JPY, AUD_USD, USD_CAD
+**Active (3):** EUR_USD, GBP_USD, USD_JPY
 
-**Tier-2** (added): NZD_USD, USD_CHF, EUR_GBP, GBP_JPY
-
-Total: 9 instruments. Correlation block (>0.70) prevents simultaneous correlated trades.
+**Removed:** AUD_USD (no LCR edge), NZD_USD (wide spread), USD_CHF (r=-0.85 with EUR_USD — redundant), EUR_GBP (15 pip/day ATR — too narrow), GBP_JPY (no LCR edge — re-evaluate after 3 months live data)
 
 ---
 
-## OOS Backtest Results
+## Risk Rules
 
-London-only session, 2× ATR TP, MTF direction. Period: 2024–2026.
-
-| Pair | Trades | WR% | PF | Net% |
-|------|--------|-----|----|------|
-| EUR_USD | 16 | 50.0% | 1.04 | +0.40% |
-| GBP_USD | 23 | 47.8% | 1.01 | +0.08% |
-| AUD_USD | 22 | 59.1% | 1.53 | +5.42% |
-| USD_CAD | 35 | 48.6% | 0.98 | -0.44% |
-| USD_JPY | 4 | 100% | ∞ | +0.07% (tiny sample) |
-
-**USD_CAD** is the weakest pair (PF < 1.0) — monitor closely, consider disabling.
-Need 50+ live trades / ~3 months on practice before going live.
+| # | Rule | Value |
+|---|------|-------|
+| 1 | Confluence threshold — London Trend | ≥ 0.72 |
+| 2 | Confluence threshold — LCR | ≥ 0.55 (≥ 0.65 in TRENDING regime) |
+| 3 | Risk per trade | 1% (USD_JPY LCR: 0.5%) |
+| 4 | Session — London Trend | 07:15–12:00 UTC (first 15 min skipped) |
+| 5 | Session — LCR | 17:00–19:59 UTC (Friday after 18:00 suppressed) |
+| 6 | TSMOM gate | Block if 84-day momentum conflicts with MTF direction |
+| 7 | Drawdown: halve size | -8% from peak |
+| 8 | Drawdown: halt trading | -15% from peak |
+| 9 | Monthly halt | -6% MTD → halt rest of month |
+| 10 | Daily loss limit | -3% → halt rest of day |
+| 11 | Spread spike | Suppress if spread > 3× session median |
+| 12 | Correlation block | Block new positions if open position correlation > 0.70 |
+| 13 | ML fallback | ML unavailable → rule-based confluence only |
 
 ---
 
-## ML Models
+## Weight Optimization
 
-XGBoost + LightGBM direction classifiers. Not yet trained — need labeled live
-trade data first. Threshold for deployment: ≥ 58% OOS accuracy.
+L1 logistic regression optimizer using actual trade outcomes as labels.
 
-HMM regime detector (3 states: TRENDING / RANGING / VOLATILE):
-- VOLATILE state blocks all new entries
-- Trained on daily candles, stable state mapping via feature means
+```bash
+# Backtest mode (CSV data, in-sample)
+docker compose exec engine python -m anchor.backtesting.fit_weights
+
+# Live trades mode (OOS validation — use at 200+ closed live trades)
+docker compose exec engine python -m anchor.backtesting.fit_weights --live-trades
+
+# Apply optimized weights to engine.py (also updates fit_weights.py + writes audit event)
+docker compose exec engine python -m anchor.backtesting.fit_weights --live-trades --apply
+```
+
+Current weights were fit on 77 in-sample trades (below 200 minimum). Re-run `--live-trades --apply` once 200+ live trades have closed. Weight change audit trail is stored in the `system_events` table.
 
 ---
 
@@ -121,24 +150,22 @@ HMM regime detector (3 states: TRENDING / RANGING / VOLATILE):
 
 ```
 backend/anchor/
-  config.py                          # all settings via .env, instruments list (9 pairs)
-  signals/engine.py                  # confluence engine — trend-following (H1 + M15)
-  signals/mean_reversion_engine.py   # BB-fade engine — RANGING regime only
-  signals/session_filter.py          # London 07:15-12:00 + Asian 00:00-03:00 for JPY
-  signals/cot_signal.py              # COT institutional positioning scorer (5% weight)
-  risk/position_sizer.py             # 1% fixed fractional, correct pip values per pair
-  execution/partial_tp_manager.py    # partial TP at 1×ATR, SL → breakeven on remainder
-  regime/hmm_detector.py             # 3-state HMM save/load
-  backtesting/engine.py              # trend backtest runner
-  backtesting/mr_backtest.py         # mean-reversion backtest runner
-  backtesting/ablation_runner.py     # sweeps all components on/off → CSV
-  backtesting/walk_forward_backtest.py  # train/val/OOS walk-forward harness
-  data/oanda_history.py              # OANDA H1/H4/D/M15 candle importer
-  data/polygon_history.py            # Polygon.io 8-year CSV downloader
-  ml/retraining.py                   # monthly Celery retraining task
-  execution/broker_client.py         # OANDA order execution
-  scheduler/jobs.py                  # all scheduled tasks (trend + MR + M15 + partial TP)
-  scheduler/celery_app.py            # Celery config
+  config.py                            # all settings, instruments, risk params
+  signals/engine.py                    # London Trend confluence engine (WEIGHTS, TSMOM, NR4)
+  signals/london_close_reversion.py    # LCR engine (NY session, range-based mean reversion)
+  signals/session_filter.py            # London 07:15-12:00 + LCR 17:00-20:00 UTC
+  risk/drawdown_monitor.py             # drawdown/monthly halt logic
+  risk/spread_monitor.py               # spread spike detection
+  regime/hmm_detector.py               # 3-state HMM (TRENDING/RANGING/VOLATILE)
+  backtesting/engine.py                # London Trend backtest runner
+  backtesting/lcr_backtest.py          # LCR 8-year backtest (spread-adjusted)
+  backtesting/lcr_walkforward.py       # LCR walk-forward validation
+  backtesting/fit_weights.py           # L1 weight optimizer (backtest + live-trades modes)
+  backtesting/mr_backtest.py           # mean-reversion backtest runner
+  backtesting/aceb_backtest.py         # ACEB strategy (archived — failed statistical validation)
+  scheduler/jobs.py                    # Celery tasks: signal eval, equity snapshot, LCR, risk
+  execution/broker_client.py           # OANDA order execution
+  data/polygon_history.py              # Polygon.io 8-year CSV downloader
 ```
 
 ---
@@ -146,51 +173,54 @@ backend/anchor/
 ## Common Commands
 
 ```bash
-make up                        # start stack
-make down                      # stop stack
-make logs                      # tail engine + worker + watchdog logs
-make shell-engine              # bash into engine container
-make upgrade                   # run pending DB migrations
-make import-history            # import OANDA candles (H1/H4/D)
-make backtest                  # run backtest
-make retrain                   # trigger ML retrain via Celery
-make lint                      # ruff + mypy
-make test                      # all tests
+make up                            # start stack
+make down                          # stop stack
+make logs                          # tail engine + worker + beat logs
+make shell-engine                  # bash into engine container
+make upgrade                       # run pending DB migrations
+make import-history                # import OANDA candles (H1/H4/D)
 
-# Backtesting (requires data CSVs in data/)
-make download-history              # download 8yr history via Dukascopy
-make ablation PAIR=EUR_USD         # trend ablation — one pair
-make ablation-all                  # trend ablation — all pairs
-make walk-forward PAIR=EUR_USD     # walk-forward — one pair
-make walk-forward-all              # walk-forward — all pairs
-make mr-backtest PAIR=EUR_USD      # MR backtest — one pair
-make mr-backtest-all               # MR backtest — all 9 pairs
+# Backtesting (requires data CSVs in /opt/anchor/data/)
+make lcr-backtest-all              # LCR backtest — all 3 pairs
+make lcr-walkforward PAIR=EUR_USD  # LCR walk-forward — one pair
+make fit-weights                   # weight optimizer (backtest/CSV mode)
+make fit-weights-live              # weight optimizer (live trades / OOS mode)
+make ablation PAIR=EUR_USD         # trend ablation sweep — one pair
+make ablation-all                  # trend ablation sweep — all pairs
+make walk-forward PAIR=EUR_USD     # London Trend walk-forward
+make monte-carlo PAIR=EUR_USD      # bootstrap CI + permutation test + forward sim
+make instrument-confidence         # IC analysis per pair
 ```
 
 ---
 
 ## Deployment
 
-See [DEPLOY.md](DEPLOY.md) for full Hetzner VPS setup.
-
 VPS: `89.167.82.233` (`/opt/anchor`)
-Deploy: `VPS_HOST=89.167.82.233 bash infrastructure/scripts/deploy.sh`
+
+```bash
+git push origin main               # code deploys via git pull on VPS
+docker compose up -d --build       # rebuild if Dockerfile changed
+```
+
+See [DEPLOY.md](DEPLOY.md) for full Hetzner VPS setup.
 
 ---
 
 ## Monitoring
 
-- Telegram alerts: orders executed, circuit breakers triggered, errors
-- Grafana: `http://VPS_IP:3001/` (use SSH tunnel)
-- Dashboard: `http://VPS_IP/`
+- **Dashboard**: `http://VPS_IP/` — live prices, signals, session clock, equity curve
+- **Grafana**: `http://VPS_IP:3001/` — system metrics, equity, drawdown
+- **Telegram**: order execution, circuit breaker triggers, errors
+- **system_events table**: audit trail for weight changes, regime transitions
 
 ---
 
-## Validation Checklist (before going live)
+## OOS Validation Checklist (before going live)
 
-- [ ] 50+ trades on practice account
-- [ ] 3 months of live practice data
-- [ ] Net PF > 1.0 across all active pairs
-- [ ] Max drawdown stays under 10% in practice
-- [ ] ML models trained with ≥ 58% OOS accuracy (optional, can skip)
-- [ ] USD_CAD still PF < 1.0 → disable it
+- [ ] 200+ closed live trades with signal data in DB
+- [ ] Re-run `make fit-weights-live` — optimized weights close to current weights
+- [ ] London Trend: PF > 1.2 over 200+ live trades
+- [ ] LCR: PF > 1.3 over 200+ live trades (8yr backtest baseline: 1.37–1.67)
+- [ ] Max drawdown stayed under 15% during demo period
+- [ ] No parameter changes made during the 200-trade OOS window
