@@ -1583,31 +1583,43 @@ def check_fit_weights_trigger(self):
 
         new_weights = _fit(df, C=1.0)
 
-        # Build compact summary for alert
-        lines = ["*Weight Optimizer Triggered*", f"Trades: {len(df)}"]
+        # ── Auto-apply: patch engine.py + fit_weights.py + write audit event ─
+        from anchor.backtesting.fit_weights import (
+            _patch_engine, _patch_current_weights, _log_system_event,
+        )
+        from pathlib import Path
+        _patch_engine(new_weights, Path("/app/anchor/signals/engine.py"))
+        _patch_current_weights(new_weights, Path("/app/anchor/backtesting/fit_weights.py"))
+        _log_system_event(new_weights, "live_trades_auto", len(df))
+
+        logger.info("fw_weights_applied", trade_count=trade_count, new_weights=new_weights)
+
+        # Build Telegram summary
         wins = int((df["outcome"] == 1).sum())
-        lines.append(f"WR: {wins/len(df)*100:.1f}%")
-        lines.append("")
-        lines.append("```")
-        lines.append(f"{'Component':<22} {'Current':>7} {'Optimised':>9} {'Delta':>7}")
-        lines.append("-" * 48)
+        lines = [
+            "*Weights Auto-Updated*",
+            f"Trades: {len(df)}  WR: {wins/len(df)*100:.1f}%",
+            "",
+            "```",
+            f"{'Component':<22} {'Old':>7} {'New':>7} {'Delta':>7}",
+            "-" * 48,
+        ]
         for k, old_v in CURRENT_WEIGHTS.items():
             new_v = new_weights.get(k, 0.0)
             delta = new_v - old_v
             sign  = "+" if delta >= 0 else ""
-            lines.append(f"{k:<22} {old_v:.4f}   {new_v:.4f}   {sign}{delta:.4f}")
+            lines.append(f"{k:<22} {old_v:.4f}  {new_v:.4f}  {sign}{delta:.4f}")
         lines.append("```")
-        lines.append("")
-        lines.append("Run `make fit-weights-live --apply` to accept.")
+        lines.append("engine.py patched and reloads on next signal scan.")
 
         alert_msg = "\n".join(lines)
 
     except Exception as exc:
         logger.error("fw_trigger_regression_failed", error=str(exc))
         alert_msg = (
-            f"*Weight Optimizer Ready* — {trade_count} trades in DB\n"
-            f"Regression failed: {exc}\n"
-            f"Run manually: `make fit-weights-live`"
+            f"*Weight Optimizer Failed* — {trade_count} trades in DB\n"
+            f"Error: {exc}\n"
+            f"Run manually: `make fit-weights-live-apply`"
         )
         new_weights = {}
 
