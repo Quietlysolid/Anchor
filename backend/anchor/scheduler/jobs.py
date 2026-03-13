@@ -58,7 +58,7 @@ def snapshot_equity(self):
         async with get_session() as session:
             repo = EquityRepository(session)
             latest = await repo.get_latest()
-            peak = max(equity, latest.peak_equity if latest else equity)
+            peak = max(equity, float(latest.peak_equity) if latest else equity)
             dd = (peak - equity) / peak if peak > 0 else 0.0
 
             point = EquityCurvePoint(
@@ -327,6 +327,7 @@ def run_signal_scan(self):
         async with _db_engine.AsyncSessionFactory() as session:
             market_repo   = MarketDataRepository(session)
             position_repo = PositionRepository(session)
+            order_repo_pre = OrderRepository(session)
 
             daily_closes = {}
             for inst in settings.instruments:
@@ -338,6 +339,10 @@ def run_signal_scan(self):
                     )
             await correlation_mgr.update(daily_closes)
             open_positions = await position_repo.get_open()
+            # Also treat pending/submitted limit orders as "already committed" so we
+            # don't stack duplicate orders every 5 min while waiting for a fill.
+            pending_orders = await order_repo_pre.get_pending()
+            pending_instruments = {o.instrument for o in pending_orders}
 
         # Load HMM regime detector from disk (written by run_regime_detection task).
         # Fails gracefully — engine skips the HMM gate when detector is not ready.
@@ -378,6 +383,15 @@ def run_signal_scan(self):
             spread_monitor=_spread_monitor,
             drawdown_monitor=drawdown_monitor,
             hmm_detector=None,  # set per-instrument in the loop below
+        )
+
+        # London Close Reversal engine: NY session (17:00–19:59 UTC), EUR/GBP/JPY only
+        from anchor.signals.london_close_reversion import LondonCloseReversionEngine, LCR_INSTRUMENTS
+        lcr_engine = LondonCloseReversionEngine(
+            news_filter=news_filter,
+            spread_monitor=_spread_monitor,
+            drawdown_monitor=drawdown_monitor,
+            hmm_detector=None,  # injected per-instrument inside the scan loop below
         )
 
         # Evaluate + persist each instrument in its own isolated session
@@ -515,7 +529,7 @@ def run_signal_scan(self):
                         continue
 
                     # 3. Already have an open position in this instrument?
-                    already_open = any(p.instrument == instrument for p in open_positions)
+                    already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
                     if already_open:
                         logger.info("trade_skipped_already_open", instrument=instrument)
                         await session.commit()
@@ -657,7 +671,7 @@ def run_signal_scan(self):
                         continue
                     if daily_limiter.is_halted(balance):
                         continue
-                    already_open = any(p.instrument == instrument for p in open_positions)
+                    already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
                     if already_open:
                         continue
                     corr_ok, _ = correlation_mgr.check_new_position(
@@ -762,7 +776,7 @@ def run_signal_scan(self):
                         continue
                     if daily_limiter.is_halted(balance):
                         continue
-                    already_open = any(p.instrument == instrument for p in open_positions)
+                    already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
                     if already_open:
                         continue
                     corr_ok, _ = correlation_mgr.check_new_position(
@@ -834,6 +848,184 @@ def run_signal_scan(self):
 
             except Exception as exc:
                 logger.error("m15_scan_instrument_failed", instrument=instrument, error=str(exc))
+
+        # ── Standalone LCR loop — must live outside the London-trend loop above.
+        #    The trend loop fires `continue` for OFF_SESSION during NY hours (17–19 UTC),
+        #    which would skip the LCR block entirely if it lived inside that loop.
+        if now.hour in {17, 18, 19}:
+            for instrument in LCR_INSTRUMENTS:
+                if instrument not in settings.instruments:
+                    continue
+                try:
+                    async with _db_engine.AsyncSessionFactory() as lcr_session:
+                        lcr_market_repo   = MarketDataRepository(lcr_session)
+                        lcr_order_repo    = OrderRepository(lcr_session)
+                        lcr_order_manager = OrderManager(lcr_order_repo, broker, redis=redis_client)
+                        news_filter.calendar_repo = EconomicCalendarRepository(lcr_session)
+
+                        # Fetch candles fresh — independent of the trend-scan loop
+                        lcr_h1 = await lcr_market_repo.get_latest_n_candles(instrument, "H1", 200)
+                        lcr_d1 = await lcr_market_repo.get_latest_n_candles(instrument, "D", 250)
+
+                        if len(lcr_h1) < 50:
+                            logger.warning("lcr_scan_insufficient_data", instrument=instrument)
+                            continue
+
+                        lcr_engine.update_cache(instrument, "H1", to_df(lcr_h1))
+                        lcr_engine.data_cache.setdefault("D", {})[instrument] = to_df(lcr_d1)
+                        lcr_engine.hmm_detector = _hmm_detectors.get(instrument)
+
+                        lcr_result = await lcr_engine.evaluate(instrument, dt=now)
+
+                        _in_lcr_window = not lcr_result.suppressed or lcr_result.suppression_reason not in (
+                            f"LCR_OFF_WINDOW:{now.hour:02d}UTC", f"LCR_INSTRUMENT_EXCLUDED:{instrument}"
+                        )
+                        (logger.info if _in_lcr_window else logger.debug)(
+                            "lcr_signal_evaluated",
+                            instrument=instrument,
+                            suppressed=lcr_result.suppressed,
+                            reason=lcr_result.suppression_reason,
+                            confluence=lcr_result.confluence_score,
+                            direction=lcr_result.direction,
+                            session=lcr_result.session,
+                        )
+
+                        # Persist every LCR evaluation (audit trail) — map to Signal model:
+                        # rsi_score=rsi, bb_kc_score=rejection, adx_score=range_pos, sr_score=range_qual
+                        lcr_meta = lcr_result.metadata or {}
+                        lcr_meta.update({
+                            "london_high":  lcr_result.london_high,
+                            "london_low":   lcr_result.london_low,
+                            "london_mid":   lcr_result.london_mid,
+                            "atr":          lcr_result.atr,
+                            "entry_price":  lcr_result.entry_price,
+                            "stop_loss":    lcr_result.stop_loss,
+                            "take_profit":  lcr_result.take_profit,
+                            "strategy":     "LCR",
+                        })
+                        lcr_row = SignalModel(
+                            instrument=instrument,
+                            timeframe="H1",
+                            direction=lcr_result.direction or "LONG",
+                            confluence_score=lcr_result.confluence_score,
+                            rsi_score=lcr_result.rsi_score or None,
+                            bb_kc_score=lcr_result.rejection_score or None,
+                            adx_score=lcr_result.range_pos_score or None,
+                            sr_score=lcr_result.range_qual_score or None,
+                            mtf_score=None,
+                            csi_score=None,
+                            ml_confidence=None,
+                            regime_state=None,
+                            session=lcr_result.session,
+                            suppressed=lcr_result.suppressed,
+                            suppression_reason=lcr_result.suppression_reason,
+                            signal_metadata=lcr_meta,
+                        )
+                        lcr_session.add(lcr_row)
+                        await lcr_session.flush()
+
+                        # Broadcast to WebSocket so dashboard LCR panel updates in real-time
+                        try:
+                            await redis_client.publish("signals", json.dumps({
+                                "channel": "signals",
+                                "data": {
+                                    "id":                    str(lcr_row.id),
+                                    "created_at":            lcr_row.created_at.isoformat() if lcr_row.created_at else None,
+                                    "instrument":            instrument,
+                                    "timeframe":             "H1",
+                                    "direction":             lcr_result.direction,
+                                    "confluence_score":      float(lcr_result.confluence_score),
+                                    "rsi_score":             float(lcr_result.rsi_score)        if lcr_result.rsi_score        else None,
+                                    "bb_kc_score":           float(lcr_result.rejection_score)  if lcr_result.rejection_score  else None,
+                                    "adx_score":             float(lcr_result.range_pos_score)  if lcr_result.range_pos_score  else None,
+                                    "sr_score":              float(lcr_result.range_qual_score) if lcr_result.range_qual_score else None,
+                                    "mtf_score":             None,
+                                    "csi_score":             None,
+                                    "cot_score":             None,
+                                    "rate_divergence_score": None,
+                                    "ml_confidence":         None,
+                                    "regime_state":          None,
+                                    "session":               lcr_result.session,
+                                    "suppressed":            lcr_result.suppressed,
+                                    "suppression_reason":    lcr_result.suppression_reason,
+                                    "london_high":           lcr_result.london_high,
+                                    "london_low":            lcr_result.london_low,
+                                    "london_mid":            lcr_result.london_mid,
+                                    "position_in_range":     lcr_meta.get("position_in_range"),
+                                },
+                            }))
+                        except Exception as _ws_exc:
+                            logger.warning("lcr_ws_publish_failed", error=str(_ws_exc))
+
+                        if lcr_result.suppressed:
+                            await lcr_session.commit()
+                            continue
+
+                        # Execution gates
+                        if not drawdown_monitor.check()[0]:
+                            await lcr_session.commit()
+                            continue
+                        if daily_limiter.is_halted(balance):
+                            await lcr_session.commit()
+                            continue
+                        already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
+                        if already_open:
+                            await lcr_session.commit()
+                            continue
+                        corr_ok, _ = correlation_mgr.check_new_position(
+                            instrument, lcr_result.direction, open_positions
+                        )
+                        if not corr_ok:
+                            await lcr_session.commit()
+                            continue
+
+                        # SL/TP computed inside LCR engine (london extreme + ATR buffer → london mid)
+                        # USD_JPY uses 0.5% risk (half normal) — LCR backtest showed -41% max DD at 1%
+                        _lcr_risk_scale = 0.5 if instrument == "USD_JPY" else 1.0
+                        lcr_units = sizer.compute(
+                            account_balance=balance,
+                            instrument=instrument,
+                            entry_price=lcr_result.entry_price,
+                            stop_loss=lcr_result.stop_loss,
+                            drawdown_scale=drawdown_monitor.scale_factor * _lcr_risk_scale,
+                        )
+
+                        lcr_direction = Direction.LONG if lcr_result.direction == "LONG" else Direction.SHORT
+                        lcr_order = OrderRequest(
+                            instrument=instrument,
+                            direction=lcr_direction,
+                            units=lcr_units,
+                            order_type=OrderType.LIMIT,
+                            stop_loss=lcr_result.stop_loss,
+                            take_profit=lcr_result.take_profit,
+                            limit_price=lcr_result.entry_price,
+                            gtd_time=now + timedelta(hours=2),  # LCR resolves within NY session
+                        )
+
+                        lcr_order_id = await lcr_order_manager.submit(lcr_order)
+                        logger.info(
+                            "lcr_order_submitted",
+                            instrument=instrument,
+                            direction=lcr_result.direction,
+                            units=lcr_units,
+                            entry=lcr_result.entry_price,
+                            sl=lcr_result.stop_loss,
+                            tp=lcr_result.take_profit,
+                            london_mid=lcr_result.london_mid,
+                            confluence=lcr_result.confluence_score,
+                            order_id=str(lcr_order_id),
+                        )
+                        await _alerts.send_info(
+                            f"LCR Order: {lcr_result.direction} {instrument}\n"
+                            f"Entry: {lcr_result.entry_price}  SL: {lcr_result.stop_loss}  TP: {lcr_result.take_profit}\n"
+                            f"Units: {lcr_units}  Score: {lcr_result.confluence_score:.2f}\n"
+                            f"London mid (target): {lcr_result.london_mid}\n"
+                            f"Expires: {(now + timedelta(hours=2)).strftime('%H:%M UTC')}"
+                        )
+                        await lcr_session.commit()
+
+                except Exception as exc:
+                    logger.error("lcr_scan_instrument_failed", instrument=instrument, error=str(exc))
 
         await redis_client.aclose()
         sync_redis.close()

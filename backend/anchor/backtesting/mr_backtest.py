@@ -138,13 +138,15 @@ class MRBacktestEngine:
                         closed = True
 
                 if closed:
-                    pip  = get_pip_size(instrument)
-                    dist = abs(exit_price - position["entry"])
-                    pips = dist / pip
-                    sign = 1 if (direction == "LONG") == (exit_price > position["entry"]) else -1
+                    pip     = get_pip_size(instrument)
+                    dist    = abs(exit_price - position["entry"])
+                    sl_dist = abs(position["sl"] - position["entry"])
+                    pips    = dist / pip
+                    sign    = 1 if (direction == "LONG") == (exit_price > position["entry"]) else -1
                     pl_pips = sign * pips
-                    pl_pct  = sign * (dist / position["entry"])
-                    balance *= (1 + pl_pct * position["risk_fraction"])
+                    # Correct 1% fixed-fractional: win = +(dist/sl_dist)×1%, loss = -1×1%
+                    pl_pct  = sign * (dist / sl_dist) * position["risk_fraction"]
+                    balance *= (1 + pl_pct)
 
                     trades.append({
                         "entry_time":  position["entry_time"].isoformat(),

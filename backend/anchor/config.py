@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     daily_loss_limit_pct: float = 0.03     # 3% daily loss limit → halt for the day
     drawdown_reduce_pct: float = 0.08      # 8% → halve position size
     drawdown_halt_pct: float = 0.15        # 15% → halt all trading
+    monthly_halt_pct: float = 0.06         # 6% MTD loss → halt for rest of month
     min_confluence_score: float = 0.72  # raised from 0.70 — fewer but higher quality signals
     min_ml_confidence: float = 0.58
     max_position_pct: float = 0.05         # 5% hard cap per position notional
@@ -75,14 +76,18 @@ class Settings(BaseSettings):
 
     # ── Instruments ───────────────────────────────────────────
     instruments: list[str] = [
-        # Tier-1 majors (USD_CAD disabled — OOS PF 0.98, net negative after spread)
-        # Re-enable when 3 months of live data shows PF > 1.05
-        "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD",
-        # Tier-2 expansion: low correlation to tier-1, sufficient liquidity
-        "NZD_USD",  # low correlation to AUD_USD (~0.65) — different central bank
-        "USD_CHF",  # safe-haven inverse — near-zero correlation with JPY pairs
-        "EUR_GBP",  # pure EUR vs GBP — almost zero USD correlation
-        "GBP_JPY",  # high vol, wide range, excellent for trend-following
+        # Core 3: all run both London trend (07-12 UTC) and LCR (17-19 UTC)
+        # EUR_USD: highest liquidity, tightest spread, primary LCR pair
+        # GBP_USD: strong London directional moves, solid LCR edge
+        # USD_JPY: highest LCR PF (1.91), clean NY session behaviour
+        #
+        # Removed:
+        #   AUD_USD  — no LCR edge; London PF marginal after spread
+        #   NZD_USD  — wide spread eats the edge
+        #   USD_CHF  — r=-0.85 with EUR_USD (redundant, no diversification)
+        #   EUR_GBP  — 15 pip/day ATR, too narrow; signal quality poor
+        #   GBP_JPY  — good ATR but no LCR edge; re-evaluate after 3 months live data
+        "EUR_USD", "GBP_USD", "USD_JPY",
     ]
 
     # ── Timeframes ────────────────────────────────────────────

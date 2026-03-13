@@ -4,8 +4,12 @@ Drawdown circuit breaker.
 Monitors account equity vs peak equity:
   - At reduce_pct drawdown → scale all positions by 50%
   - At halt_pct drawdown   → halt all new trading
+
+Also tracks a monthly circuit breaker (resets on the 1st of each month):
+  - If month-to-date loss exceeds monthly_halt_pct → halt until next month
 """
 import structlog
+from datetime import datetime, timezone
 
 from anchor.config import get_settings
 
@@ -19,6 +23,10 @@ class DrawdownMonitor:
         self._current_equity: float = 0.0
         self._halted: bool = False
         self._reduced: bool = False
+        # Monthly circuit breaker state
+        self._month_start_equity: float | None = None
+        self._current_month: str | None = None  # "YYYY-MM"
+        self._monthly_halted: bool = False
 
     async def bootstrap_peak_equity(self, session) -> None:
         """Load historical peak equity from the DB so worker restarts don't reset the circuit breaker.
@@ -58,10 +66,32 @@ class DrawdownMonitor:
             self._halted  = False
             self._reduced = False
 
+        # Monthly circuit breaker — resets on first update of each new month
+        now_month = datetime.now(timezone.utc).strftime("%Y-%m")
+        if self._current_month != now_month:
+            self._current_month    = now_month
+            self._month_start_equity = equity
+            self._monthly_halted   = False
+            logger.info("monthly_circuit_breaker_reset", month=now_month, equity=equity)
+
+        if self._month_start_equity and self._month_start_equity > 0:
+            mtd_loss = (self._month_start_equity - equity) / self._month_start_equity
+            if mtd_loss >= settings.monthly_halt_pct:
+                if not self._monthly_halted:
+                    logger.warning(
+                        "monthly_halt_triggered",
+                        month=now_month,
+                        mtd_loss=f"{mtd_loss:.2%}",
+                        limit=f"{settings.monthly_halt_pct:.2%}",
+                    )
+                self._monthly_halted = True
+
     def check(self) -> tuple[bool, str | None]:
         """Returns (allowed: bool, reason: str | None)."""
         if self._halted:
             return False, f"DRAWDOWN_HALT:{self._compute_drawdown():.2%}"
+        if self._monthly_halted:
+            return False, "MONTHLY_DRAWDOWN_HALT"
         return True, None
 
     @property

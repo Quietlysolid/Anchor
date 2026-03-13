@@ -63,6 +63,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from anchor.risk.spread_monitor import SpreadMonitor
     from anchor.risk.drawdown_monitor import DrawdownMonitor
+    from anchor.regime.hmm_detector import HMMRegimeDetector
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -131,11 +132,13 @@ class LondonCloseReversionEngine:
         spread_monitor:   "SpreadMonitor" | None = None,
         drawdown_monitor: "DrawdownMonitor" | None = None,
         data_cache:       dict[str, dict[str, pd.DataFrame]] | None = None,
+        hmm_detector:     "HMMRegimeDetector" | None = None,
     ) -> None:
         self.news_filter      = news_filter or NewsFilter()
         self.spread_monitor   = spread_monitor
         self.drawdown_monitor = drawdown_monitor
         self.data_cache       = data_cache or {}
+        self.hmm_detector     = hmm_detector
 
     async def evaluate(
         self,
@@ -179,6 +182,30 @@ class LondonCloseReversionEngine:
             if not dd_ok:
                 result.suppression_reason = dd_reason
                 return result
+
+        # ── Gate 4b: HMM regime gate ──────────────────────────────────────
+        # LCR is a mean-reversion strategy — it relies on price reverting to the
+        # London midpoint after institutional liquidation. This works best in
+        # RANGING or mildly TRENDING markets where liquidation pressure dominates.
+        #
+        # In a strong TRENDING regime, NY session often continues the London
+        # trend rather than reversing it — exactly when LCR fails. We raise the
+        # confluence threshold from 0.55 → 0.65 to demand stronger confirmation.
+        # VOLATILE regime: block outright (spreads blow out, fills are unreliable).
+        _lcr_threshold = LCR_CONFLUENCE_THRESHOLD  # default 0.55
+        if self.hmm_detector and self.hmm_detector.is_ready:
+            _df_d = self.data_cache.get("D", {}).get(instrument)
+            if _df_d is not None and len(_df_d) >= 60:
+                _regime, _regime_conf = self.hmm_detector.predict_current(_df_d)
+                result.regime_state = _regime
+                result.metadata["hmm_regime"]     = _regime
+                result.metadata["hmm_confidence"] = round(_regime_conf, 4)
+                if _regime == "VOLATILE":
+                    result.suppression_reason = f"LCR_HMM_VOLATILE:{_regime_conf:.3f}"
+                    return result
+                if _regime == "TRENDING":
+                    # Raise bar — only highest-quality LCR setups survive a trending day
+                    _lcr_threshold = 0.65
 
         # ── Gate 5: Load H1 data ──────────────────────────────────────────
         df = self._get_data(instrument, "H1")
@@ -232,9 +259,10 @@ class LondonCloseReversionEngine:
             result.suppression_reason = "LCR_ZERO_RANGE"
             return result
 
-        result.london_high = round(london_high, 5)
-        result.london_low  = round(london_low, 5)
-        result.london_mid  = round(london_mid, 5)
+        _dp = 3 if instrument.endswith("JPY") or instrument.startswith("JPY") else 5
+        result.london_high = round(london_high, _dp)
+        result.london_low  = round(london_low, _dp)
+        result.london_mid  = round(london_mid, _dp)
 
         # ── ATR (14-bar Wilder's) from H1 window ──────────────────────────
         closes = df["close"].values
@@ -342,18 +370,20 @@ class LondonCloseReversionEngine:
             "london_range_price": round(london_range, 5),
         })
 
-        if confluence < LCR_CONFLUENCE_THRESHOLD:
-            result.suppression_reason = f"LCR_LOW_CONFLUENCE:{confluence:.3f}"
+        if confluence < _lcr_threshold:
+            result.suppression_reason = f"LCR_LOW_CONFLUENCE:{confluence:.3f}<{_lcr_threshold:.2f}"
             return result
 
         # ── SL / TP and R:R check ──────────────────────────────────────────
+        # JPY pairs use 3 decimal places; all others use 5
+        _price_dp = 3 if instrument.endswith("JPY") or instrument.startswith("JPY") else 5
         entry = current_close
         if direction == "SHORT":
-            stop_loss   = round(london_high + LCR_ATR_SL_BUFFER * atr, 5)
-            take_profit = round(london_mid, 5)
+            stop_loss   = round(london_high + LCR_ATR_SL_BUFFER * atr, _price_dp)
+            take_profit = round(london_mid, _price_dp)
         else:
-            stop_loss   = round(london_low - LCR_ATR_SL_BUFFER * atr, 5)
-            take_profit = round(london_mid, 5)
+            stop_loss   = round(london_low - LCR_ATR_SL_BUFFER * atr, _price_dp)
+            take_profit = round(london_mid, _price_dp)
 
         sl_dist = abs(entry - stop_loss)
         tp_dist = abs(entry - take_profit)
@@ -370,7 +400,7 @@ class LondonCloseReversionEngine:
         # Signal passes all gates
         result.direction       = direction
         result.confluence_score = round(confluence, 4)
-        result.entry_price     = round(entry, 5)
+        result.entry_price     = round(entry, _price_dp)
         result.stop_loss       = stop_loss
         result.take_profit     = take_profit
         result.suppressed      = False

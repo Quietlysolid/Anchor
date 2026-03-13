@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 import structlog
 import ta as ta_lib
+from datetime import timedelta
 
 from anchor.config import get_settings
 from anchor.signals.rsi_divergence    import detect_rsi_divergence
@@ -74,23 +75,83 @@ class SignalResult:
 
 
 # Signal component weights (must sum to 1.0)
-# CSI dropped to 0.0: too sparse (USD gets 4 pairs, others 1-2), unreliable.
-# COT (institutional positioning, weekly CFTC) at 0.05 — macro filter, fail-open.
-# Rate divergence (FRED central bank rate diff) at 0.05 — carry-trade macro filter.
-#   Positive rate_diff (base rate > quote) confirms LONG; negative confirms SHORT.
-#   Fail-open at 0.5 (neutral) when data unavailable — never blocks alone.
-# MTF reduced from 0.10 → 0.05 → 0.03 to make room for macro filters.
+#
+# Design hierarchy (trend-following system):
+#   PRIMARY   — MTF alignment (4H+Daily): confirms the macro trend direction
+#   SECONDARY — BB/KC squeeze + ADX: confirm momentum and trend strength
+#   TERTIARY  — RSI divergence + S/R: entry timing and structural confirmation
+#   MACRO     — COT, rate divergence: fail-open filters, never block alone
+#   NOISE     — OANDA sentiment: retail is contrarian, low weight
+#
+# MTF was previously 0.04 (progressively stripped to make room for macro filters).
+# Restored to 0.10 — the primary trend confirmation filter must carry real weight.
+# RSI 0.24→0.20, S/R 0.24→0.20 (both still primary, slight reduction to fund MTF).
+# BB/KC raised 0.20→0.22 (L1 regression confirms it as strongest positive predictor).
+#
+# NOTE: fit-weights ran on only 77 in-sample trades (< 200 min for reliable L1).
+# Re-run `make fit-weights-apply` after accumulating 300+ live trades.
 # VIX is NOT a confluence component — position-size multiplier only.
-# Run make ablation-all after collecting 3 months of live data to auto-optimize weights.
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+def _tsmom_direction(df_daily: pd.DataFrame | None, lookback_days: int = 84) -> str:
+    """
+    12-week Time-Series Momentum direction filter.
+    Moskowitz, Ooi & Pedersen (2012, JFE): sign of 12-week excess return.
+
+    Returns 'LONG', 'SHORT', or 'NEUTRAL' (neutral zone ±0.2%, or insufficient data).
+    Fail-open: returns 'NEUTRAL' (allows both directions) when data is unavailable.
+    """
+    if df_daily is None or len(df_daily) < lookback_days + 2:
+        return "NEUTRAL"
+    close_now  = float(df_daily["close"].iloc[-1])
+    cutoff     = df_daily.index[-1] - pd.Timedelta(days=lookback_days)
+    prior      = df_daily[df_daily.index <= cutoff]
+    if prior.empty:
+        return "NEUTRAL"
+    close_past = float(prior["close"].iloc[-1])
+    if close_past <= 0:
+        return "NEUTRAL"
+    ret = (close_now - close_past) / close_past
+    if ret >  0.002:
+        return "LONG"
+    if ret < -0.002:
+        return "SHORT"
+    return "NEUTRAL"
+
+
+def _nr4_compression(df_h1: pd.DataFrame | None, dt: "datetime") -> bool:
+    """
+    NR4 Asian-session compression flag (Crabel 1990).
+    True when today's Asian range (00:00–05:00 UTC) is the narrowest
+    of the past 4 days — identifies the tightest compression setups.
+
+    Used as metadata/scoring context, not a hard gate.
+    Fail-closed: returns False when insufficient data.
+    """
+    if df_h1 is None or len(df_h1) < 30:
+        return False
+    today = dt.date() if hasattr(dt, "date") else dt
+    ranges: list[float] = []
+    for offset in range(4):
+        target = today - timedelta(days=offset)
+        mask   = (df_h1.index.date == target) & (df_h1.index.hour < 6)
+        bars   = df_h1[mask]
+        if len(bars) >= 4:
+            ranges.append(float(bars["high"].max() - bars["low"].min()))
+    if len(ranges) < 4:
+        return False
+    return ranges[0] <= min(ranges[1:])
+
+
 WEIGHTS = {
-    "rsi_divergence":    0.24,
-    "bb_kc_squeeze":     0.20,
-    "adx_filter":        0.15,
-    "sr_strength":       0.24,
-    "mtf_agreement":     0.04,
-    "oanda_sentiment":   0.04,
-    "cot_signal":        0.05,
-    "rate_divergence":   0.04,
+    "rsi_divergence":    0.20,   # entry timing booster (was 0.24)
+    "bb_kc_squeeze":     0.22,   # momentum / compression breakout (was 0.20)
+    "adx_filter":        0.15,   # trend strength gate (unchanged)
+    "sr_strength":       0.20,   # structural level confirmation (was 0.24)
+    "mtf_agreement":     0.10,   # PRIMARY: 4H+Daily trend alignment (was 0.04)
+    "oanda_sentiment":   0.04,   # contrarian retail sentiment (unchanged)
+    "cot_signal":        0.05,   # institutional positioning, fail-open (unchanged)
+    "rate_divergence":   0.04,   # carry-trade macro filter, fail-open (unchanged)
 }
 
 
@@ -121,6 +182,7 @@ class ConfluenceEngine:
         ablation_hmm_gate:       bool = True,   # False → skip VOLATILE block
         ablation_session:        bool = True,   # False → trade all hours
         ablation_ml:             bool = True,   # False → skip ML gate entirely
+        ablation_tsmom:          bool = True,   # False → skip TSMOM direction gate
     ):
         self.news_filter      = news_filter or NewsFilter()
         self.spread_monitor   = spread_monitor
@@ -142,6 +204,7 @@ class ConfluenceEngine:
         self._abl_hmm_gate       = ablation_hmm_gate
         self._abl_session        = ablation_session
         self._abl_ml             = ablation_ml
+        self._abl_tsmom          = ablation_tsmom
 
     async def evaluate(
         self,
@@ -181,17 +244,18 @@ class ConfluenceEngine:
                 return result
 
         # ── Step 1b: HMM regime gate ──────────────────────────────────────
-        # Block all entries when HMM classifies the market as VOLATILE.
-        # The ADX filter handles trending/ranging discrimination downstream;
-        # this gate specifically targets the high-vol unpredictable regime.
+        # London trend strategy requires a TRENDING regime.
+        # - RANGING  → suppress (trend-following in ranging markets is the #1 edge killer)
+        # - VOLATILE → suppress (unpredictable high-vol, edges degrade and spreads widen)
+        # - TRENDING → allow (this is exactly when we want to trade)
         if self.hmm_detector and self.hmm_detector.is_ready:
             df_daily_hmm = self._get_data(instrument, "D")
             if df_daily_hmm is not None and len(df_daily_hmm) >= 60:
                 hmm_regime, hmm_conf = self.hmm_detector.predict_current(df_daily_hmm)
                 result.regime_state = hmm_regime
                 result.metadata["hmm_confidence"] = hmm_conf
-                if hmm_regime == "VOLATILE" and self._abl_hmm_gate:
-                    result.suppression_reason = f"HMM_VOLATILE:{hmm_conf:.3f}"
+                if hmm_regime in ("VOLATILE", "RANGING") and self._abl_hmm_gate:
+                    result.suppression_reason = f"HMM_{hmm_regime}:{hmm_conf:.3f}"
                     return result
 
         # ── Step 2: Load data ─────────────────────────────────────────────
@@ -261,6 +325,34 @@ class ConfluenceEngine:
             # No divergence, or divergence contradicts trend → no RSI bonus
             rsi_score = 0.0
             rsi_confirmed = False
+
+        # ── Step 3c: TSMOM macro direction gate (Moskowitz, Ooi & Pedersen 2012) ─
+        # 12-week sign-of-return: only trade in the direction of the medium-term trend.
+        # Menkhoff et al. (2012) show combining carry + momentum raises Sharpe from
+        # ~0.55 to ~1.1. Here we use it as a direction filter, not a sizing signal.
+        #
+        # Logic:
+        #   TSMOM LONG  + MTF direction LONG  → allow  (trend aligned)
+        #   TSMOM SHORT + MTF direction SHORT → allow  (trend aligned)
+        #   TSMOM LONG  + MTF direction SHORT → suppress (fighting the trend)
+        #   TSMOM SHORT + MTF direction LONG  → suppress (fighting the trend)
+        #   TSMOM NEUTRAL                     → allow both (±0.2% dead zone)
+        #
+        # Fail-open: when daily data unavailable, TSMOM returns NEUTRAL → no block.
+        tsmom_dir = _tsmom_direction(df_1d)
+        result.metadata["tsmom_direction"] = tsmom_dir
+        result.metadata["tsmom_aligned"]   = (tsmom_dir == "NEUTRAL" or tsmom_dir == direction)
+        if self._abl_tsmom and tsmom_dir != "NEUTRAL" and tsmom_dir != direction:
+            result.suppression_reason = f"TSMOM_CONFLICT:{tsmom_dir}_vs_{direction}"
+            return result
+
+        # ── Step 3d: NR4 Asian compression flag (Crabel 1990) ────────────
+        # Computed from today's Asian session bars (00:00–05:00 UTC) vs prior 3 days.
+        # Not a hard gate — logged as metadata and used as a scoring context signal.
+        # Backtest finding (ACEB study, 2026-03): NR4 days show +3–5% higher WR
+        # on SHORT entries for EUR_USD at London open; logged here for ML feature use.
+        nr4 = _nr4_compression(df_1h, dt)
+        result.metadata["nr4_compression"] = nr4
 
         # ── Step 4: Multi-timeframe confirmation ──────────────────────────
         if df_4h is not None and df_1d is not None:
