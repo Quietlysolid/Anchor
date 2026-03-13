@@ -33,16 +33,16 @@ export default function Backtest() {
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-2xl">
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-2xl">
       <h1 className="text-xl font-bold">Backtest Engine</h1>
 
       <div className="bg-card border border-border rounded-lg p-5 space-y-4">
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label htmlFor="bt-instrument" className="text-xs text-muted-foreground mb-1 block">Instrument</label>
             <select id="bt-instrument" title="Instrument" value={instrument} onChange={e => setInstrument(e.target.value)}
               className="w-full bg-muted border border-border rounded px-2 py-1.5 text-sm text-foreground">
-              {['EUR_USD','GBP_USD','USD_JPY','AUD_USD','NZD_USD','USD_CHF','EUR_GBP','GBP_JPY'].map(i => (
+              {['EUR_USD','GBP_USD','USD_JPY'].map(i => (
                 <option key={i} value={i}>{i.replace('_','/')}</option>
               ))}
             </select>
@@ -72,7 +72,7 @@ export default function Backtest() {
       {result && (
         <div className="bg-card border border-border rounded-lg p-5">
           <h3 className="text-sm font-semibold mb-4">Results — {result.start_date} to {result.end_date}</h3>
-          <div className="grid grid-cols-3 gap-4 text-center">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-center">
             {[
               { label: 'Total Trades', value: String(result.total_trades) },
               { label: 'Win Rate',     value: `${(result.win_rate * 100).toFixed(1)}%` },
@@ -88,8 +88,9 @@ export default function Backtest() {
             ))}
           </div>
 
-          <div className="mt-4 text-xs text-muted-foreground">
-            Target: Sharpe &gt; 1.0, Profit Factor &gt; 1.3, Win Rate &gt; 50% before going live.
+          <div className="mt-4 text-xs text-muted-foreground space-y-0.5">
+            <div>London Trend targets: WR &gt; 55%, PF &gt; 1.3, Sharpe &gt; 1.0</div>
+            <div>LCR (NY session) targets: WR &gt; 45%, PF &gt; 1.5 — lower WR acceptable due to ~1.9:1 R:R</div>
           </div>
         </div>
       )}

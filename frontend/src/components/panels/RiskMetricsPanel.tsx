@@ -15,7 +15,7 @@ export function RiskMetricsPanel() {
   return (
     <div className="bg-card rounded-lg p-4 border border-border">
       <h3 className="text-sm font-semibold mb-4">Risk Metrics</h3>
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-3">
         <Metric label="Sharpe" value={data ? (data.sharpe_ratio ?? 0).toFixed(2) : '—'} warn={data ? (data.sharpe_ratio ?? 0) < 0 : false} />
         <Metric label="Win Rate" value={data ? `${((data.win_rate ?? 0) * 100).toFixed(1)}%` : '—'} />
         <Metric label="Profit Factor" value={data ? (data.profit_factor ?? 0).toFixed(2) : '—'} warn={data ? (data.profit_factor ?? 0) < 1 : false} />

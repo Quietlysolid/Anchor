@@ -9,10 +9,10 @@ export default function Journal() {
   const total  = (trades ?? []).reduce((s, t) => s + t.net_pl, 0)
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6">
       <h1 className="text-xl font-bold">Trade Journal</h1>
 
-      <div className="grid grid-cols-4 gap-4 text-center">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
         {[
           { label: 'Total Trades', value: String(trades?.length ?? 0) },
           { label: 'Wins', value: String(wins), cls: 'text-green-400' },

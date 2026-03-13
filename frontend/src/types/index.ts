@@ -19,7 +19,7 @@ export interface LivePrice {
 // ── Signal ────────────────────────────────────────────────────
 export type Direction = 'LONG' | 'SHORT'
 export type Regime    = 'TRENDING' | 'RANGING' | 'VOLATILE'
-export type Session   = 'LONDON' | 'NEWYORK' | 'ASIAN' | 'OFF'
+export type Session   = 'LONDON' | 'NEWYORK' | 'ASIAN' | 'OFF' | 'NY_LCR'
 
 export interface Signal {
   id: string
@@ -28,19 +28,26 @@ export interface Signal {
   timeframe: string
   direction: Direction
   confluence_score: number
+  // London trend engine fields
   rsi_score: number | null
   bb_kc_score: number | null
   adx_score: number | null
   sr_score: number | null
   mtf_score: number | null
-  csi_score: number | null        // OANDA sentiment score (field reused)
-  cot_score: number | null        // COT institutional positioning
-  rate_divergence_score: number | null  // FRED central bank rate divergence
+  csi_score: number | null
+  cot_score: number | null
+  rate_divergence_score: number | null
   ml_confidence: number | null
   regime_state: Regime | null
   session: Session | null
   suppressed: boolean
   suppression_reason: string | null
+  // LCR-specific (present when session === 'NY_LCR', reuses score fields)
+  // adx_score = range_pos_score, bb_kc_score = rejection_score, sr_score = range_qual_score
+  london_high: number | null
+  london_low: number | null
+  london_mid: number | null
+  position_in_range: number | null
 }
 
 // ── Position / Order ─────────────────────────────────────────
@@ -66,9 +73,9 @@ export interface Order {
   instrument: string
   direction: Direction
   order_type: string
-  requested_units: number
+  units: number
   state: OrderState
-  limit_price: number | null
+  oanda_order_id: string | null
   stop_loss: number | null
   take_profit: number | null
 }

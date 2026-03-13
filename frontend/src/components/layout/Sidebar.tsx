@@ -9,15 +9,29 @@ const NAV = [
   { to: '/settings',    label: 'Settings',     icon: '⚙' },
 ]
 
-export function Sidebar() {
+interface Props { onClose?: () => void }
+
+export function Sidebar({ onClose }: Props) {
   const { wsConnected } = useSystemStore()
 
   return (
-    <aside className="w-52 bg-card border-r border-border flex flex-col shrink-0">
+    <aside className="w-52 h-full bg-card border-r border-border flex flex-col shrink-0">
       <div className="p-5 border-b border-border">
-        <div className="flex items-center gap-2">
-          <span className="text-primary text-xl">⚓</span>
-          <span className="font-bold text-foreground tracking-tight">ANCHOR</span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-primary text-xl">⚓</span>
+            <span className="font-bold text-foreground tracking-tight">ANCHOR</span>
+          </div>
+          {/* Close button — mobile only */}
+          {onClose && (
+            <button type="button" onClick={onClose}
+              className="md:hidden text-muted-foreground hover:text-foreground p-1"
+              aria-label="Close menu">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M2 2l12 12M14 2L2 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-1.5 mt-2">
           <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} />

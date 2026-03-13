@@ -37,6 +37,12 @@ export const useCalendar = () =>
 export const useLatestSignals = () =>
   useQuery({ queryKey: ['signals-latest'], queryFn: () => api.get<import('../../types').Signal[]>('/signals/latest?limit=50'), refetchInterval: 60_000 })
 
+export const usePositions = () =>
+  useQuery({ queryKey: ['positions'], queryFn: () => api.get<import('../../types').Position[]>('/positions'), refetchInterval: 10_000 })
+
+export const usePendingOrders = () =>
+  useQuery({ queryKey: ['pending-orders'], queryFn: () => api.get<import('../../types').Order[]>('/orders'), refetchInterval: 10_000 })
+
 export const useCandles = (instrument: string, timeframe: string) => {
   const key = ['candles', instrument, timeframe]
 

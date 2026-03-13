@@ -22,17 +22,24 @@ export default function Settings() {
   const { data } = useSystemHealth()
 
   return (
-    <div className="p-6 space-y-6 max-w-2xl">
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-2xl">
       <h1 className="text-xl font-bold">System Settings</h1>
 
       <Section title="Risk Parameters (configured via .env)">
-        <InfoRow label="Max Risk Per Trade" value="1.0%" />
-        <InfoRow label="Drawdown Reduce Threshold" value="8%" />
-        <InfoRow label="Drawdown Halt Threshold" value="15%" />
-        <InfoRow label="Min Confluence Score" value="72%" />
-        <InfoRow label="Min ML Confidence" value="58%" />
-        <InfoRow label="Max Leverage" value="10:1 effective" />
-        <InfoRow label="Spread Block (vs median)" value="3x" />
+        <InfoRow label="Max Risk Per Trade"          value="1.0%" />
+        <InfoRow label="Drawdown Reduce Threshold"   value="8%" />
+        <InfoRow label="Drawdown Halt Threshold"     value="15%" />
+        <InfoRow label="Daily Loss Halt"             value="3%" />
+        <InfoRow label="Spread Block (vs median)"    value="3×" />
+      </Section>
+
+      <Section title="Strategy Configuration">
+        <InfoRow label="London Trend — Session"      value="07:15 – 12:00 UTC" />
+        <InfoRow label="London Trend — Threshold"    value="72% confluence" />
+        <InfoRow label="London Trend — SL / TP"      value="1.5× ATR / 2.0× ATR" />
+        <InfoRow label="LCR (NY) — Session"          value="17:00 – 19:59 UTC" />
+        <InfoRow label="LCR (NY) — Threshold"        value="55% confluence" />
+        <InfoRow label="LCR (NY) — TP target"        value="London session midpoint" />
       </Section>
 
       <Section title="System Status">
@@ -42,10 +49,15 @@ export default function Settings() {
         <InfoRow label="Stream Status"   value={data?.stream_connected ? 'Connected' : 'Offline'} />
       </Section>
 
-      <Section title="Instruments Monitored">
-        {['EUR_USD','GBP_USD','USD_JPY','AUD_USD','NZD_USD','USD_CHF','EUR_GBP','GBP_JPY'].map(i => (
-          <div key={i} className="py-1.5 border-b border-border/40 last:border-0 text-sm font-mono text-muted-foreground">
-            {i.replace('_','/')}
+      <Section title="Active Instruments">
+        {[
+          { pair: 'EUR_USD', note: 'London trend + LCR' },
+          { pair: 'GBP_USD', note: 'London trend + LCR' },
+          { pair: 'USD_JPY', note: 'London trend + LCR · highest LCR PF (1.91)' },
+        ].map(({ pair, note }) => (
+          <div key={pair} className="flex justify-between items-center py-1.5 border-b border-border/40 last:border-0">
+            <span className="text-sm font-mono">{pair.replace('_', '/')}</span>
+            <span className="text-xs text-muted-foreground">{note}</span>
           </div>
         ))}
       </Section>

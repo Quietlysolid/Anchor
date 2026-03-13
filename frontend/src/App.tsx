@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 // npm install react-router-dom @types/react-router-dom
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { Sidebar } from './components/layout/Sidebar'
 import Dashboard   from './pages/Dashboard'
 import Performance from './pages/Performance'
@@ -62,22 +62,66 @@ function WsBootstrap() {
   return null
 }
 
+function Layout() {
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const location = useLocation()
+
+  // Close sidebar on navigation
+  useEffect(() => { setSidebarOpen(false) }, [location.pathname])
+
+  return (
+    <div className="flex h-screen overflow-hidden">
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-20 bg-black/60 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar — drawer on mobile, fixed on desktop */}
+      <div className={`fixed inset-y-0 left-0 z-30 transition-transform duration-200 md:relative md:translate-x-0 md:z-auto
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <Sidebar onClose={() => setSidebarOpen(false)} />
+      </div>
+
+      {/* Main */}
+      <main className="flex-1 overflow-y-auto min-w-0">
+        {/* Mobile top bar */}
+        <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-3 bg-background border-b border-border md:hidden">
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            className="text-muted-foreground hover:text-foreground p-1"
+            aria-label="Open menu"
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <rect y="3" width="20" height="2" rx="1"/>
+              <rect y="9" width="20" height="2" rx="1"/>
+              <rect y="15" width="20" height="2" rx="1"/>
+            </svg>
+          </button>
+          <span className="text-primary text-lg">⚓</span>
+          <span className="font-bold text-sm tracking-tight">ANCHOR</span>
+        </div>
+
+        <Routes>
+          <Route path="/"            element={<Dashboard />} />
+          <Route path="/performance" element={<Performance />} />
+          <Route path="/journal"     element={<Journal />} />
+          <Route path="/backtest"    element={<Backtest />} />
+          <Route path="/settings"    element={<Settings />} />
+        </Routes>
+      </main>
+    </div>
+  )
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <WsBootstrap />
-      <div className="flex h-screen overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 overflow-y-auto">
-          <Routes>
-            <Route path="/"            element={<Dashboard />} />
-            <Route path="/performance" element={<Performance />} />
-            <Route path="/journal"     element={<Journal />} />
-            <Route path="/backtest"    element={<Backtest />} />
-            <Route path="/settings"    element={<Settings />} />
-          </Routes>
-        </main>
-      </div>
+      <Layout />
     </BrowserRouter>
   )
 }
