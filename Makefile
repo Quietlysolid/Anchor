@@ -98,6 +98,29 @@ fit-weights-apply:
 		--end 2024-01-01 \
 		--apply
 
+# OOS validation using live trades from PostgreSQL.
+# Run once you have 200+ closed live trades. Triggered automatically by
+# the daily check_fit_weights_trigger Celery task (sends Telegram alert).
+fit-weights-live:
+	docker compose exec engine python -m anchor.backtesting.fit_weights --live-trades
+
+fit-weights-live-apply:
+	docker compose exec engine python -m anchor.backtesting.fit_weights --live-trades --apply
+
+# Check current live trade count and when next regression trigger fires.
+fit-weights-progress:
+	docker compose exec engine python -c "\
+from sqlalchemy import create_engine, text; \
+from anchor.config import settings; \
+db = create_engine(settings.sync_database_url); \
+conn = db.connect(); \
+n = conn.execute(text(\"SELECT COUNT(*) FROM trades WHERE closed_at IS NOT NULL AND signal_id IS NOT NULL\")).scalar(); \
+last = conn.execute(text(\"SELECT metadata FROM system_events WHERE event_type='FW_TRIGGER_RAN' ORDER BY event_at DESC LIMIT 1\")).fetchone(); \
+last_n = last[0].get('trade_count', 0) if last and last[0] else 0; \
+nxt = ((n // 200) + 1) * 200 if n < 200 else ((n // 200) + 1) * 200; \
+print(f'Closed trades: {n}'); print(f'Last regression at: {last_n} trades'); print(f'Next trigger at: {nxt} trades ({nxt - n} to go)') \
+"
+
 # IC-based instrument ranking: which pairs to keep, deprioritize, or drop.
 # Removes guesswork from pair selection using statistical signal reliability.
 instrument-confidence:

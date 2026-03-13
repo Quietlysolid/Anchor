@@ -1470,3 +1470,166 @@ def retrain_models(self, instrument: Optional[str] = None):
     except Exception as exc:
         logger.error("retraining_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=3600)
+
+
+# ── fit_weights trigger thresholds ───────────────────────────────────────────
+# First trigger at 200 trades (minimum for reliable L1 regression).
+# Re-triggers every 200 trades after that (400, 600, 800, ...).
+# Does NOT auto-apply weights — sends Telegram alert with results for review.
+_FW_FIRST_THRESHOLD = 200
+_FW_RETRIGGER_EVERY = 200
+
+
+@celery_app.task(name="anchor.scheduler.jobs.check_fit_weights_trigger", bind=True, max_retries=1)
+def check_fit_weights_trigger(self):
+    """
+    Daily check: when closed live trades cross 200 (then every 200 after),
+    run the L1 weight regression analysis and send a Telegram alert with
+    the results. Does NOT auto-apply — the user reviews and runs
+    `make fit-weights-live --apply` to accept the new weights.
+
+    Trigger logic:
+      - Count closed trades with signal_id in DB (true OOS trades only).
+      - Read last trigger count from system_events (FW_TRIGGER_RAN event).
+      - Fire when: count >= 200 AND count // 200 > last_count // 200.
+      - Always write FW_TRIGGER_CHECKED event with current count (progress log).
+    """
+    import json
+    from sqlalchemy import create_engine, text
+    from anchor.config import get_settings
+
+    cfg = get_settings()
+    db  = create_engine(cfg.sync_database_url)
+
+    # ── Step 1: count closed OOS trades ──────────────────────────────────────
+    with db.connect() as conn:
+        trade_count = conn.execute(text(
+            "SELECT COUNT(*) FROM trades "
+            "WHERE closed_at IS NOT NULL AND signal_id IS NOT NULL"
+        )).scalar() or 0
+
+        # Last count at which the regression was run
+        row = conn.execute(text(
+            "SELECT metadata FROM system_events "
+            "WHERE event_type = 'FW_TRIGGER_RAN' "
+            "ORDER BY event_at DESC LIMIT 1"
+        )).fetchone()
+
+    last_trigger_count = 0
+    if row and row[0]:
+        try:
+            last_trigger_count = int(row[0].get("trade_count", 0))
+        except (TypeError, AttributeError, ValueError):
+            last_trigger_count = 0
+
+    logger.info(
+        "fw_trigger_checked",
+        trade_count=trade_count,
+        last_trigger_count=last_trigger_count,
+        threshold=_FW_FIRST_THRESHOLD,
+    )
+
+    # ── Step 2: write progress event (always — creates visible log) ──────────
+    with db.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO system_events
+                (event_at, event_type, severity, component, message, metadata)
+            VALUES
+                (NOW(), 'FW_TRIGGER_CHECKED', 'INFO', 'fit_weights',
+                 :msg, CAST(:meta AS jsonb))
+        """), {
+            "msg":  f"Trade count: {trade_count} / next trigger at "
+                    f"{((trade_count // _FW_RETRIGGER_EVERY) + 1) * _FW_RETRIGGER_EVERY}",
+            "meta": json.dumps({
+                "trade_count":       trade_count,
+                "last_trigger_count": last_trigger_count,
+                "next_trigger":      (
+                    (trade_count // _FW_RETRIGGER_EVERY) + 1
+                ) * _FW_RETRIGGER_EVERY,
+            }),
+        })
+
+    # ── Step 3: decide whether to trigger ────────────────────────────────────
+    if trade_count < _FW_FIRST_THRESHOLD:
+        return  # not enough trades yet
+
+    current_band = trade_count // _FW_RETRIGGER_EVERY
+    last_band    = last_trigger_count // _FW_RETRIGGER_EVERY
+    if current_band <= last_band:
+        return  # already ran at this band
+
+    # ── Step 4: run regression analysis ──────────────────────────────────────
+    logger.info("fw_trigger_firing", trade_count=trade_count)
+
+    try:
+        import warnings
+        import logging as _logging
+        _logging.disable(_logging.CRITICAL)
+        warnings.filterwarnings("ignore")
+
+        import pandas as pd
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.preprocessing import StandardScaler
+
+        from anchor.backtesting.fit_weights import (
+            _collect_live_trades, _fit, CURRENT_WEIGHTS, COMPONENT_MAP,
+        )
+
+        df = _collect_live_trades()
+        if len(df) < 50:
+            logger.warning("fw_trigger_too_few_trades", count=len(df))
+            return
+
+        new_weights = _fit(df, C=1.0)
+
+        # Build compact summary for alert
+        lines = ["*Weight Optimizer Triggered*", f"Trades: {len(df)}"]
+        wins = int((df["outcome"] == 1).sum())
+        lines.append(f"WR: {wins/len(df)*100:.1f}%")
+        lines.append("")
+        lines.append("```")
+        lines.append(f"{'Component':<22} {'Current':>7} {'Optimised':>9} {'Delta':>7}")
+        lines.append("-" * 48)
+        for k, old_v in CURRENT_WEIGHTS.items():
+            new_v = new_weights.get(k, 0.0)
+            delta = new_v - old_v
+            sign  = "+" if delta >= 0 else ""
+            lines.append(f"{k:<22} {old_v:.4f}   {new_v:.4f}   {sign}{delta:.4f}")
+        lines.append("```")
+        lines.append("")
+        lines.append("Run `make fit-weights-live --apply` to accept.")
+
+        alert_msg = "\n".join(lines)
+
+    except Exception as exc:
+        logger.error("fw_trigger_regression_failed", error=str(exc))
+        alert_msg = (
+            f"*Weight Optimizer Ready* — {trade_count} trades in DB\n"
+            f"Regression failed: {exc}\n"
+            f"Run manually: `make fit-weights-live`"
+        )
+        new_weights = {}
+
+    # ── Step 5: send Telegram alert ───────────────────────────────────────────
+    try:
+        _run_async(_alerts.send(alert_msg))
+    except Exception as exc:
+        logger.warning("fw_trigger_alert_failed", error=str(exc))
+
+    # ── Step 6: write FW_TRIGGER_RAN event (prevents re-firing this band) ────
+    with db.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO system_events
+                (event_at, event_type, severity, component, message, metadata)
+            VALUES
+                (NOW(), 'FW_TRIGGER_RAN', 'INFO', 'fit_weights',
+                 :msg, CAST(:meta AS jsonb))
+        """), {
+            "msg":  f"Regression run at {trade_count} trades",
+            "meta": json.dumps({
+                "trade_count":  trade_count,
+                "new_weights":  new_weights,
+                "old_weights":  CURRENT_WEIGHTS,
+            }),
+        })

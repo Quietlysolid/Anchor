@@ -34,6 +34,7 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.update_oanda_sentiment": {"queue": "default"},
         "anchor.scheduler.jobs.startup_diagnostics": {"queue": "default"},
         "anchor.scheduler.jobs.run_partial_tp": {"queue": "default"},
+        "anchor.scheduler.jobs.check_fit_weights_trigger": {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -92,6 +93,10 @@ celery_app.conf.update(
         "partial-tp-every-5-min": {
             "task": "anchor.scheduler.jobs.run_partial_tp",
             "schedule": 300.0,  # aligns with signal scan — checks open positions every 5 min
+        },
+        "check-fit-weights-trigger-daily": {
+            "task": "anchor.scheduler.jobs.check_fit_weights_trigger",
+            "schedule": 86_400.0,  # daily — fires at 200 trades then every 200 after
         },
     },
     worker_prefetch_multiplier=1,
