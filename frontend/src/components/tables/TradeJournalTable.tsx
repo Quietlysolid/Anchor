@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { format } from 'date-fns'
 import type { Trade } from '../../types'
 
@@ -52,8 +52,8 @@ export function TradeJournalTable({ trades, explanations = {} }: Props) {
               const explanation = explanations[t.id]
               const isExpanded  = expanded[t.id]
               return (
-                <>
-                  <tr key={t.id} className="border-b border-border/30 hover:bg-muted/20 transition-colors">
+                <Fragment key={t.id}>
+                  <tr className="border-b border-border/30 hover:bg-muted/20 transition-colors">
                     <td className="py-2.5 pr-5 text-muted-foreground whitespace-nowrap">
                       {format(new Date(t.closed_at), 'MMM d, h:mm a')}
                     </td>
@@ -82,7 +82,7 @@ export function TradeJournalTable({ trades, explanations = {} }: Props) {
                     </td>
                   </tr>
                   {explanation && isExpanded && (
-                    <tr key={`${t.id}-exp`} className="border-b border-border/20">
+                    <tr className="border-b border-border/20">
                       <td colSpan={8} className="py-2 px-0 pb-3">
                         <div className="bg-muted/20 rounded px-3 py-2 text-[11px] text-muted-foreground leading-relaxed border-l-2 border-primary/40">
                           {explanation}
@@ -90,7 +90,7 @@ export function TradeJournalTable({ trades, explanations = {} }: Props) {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               )
             })}
           </tbody>

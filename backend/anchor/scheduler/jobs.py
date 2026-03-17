@@ -2055,7 +2055,8 @@ def monitor_live_performance(self):
             SELECT
                 t.closed_at,
                 t.net_pl,
-                t.pl_pct,
+                CAST(t.net_pl AS float) /
+                    NULLIF(CAST(t.entry_price AS float), 0) * 100 AS pl_pct,
                 t.instrument,
                 s.session,
                 s.confluence_score,
@@ -2186,10 +2187,14 @@ def monitor_live_performance(self):
                         # Gather per-pair breakdown from raw trades for this strategy
                         _session_filter = "NY_LCR" if _lbl == "LCR" else "LONDON"
                         _strat_rows = [
-                            {"instrument": r[3], "direction": r[1] if len(r) > 1 else None,
-                             "net_pl": float(r[1]) if _lbl == "net_pl_idx" else None,
-                             "closed_at": str(r[0])}
-                            for r in rows if r[4] == _session_filter  # session col
+                            {
+                                "instrument":  r[3],
+                                "net_pl":      float(r[1]) if r[1] is not None else 0.0,
+                                "pl_pct":      float(r[2]) if r[2] is not None else 0.0,
+                                "confluence":  float(r[5]) if r[5] is not None else None,
+                                "closed_at":   str(r[0]),
+                            }
+                            for r in rows if r[4] == _session_filter
                         ]
                         _diagnosis, _ = await _diagnose(_lbl, s, _bench, _strat_rows[:30])
                         if _diagnosis:
