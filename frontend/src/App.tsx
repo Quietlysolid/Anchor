@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 // npm install react-router-dom @types/react-router-dom
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { Sidebar } from './components/layout/Sidebar'
 import Dashboard   from './pages/Dashboard'
 import Performance from './pages/Performance'
@@ -8,37 +9,45 @@ import Journal     from './pages/Journal'
 import Backtest    from './pages/Backtest'
 import Settings    from './pages/Settings'
 import { wsClient } from './api/websocket'
-import { useLatestSignals, useRegime } from './api/hooks'
-import { useMarketStore, useSystemStore, useSignalStore, usePositionStore } from './store'
+import { useLatestSignals, useRegime, usePositions } from './api/hooks'
+import { useMarketStore, useSystemStore, useSignalStore, usePositionStore, useWeightsStore } from './store'
 import type { LivePrice, Signal, Position } from './types'
 
 function WsBootstrap() {
-  const setPrice     = useMarketStore(s => s.setPrice)
-  const { setWsConnected, setHeartbeat, setRegime } = useSystemStore()
-  const pushSignal   = useSignalStore(s => s.pushSignal)
-  const setPositions = usePositionStore(s => s.setPositions)
-  const { data: seedSignals } = useLatestSignals()
-  const { data: seedRegime  } = useRegime()
+  const setPrice      = useMarketStore(s => s.setPrice)
+  const { setWsConnected, setHeartbeat, setRegime, setAccount } = useSystemStore()
+  const pushSignal    = useSignalStore(s => s.pushSignal)
+  const setPositions  = usePositionStore(s => s.setPositions)
+  const fetchWeights  = useWeightsStore(s => s.fetchWeights)
+  const queryClient   = useQueryClient()
+  const { data: seedSignals  } = useLatestSignals()
+  const { data: seedRegime   } = useRegime()
+  const { data: seedPositions } = usePositions()
+
+  // Fetch signal weights once on load
+  useEffect(() => { fetchWeights() }, [])
 
   // Seed signal store from REST on page load (before first WS event arrives)
   useEffect(() => {
     if (seedSignals && seedSignals.length > 0) {
       const store = useSignalStore.getState()
-      if (store.signals.length === 0) {
-        seedSignals.forEach(s => pushSignal(s))
-      }
+      if (store.signals.length === 0) seedSignals.forEach(s => pushSignal(s))
     }
   }, [seedSignals])
 
   // Seed regime store from REST on page load
   useEffect(() => {
     if (seedRegime && Object.keys(seedRegime).length > 0) {
-      if (Object.keys(useSystemStore.getState().currentRegime).length === 0) {
-        // REST returns {instrument: {state, confidence}} — matches setRegime shape
-        setRegime(seedRegime)
-      }
+      if (Object.keys(useSystemStore.getState().currentRegime).length === 0) setRegime(seedRegime)
     }
   }, [seedRegime])
+
+  // Seed position store from REST on page load (WS takes over after first broadcast)
+  useEffect(() => {
+    if (seedPositions && usePositionStore.getState().positions.length === 0) {
+      setPositions(seedPositions)
+    }
+  }, [seedPositions])
 
   useEffect(() => {
     wsClient.connect()
@@ -47,9 +56,22 @@ function WsBootstrap() {
       wsClient.onStatus((connected) => setWsConnected(connected)),
       wsClient.on('ticks',     (d) => setPrice(d as LivePrice)),
       wsClient.on('signals',   (d) => pushSignal(d as Signal)),
-      wsClient.on('positions', (d) => setPositions(d as Position[])),
       wsClient.on('regime',    (d) => setRegime(d as Record<string, { state: string; confidence: number }>)),
       wsClient.on('heartbeat', ()  => setHeartbeat()),
+      wsClient.on('account',   (d) => {
+        const { balance, equity } = d as { balance: number; equity: number }
+        setAccount(balance, equity)
+      }),
+      wsClient.on('positions', (d) => {
+        setPositions(d as Position[])
+        // A position change means trades closed/opened — invalidate perf data
+        queryClient.invalidateQueries({ queryKey: ['performance'] })
+        queryClient.invalidateQueries({ queryKey: ['trade-journal'] })
+        queryClient.invalidateQueries({ queryKey: ['equity-curve'] })
+      }),
+      wsClient.on('orders', () => {
+        queryClient.invalidateQueries({ queryKey: ['pending-orders'] })
+      }),
     ]
 
     return () => {

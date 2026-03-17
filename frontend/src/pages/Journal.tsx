@@ -1,36 +1,97 @@
 import { useTradeJournal } from '../api/hooks'
 import { TradeJournalTable } from '../components/tables/TradeJournalTable'
+import { useWeightsStore } from '../store'
+
+function utcToET(h: number, m: number): string {
+  const d = new Date()
+  d.setUTCHours(h, m, 0, 0)
+  return d.toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  })
+}
 
 export default function Journal() {
   const { data: trades, isLoading } = useTradeJournal()
+  const { win_rate_good, win_rate_warn } = useWeightsStore(s => s.targets)
 
-  const wins   = trades?.filter(t => t.net_pl > 0).length ?? 0
-  const losses = trades?.filter(t => t.net_pl < 0).length ?? 0
-  const total  = (trades ?? []).reduce((s, t) => s + t.net_pl, 0)
+  const wins    = trades?.filter(t => t.net_pl > 0).length ?? 0
+  const losses  = trades?.filter(t => t.net_pl < 0).length ?? 0
+  const total   = (trades ?? []).reduce((s, t) => s + t.net_pl, 0)
+  const count   = trades?.length ?? 0
+  const winRate = count > 0 ? wins / count : null
+
+  const wrColor = winRate === null ? ''
+    : winRate >= win_rate_good ? 'text-green-400'
+    : winRate >= win_rate_warn ? 'text-amber-400'
+    : 'text-red-400'
+
+  const stats = [
+    {
+      label: 'Trades taken',
+      value: String(count),
+      sub: 'total since launch',
+    },
+    {
+      label: 'Profitable',
+      value: String(wins),
+      cls: wins > 0 ? 'text-green-400' : '',
+      sub: 'closed in profit',
+    },
+    {
+      label: 'Losses',
+      value: String(losses),
+      cls: losses > 0 ? 'text-red-400' : '',
+      sub: 'closed at a loss',
+    },
+    {
+      label: 'Success rate',
+      value: winRate !== null ? `${(winRate * 100).toFixed(1)}%` : '—',
+      cls: wrColor,
+      sub: winRate !== null
+        ? winRate >= win_rate_good ? '✓ Above target' : `Target: ${Math.round(win_rate_good * 100)}%+`
+        : `Target: ${Math.round(win_rate_good * 100)}%+`,
+    },
+    {
+      label: 'Total profit / loss',
+      value: count > 0 ? `${total >= 0 ? '+' : ''}$${total.toFixed(2)}` : '—',
+      cls: total >= 0 ? 'text-green-400' : 'text-red-400',
+      sub: 'net after all trades',
+    },
+  ]
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-6">
-      <h1 className="text-xl font-bold">Trade Journal</h1>
+      <div>
+        <h1 className="text-xl font-bold">Trade Journal</h1>
+        <p className="text-sm text-muted-foreground mt-0.5">Every trade the system has placed, closed, and recorded.</p>
+      </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
-        {[
-          { label: 'Total Trades', value: String(trades?.length ?? 0) },
-          { label: 'Wins', value: String(wins), cls: 'text-green-400' },
-          { label: 'Losses', value: String(losses), cls: 'text-red-400' },
-          { label: 'Net P&L', value: `$${total.toFixed(2)}`, cls: total >= 0 ? 'text-green-400' : 'text-red-400' },
-        ].map(({ label, value, cls }) => (
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {stats.map(({ label, value, cls, sub }) => (
           <div key={label} className="bg-card border border-border rounded-lg p-4">
             <div className={`text-2xl font-bold font-mono ${cls ?? ''}`}>{value}</div>
-            <div className="text-xs text-muted-foreground mt-1">{label}</div>
+            <div className="text-xs font-medium mt-1">{label}</div>
+            {sub && <div className="text-[10px] text-muted-foreground/50 mt-0.5">{sub}</div>}
           </div>
         ))}
       </div>
 
       <div className="bg-card border border-border rounded-lg p-4">
         {isLoading ? (
-          <p className="text-muted-foreground text-sm text-center py-8">Loading trades…</p>
+          <div className="space-y-3 py-4">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="skeleton h-4 w-full" style={{ opacity: 1 - i * 0.12 }} />
+            ))}
+          </div>
         ) : !trades?.length ? (
-          <p className="text-muted-foreground text-sm text-center py-8">No trades recorded yet</p>
+          <div className="text-center py-12">
+            <p className="text-muted-foreground text-sm font-medium">No trades yet</p>
+            <p className="text-muted-foreground/50 text-xs mt-2 max-w-xs mx-auto leading-relaxed">
+              The system will place its first trade during the morning session ({utcToET(7, 15)} – {utcToET(12, 0)} ET)
+              or the evening reversal window ({utcToET(17, 0)} – {utcToET(20, 0)} ET) when a strong enough setup appears.
+            </p>
+          </div>
         ) : (
           <TradeJournalTable trades={trades} />
         )}

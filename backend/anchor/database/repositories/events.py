@@ -88,18 +88,40 @@ class EconomicCalendarRepository:
         return list(result.scalars().all())
 
     async def get_affecting_currencies(
-        self, currencies: List[str], start: datetime, end: datetime
+        self,
+        currencies: List[str],
+        start: datetime,
+        end: datetime,
+        impact: str = "HIGH",
     ) -> List[EconomicEvent]:
         result = await self.session.execute(
             select(EconomicEvent)
             .where(
                 and_(
                     EconomicEvent.currency.in_(currencies),
-                    EconomicEvent.impact == "HIGH",
+                    EconomicEvent.impact == impact,
                     EconomicEvent.event_time >= start,
                     EconomicEvent.event_time <= end,
                 )
             )
             .order_by(EconomicEvent.event_time)
+        )
+        return list(result.scalars().all())
+
+    async def get_recent_releases(
+        self, currencies: List[str], limit: int = 6
+    ) -> List[EconomicEvent]:
+        """Return the most recent HIGH-impact events where actual was recorded."""
+        result = await self.session.execute(
+            select(EconomicEvent)
+            .where(
+                and_(
+                    EconomicEvent.currency.in_(currencies),
+                    EconomicEvent.impact == "HIGH",
+                    EconomicEvent.actual.isnot(None),
+                )
+            )
+            .order_by(desc(EconomicEvent.event_time))
+            .limit(limit)
         )
         return list(result.scalars().all())

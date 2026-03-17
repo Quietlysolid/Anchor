@@ -129,12 +129,23 @@ class ForexFactoryScraper:
             title_cell = row.find("td", class_="calendar__event")
             title = title_cell.get_text(strip=True) if title_cell else "Unknown"
 
+            # Consensus / released values (may be empty for future events)
+            forecast_cell  = row.find("td", class_="calendar__forecast")
+            previous_cell  = row.find("td", class_="calendar__previous")
+            actual_cell    = row.find("td", class_="calendar__actual")
+            forecast_val   = forecast_cell.get_text(strip=True)  if forecast_cell  else None
+            previous_val   = previous_cell.get_text(strip=True)  if previous_cell  else None
+            actual_val     = actual_cell.get_text(strip=True)     if actual_cell    else None
+
             events.append(
                 EconomicEvent(
                     event_time=event_time,
                     currency=currency,
                     impact=impact,
                     event_name=title,
+                    forecast=forecast_val  or None,
+                    previous=previous_val  or None,
+                    actual=actual_val      or None,
                 )
             )
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 
 from anchor.config import settings
 
@@ -32,9 +33,18 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.close_stale_trades": {"queue": "default"},
         "anchor.scheduler.jobs.update_vix": {"queue": "default"},
         "anchor.scheduler.jobs.update_oanda_sentiment": {"queue": "default"},
+        "anchor.scheduler.jobs.update_order_book": {"queue": "default"},
+        "anchor.scheduler.jobs.update_cme_flow": {"queue": "default"},
+        "anchor.scheduler.jobs.update_fx_options": {"queue": "default"},
+        "anchor.scheduler.jobs.update_cross_asset": {"queue": "default"},
         "anchor.scheduler.jobs.startup_diagnostics": {"queue": "default"},
         "anchor.scheduler.jobs.run_partial_tp": {"queue": "default"},
-        "anchor.scheduler.jobs.check_fit_weights_trigger": {"queue": "default"},
+        "anchor.scheduler.jobs.check_fit_weights_trigger":  {"queue": "default"},
+        "anchor.scheduler.jobs.monitor_live_performance":   {"queue": "default"},
+        "anchor.scheduler.jobs.assess_edge_confidence":       {"queue": "default"},
+        "anchor.scheduler.jobs.generate_presession_brief":    {"queue": "default"},
+        "anchor.scheduler.jobs.generate_postsession_debrief": {"queue": "default"},
+        "anchor.scheduler.jobs.generate_weekly_synthesis":    {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -86,6 +96,22 @@ celery_app.conf.update(
             "task": "anchor.scheduler.jobs.update_oanda_sentiment",
             "schedule": 300.0,  # 5 min — aligns with signal scan cadence
         },
+        "update-order-book-every-5-min": {
+            "task": "anchor.scheduler.jobs.update_order_book",
+            "schedule": 300.0,  # 5 min — aligns with signal scan + sentiment
+        },
+        "update-cme-flow-every-2-hours": {
+            "task": "anchor.scheduler.jobs.update_cme_flow",
+            "schedule": 7_200.0,  # 2 hours — daily futures data, no need for more
+        },
+        "update-fx-options-every-4-hours": {
+            "task": "anchor.scheduler.jobs.update_fx_options",
+            "schedule": 14_400.0,  # 4 hours — options IV moves slowly intraday
+        },
+        "update-cross-asset-every-2-hours": {
+            "task": "anchor.scheduler.jobs.update_cross_asset",
+            "schedule": 7_200.0,   # 2 hours — daily SPY/GLD data, aligns with CME refresh
+        },
         "startup-diagnostics-daily": {
             "task": "anchor.scheduler.jobs.startup_diagnostics",
             "schedule": 86_400.0,  # runs once at startup then every 24h
@@ -97,6 +123,31 @@ celery_app.conf.update(
         "check-fit-weights-trigger-daily": {
             "task": "anchor.scheduler.jobs.check_fit_weights_trigger",
             "schedule": 86_400.0,  # daily — fires at 200 trades then every 200 after
+        },
+        "monitor-live-performance-daily": {
+            "task": "anchor.scheduler.jobs.monitor_live_performance",
+            "schedule": 86_400.0,  # daily — compares rolling WR/PF vs backtest benchmarks
+        },
+        "assess-edge-confidence-daily": {
+            "task": "anchor.scheduler.jobs.assess_edge_confidence",
+            "schedule": 86_400.0,  # daily after London close — detects macro dislocation
+        },
+        "update-economic-surprise-every-30-min": {
+            "task": "anchor.scheduler.jobs.update_economic_surprise",
+            "schedule": 1_800.0,  # 30 min — cheap DB read, only meaningful after releases
+        },
+        # ── AI Intelligence Layer ────────────────────────────────────────────
+        "presession-brief-weekdays": {
+            "task": "anchor.scheduler.jobs.generate_presession_brief",
+            "schedule": crontab(hour=6, minute=30, day_of_week="1-5"),  # Mon–Fri 06:30 UTC
+        },
+        "postsession-debrief-weekdays": {
+            "task": "anchor.scheduler.jobs.generate_postsession_debrief",
+            "schedule": crontab(hour=12, minute=30, day_of_week="1-5"),  # Mon–Fri 12:30 UTC
+        },
+        "weekly-synthesis-sunday": {
+            "task": "anchor.scheduler.jobs.generate_weekly_synthesis",
+            "schedule": crontab(hour=22, minute=0, day_of_week=0),  # Sunday 22:00 UTC
         },
     },
     worker_prefetch_multiplier=1,

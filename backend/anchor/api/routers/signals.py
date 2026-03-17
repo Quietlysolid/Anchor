@@ -8,6 +8,41 @@ from anchor.database.models import Signal
 router = APIRouter()
 
 
+@router.get("/signals/weights")
+async def get_signal_weights():
+    from anchor.signals.engine import WEIGHTS
+    from anchor.signals.london_close_reversion import LCR_CONFLUENCE_THRESHOLD, LCR_WEIGHTS
+    from anchor.config import get_settings
+    cfg = get_settings()
+    return {
+        "london": WEIGHTS,
+        "lcr":    LCR_WEIGHTS,
+        "thresholds": {
+            "london": cfg.min_confluence_score,
+            "lcr":    LCR_CONFLUENCE_THRESHOLD,
+        },
+        "instruments": cfg.instruments,
+        "risk": {
+            "max_risk_per_trade":    cfg.max_risk_per_trade,
+            "drawdown_reduce_pct":   cfg.drawdown_reduce_pct,
+            "drawdown_halt_pct":     cfg.drawdown_halt_pct,
+            "monthly_halt_pct":      cfg.monthly_halt_pct,
+            "daily_loss_limit_pct":  cfg.daily_loss_limit_pct,
+            "spread_spike_multiplier": cfg.spread_spike_multiplier,
+        },
+        "targets": {
+            "win_rate_good":       0.47,
+            "win_rate_warn":       0.40,
+            "profit_factor_good":  1.30,
+            "profit_factor_warn":  1.00,
+            "drawdown_good":       cfg.drawdown_reduce_pct,
+            "drawdown_halt":       cfg.drawdown_halt_pct,
+            "sharpe_good":         1.0,
+            "sharpe_warn":         0.5,
+        },
+    }
+
+
 @router.get("/signals/latest")
 async def get_latest_signals(
     instrument: str | None = None,
@@ -65,6 +100,16 @@ def _signal_to_dict(s: Signal) -> dict:
         "csi_score":             float(s.csi_score)     if s.csi_score     else None,
         "cot_score":             float(meta["cot_score"])             if meta.get("cot_score")             is not None else None,
         "rate_divergence_score": float(meta["rate_divergence_score"]) if meta.get("rate_divergence_score") is not None else None,
+        "order_book_score":      float(meta["order_book_score"])      if meta.get("order_book_score")      is not None else None,
+        "cme_flow_score":        float(meta["cme_flow_score"])        if meta.get("cme_flow_score")        is not None else None,
+        "fx_options_score":      float(meta["fx_options_score"])      if meta.get("fx_options_score")      is not None else None,
+        "econ_surprise_score":   float(meta["econ_surprise_score"])   if meta.get("econ_surprise_score")   is not None else None,
+        "cross_asset_score":     float(meta["cross_asset_score"])     if meta.get("cross_asset_score")     is not None else None,
+        "news_multiplier":       float(meta["news_multiplier"])       if meta.get("news_multiplier")       is not None else None,
+        "london_high":           float(meta["london_high"])           if meta.get("london_high")           is not None else None,
+        "london_low":            float(meta["london_low"])            if meta.get("london_low")            is not None else None,
+        "london_mid":            float(meta["london_mid"])            if meta.get("london_mid")            is not None else None,
+        "position_in_range":     float(meta["position_in_range"])     if meta.get("position_in_range")     is not None else None,
         "ml_confidence":         float(s.ml_confidence) if s.ml_confidence else None,
         "regime_state":          s.regime_state,
         "session":               s.session,

@@ -60,6 +60,33 @@ async def health_check(session: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/system/edge-confidence")
+async def get_edge_confidence(session: AsyncSession = Depends(get_db)):
+    """Latest edge confidence assessment."""
+    from sqlalchemy import select, desc
+    from anchor.database.models import SystemEvent
+
+    result = await session.execute(
+        select(SystemEvent)
+        .where(SystemEvent.event_type == "EDGE_CONFIDENCE_CHECK")
+        .order_by(desc(SystemEvent.event_at))
+        .limit(1)
+    )
+    event = result.scalars().first()
+    if not event:
+        return {"confidence": None, "assessed_at": None, "signals": None, "flag_count": 0, "message": None}
+
+    meta = dict(event.metadata_ or {})
+    return {
+        "confidence":  meta.get("confidence"),
+        "assessed_at": event.event_at.isoformat(),
+        "flag_count":  meta.get("flag_count", 0),
+        "message":     event.message,
+        "signals":     meta.get("signals"),
+        "previous_confidence": meta.get("previous_confidence"),
+    }
+
+
 @router.get("/system/events")
 async def get_system_events(
     severity: str | None = None,
@@ -84,6 +111,7 @@ async def get_system_events(
             "severity":   e.severity,
             "component":  e.component,
             "message":    e.message,
+            "metadata":   dict(e.metadata_ or {}),
         }
         for e in events
     ]

@@ -93,9 +93,11 @@ def import_economic_calendar(self):
     """Import ForexFactory calendar for next 7 days."""
     async def _inner():
         from anchor.data.forex_factory import ForexFactoryScraper
-        from anchor.database.engine import get_session
+        from anchor.database.engine import init_db, get_session
         from anchor.database.repositories import EconomicCalendarRepository
         from datetime import date
+
+        await init_db()
 
         async with ForexFactoryScraper() as scraper:
             events = await scraper.fetch_week()
@@ -125,7 +127,7 @@ def update_fred_rates(self):
     """
     async def _inner():
         from anchor.config import settings
-        from anchor.data.fred_rates import fetch_and_store
+        from anchor.data.fred_rates import fetch_and_store, fetch_and_store_dxy
         import redis.asyncio as aioredis
 
         if not settings.fred_api_key:
@@ -137,6 +139,7 @@ def update_fred_rates(self):
             result = await fetch_and_store(redis_client, settings.fred_api_key)
             available = [k for k, v in result.items() if v["available"]]
             logger.info("fred_rates_updated", available=available)
+            await fetch_and_store_dxy(redis_client, settings.fred_api_key)
         finally:
             await redis_client.aclose()
 
@@ -189,6 +192,39 @@ def update_cot_data(self):
     except Exception as exc:
         logger.error("cot_update_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=600)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.update_economic_surprise", bind=True, max_retries=2)
+def update_economic_surprise(self):
+    """Compute per-currency economic surprise scores and cache in Redis.
+
+    Reads recent HIGH-impact releases (actual vs forecast) from the DB,
+    computes a rolling surprise score per currency, and writes to Redis.
+    Keys: econ_surprise:{CCY}  TTL: 1 hour.
+    Runs every 30 minutes — often no new releases, but cost is a single DB read.
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.database.engine import init_db, get_session
+        from anchor.database.repositories.events import EconomicCalendarRepository
+        from anchor.signals.economic_surprise import update_surprise_cache
+        import redis.asyncio as aioredis
+
+        await init_db()
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            async with get_session() as session:
+                repo = EconomicCalendarRepository(session)
+                await update_surprise_cache(redis_client, repo)
+            logger.info("economic_surprise_cache_updated")
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("economic_surprise_update_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=300)
 
 
 @celery_app.task(name="anchor.scheduler.jobs.reconcile_positions", bind=True, max_retries=3)
@@ -291,6 +327,36 @@ def run_signal_scan(self):
         # Wire Redis into spread monitor so it can read cross-process spread data
         # (stream runs in the FastAPI process; worker has a separate in-memory instance)
         _spread_monitor.set_redis(redis_client)
+
+        # Tier 1: read session quality once per scan cycle (written at 06:30 UTC presession brief)
+        # Defaults to MIXED/1.0 if key is absent — fail-open, no behavioural impact
+        _session_size_scale = 1.0
+        try:
+            import json as _json_sq
+            from anchor.intelligence.session_quality import _REDIS_KEY as _SQ_KEY
+            _sq_raw = await redis_client.get(_SQ_KEY)
+            if _sq_raw:
+                _sq_data = _json_sq.loads(_sq_raw)
+                _session_size_scale = max(0.5, min(1.0, float(_sq_data.get("size_scale", 1.0))))
+                logger.debug(
+                    "scan_session_quality_loaded",
+                    environment=_sq_data.get("environment"),
+                    size_scale=_session_size_scale,
+                )
+        except Exception as _sq_err:
+            logger.warning("scan_session_quality_read_failed", error=str(_sq_err))
+
+        # Tier 2b: rolling session score scale (0.75 if 5-session avg < 5.0, else 1.0)
+        _rolling_score_scale = 1.0
+        try:
+            _raw_avg = await redis_client.get("rolling_score_avg")
+            if _raw_avg is not None:
+                _avg = float(_raw_avg)
+                if _avg < 5.0:
+                    _rolling_score_scale = 0.75
+                logger.debug("scan_rolling_score_loaded", avg=round(_avg, 2), scale=_rolling_score_scale)
+        except Exception as _rs_err:
+            logger.warning("scan_rolling_score_read_failed", error=str(_rs_err))
 
         def to_df(rows):
             if not rows:
@@ -497,6 +563,11 @@ def run_signal_scan(self):
                                 "csi_score":             float(result.csi_score)       if result.csi_score       is not None else None,
                                 "cot_score":             float(meta["cot_score"])             if meta.get("cot_score")             is not None else None,
                                 "rate_divergence_score": float(meta["rate_divergence_score"]) if meta.get("rate_divergence_score") is not None else None,
+                                "order_book_score":      float(meta["order_book_score"])      if meta.get("order_book_score")      is not None else None,
+                                "cme_flow_score":        float(meta["cme_flow_score"])        if meta.get("cme_flow_score")        is not None else None,
+                                "fx_options_score":      float(meta["fx_options_score"])      if meta.get("fx_options_score")      is not None else None,
+                                "econ_surprise_score":   float(meta["econ_surprise_score"])   if meta.get("econ_surprise_score")   is not None else None,
+                                "news_multiplier":       float(meta["news_multiplier"])       if meta.get("news_multiplier")       is not None else None,
                                 "ml_confidence":         float(result.ml_confidence)   if result.ml_confidence   is not None else None,
                                 "regime_state":          result.regime_state,
                                 "session":               result.session,
@@ -602,7 +673,10 @@ def run_signal_scan(self):
                         stop_loss=stop_loss,
                         kelly_fraction=float(result.ml_confidence) if result.ml_confidence else None,
                         drawdown_scale=drawdown_monitor.scale_factor,
-                        vix_scale=result.vix_multiplier,  # VIX-based size reduction
+                        vix_scale=result.vix_multiplier,
+                        news_scale=result.news_multiplier,
+                        session_scale=_session_size_scale,
+                        rolling_score_scale=_rolling_score_scale,
                     )
 
                     # 7. Submit limit order (GTD — expires in 4 hours if not filled)
@@ -687,6 +761,8 @@ def run_signal_scan(self):
                         entry_price=mr_result.entry_price,
                         stop_loss=mr_result.stop_loss,
                         drawdown_scale=drawdown_monitor.scale_factor,
+                        session_scale=_session_size_scale,
+                        rolling_score_scale=_rolling_score_scale,
                     )
 
                     mr_direction = Direction.LONG if mr_result.direction == "LONG" else Direction.SHORT
@@ -812,6 +888,9 @@ def run_signal_scan(self):
                         stop_loss=m15_sl,
                         drawdown_scale=drawdown_monitor.scale_factor,
                         vix_scale=m15_result.vix_multiplier,
+                        news_scale=m15_result.news_multiplier,
+                        session_scale=_session_size_scale,
+                        rolling_score_scale=_rolling_score_scale,
                     )
 
                     m15_direction = Direction.LONG if m15_result.direction == "LONG" else Direction.SHORT
@@ -856,6 +935,34 @@ def run_signal_scan(self):
             for instrument in LCR_INSTRUMENTS:
                 if instrument not in settings.instruments:
                     continue
+
+                # ── EUR/JPY rolling 60-day PF circuit breaker ─────────────────
+                # Walk-forward showed EUR_JPY fails in non-JPY regimes (2018, 2019).
+                # If PF < 1.0 over the last 60 days, pause EUR_JPY LCR until it recovers.
+                if instrument == "EUR_JPY":
+                    try:
+                        from sqlalchemy import text as _text
+                        async with _db_engine.AsyncSessionFactory() as _cb_session:
+                            cutoff_60d = now - timedelta(days=60)
+                            _rows = (await _cb_session.execute(_text(
+                                "SELECT net_pl FROM trades "
+                                "WHERE instrument = 'EUR_JPY' "
+                                "AND closed_at >= :cutoff AND signal_id IS NOT NULL"
+                            ), {"cutoff": cutoff_60d})).fetchall()
+                        if len(_rows) >= 10:   # need at least 10 trades to judge
+                            _gross_win  = sum(r[0] for r in _rows if r[0] > 0)
+                            _gross_loss = abs(sum(r[0] for r in _rows if r[0] <= 0))
+                            _pf_60d     = _gross_win / _gross_loss if _gross_loss > 0 else float("inf")
+                            if _pf_60d < 1.0:
+                                logger.warning(
+                                    "eurjpy_circuit_breaker_active",
+                                    trades_60d=len(_rows),
+                                    pf_60d=round(_pf_60d, 3),
+                                )
+                                continue
+                    except Exception as _cb_exc:
+                        logger.debug("eurjpy_circuit_breaker_check_failed", error=str(_cb_exc))
+
                 try:
                     async with _db_engine.AsyncSessionFactory() as lcr_session:
                         lcr_market_repo   = MarketDataRepository(lcr_session)
@@ -968,26 +1075,80 @@ def run_signal_scan(self):
                         if daily_limiter.is_halted(balance):
                             await lcr_session.commit()
                             continue
-                        already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
-                        if already_open:
+                        # Pending orders: never interfere — skip
+                        if instrument in pending_instruments:
                             await lcr_session.commit()
                             continue
+
+                        # Open position on this instrument?
+                        open_london = next((p for p in open_positions if p.instrument == instrument), None)
+                        if open_london is not None:
+                            if open_london.direction.value == lcr_result.direction:
+                                # Already positioned the same way — skip LCR
+                                await lcr_session.commit()
+                                continue
+                            else:
+                                # Opposite direction: London exhausted, LCR reversal firing.
+                                # Close the London trade first, then open LCR.
+                                if not open_london.oanda_trade_id:
+                                    # Can't close without trade ID — skip safely
+                                    await lcr_session.commit()
+                                    continue
+                                try:
+                                    await broker.close_trade(open_london.oanda_trade_id)
+                                    logger.info(
+                                        "lcr_closed_london_for_reversal",
+                                        instrument=instrument,
+                                        london_direction=open_london.direction.value,
+                                        lcr_direction=lcr_result.direction,
+                                        trade_id=open_london.oanda_trade_id,
+                                    )
+                                except Exception as _close_exc:
+                                    logger.warning(
+                                        "lcr_close_london_failed",
+                                        instrument=instrument,
+                                        error=str(_close_exc),
+                                    )
+                                    await lcr_session.commit()
+                                    continue
+
+                        # Correlation check against remaining open positions (excl. just-closed London)
+                        effective_open = [p for p in open_positions if p.instrument != instrument]
                         corr_ok, _ = correlation_mgr.check_new_position(
-                            instrument, lcr_result.direction, open_positions
+                            instrument, lcr_result.direction, effective_open
                         )
                         if not corr_ok:
                             await lcr_session.commit()
                             continue
 
                         # SL/TP computed inside LCR engine (london extreme + ATR buffer → london mid)
-                        # USD_JPY uses 0.5% risk (half normal) — LCR backtest showed -41% max DD at 1%
-                        _lcr_risk_scale = 0.5 if instrument == "USD_JPY" else 1.0
+                        # EUR_JPY uses 0.75% risk — failed 2018+2019 in walk-forward (JPY cross weakness)
+                        # USD_CAD: walk-forward confirmed 7/7 profitable, lowest DD (-15.2%) → full 1% risk
+                        _lcr_risk_scale = 0.75 if instrument in {"EUR_JPY"} else 1.0
+                        # DXY scaling: strong USD momentum (|5d change| > 1.5%) reduces LCR size
+                        # on USD pairs by 30% — mean reversion less reliable during macro trends
+                        _USD_PAIRS = {"EUR_USD", "GBP_USD", "NZD_USD", "USD_CAD", "AUD_USD"}
+                        if instrument in _USD_PAIRS:
+                            try:
+                                import json as _json
+                                _dxy_raw = await redis_client.get("dxy_data")
+                                if _dxy_raw:
+                                    _dxy = _json.loads(_dxy_raw)
+                                    if abs(_dxy.get("change_5d_pct", 0)) > 1.5:
+                                        _lcr_risk_scale *= 0.70
+                                        logger.info("lcr_dxy_scale_applied",
+                                                    instrument=instrument,
+                                                    dxy_change=_dxy.get("change_5d_pct"))
+                            except Exception:
+                                pass
                         lcr_units = sizer.compute(
                             account_balance=balance,
                             instrument=instrument,
                             entry_price=lcr_result.entry_price,
                             stop_loss=lcr_result.stop_loss,
                             drawdown_scale=drawdown_monitor.scale_factor * _lcr_risk_scale,
+                            session_scale=_session_size_scale,
+                            rolling_score_scale=_rolling_score_scale,
                         )
 
                         lcr_direction = Direction.LONG if lcr_result.direction == "LONG" else Direction.SHORT
@@ -1000,6 +1161,7 @@ def run_signal_scan(self):
                             take_profit=lcr_result.take_profit,
                             limit_price=lcr_result.entry_price,
                             gtd_time=now + timedelta(hours=2),  # LCR resolves within NY session
+                            signal_id=lcr_row.id,
                         )
 
                         lcr_order_id = await lcr_order_manager.submit(lcr_order)
@@ -1325,6 +1487,141 @@ def update_oanda_sentiment(self):
         raise self.retry(exc=exc, countdown=60)
 
 
+@celery_app.task(name="anchor.scheduler.jobs.update_order_book", bind=True, max_retries=3)
+def update_order_book(self):
+    """Fetch OANDA orderBook for all instruments and cache in Redis.
+
+    Key: order_book:{instrument}  TTL: 5 minutes per instrument.
+    Identifies where pending orders (stops + limits) cluster near current price.
+    Runs every 5 minutes, aligned with signal scan. Fail-open: 0.5 on miss.
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.signals.order_book_signal import fetch_and_store
+        import redis.asyncio as aioredis
+
+        if not settings.oanda_api_key:
+            logger.warning("oanda_api_key_not_set_for_order_book")
+            return
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            for instrument in settings.instruments:
+                try:
+                    await fetch_and_store(
+                        redis_client,
+                        instrument,
+                        settings.oanda_api_key,
+                        settings.oanda_base_url,
+                    )
+                except Exception as exc:
+                    logger.warning("order_book_instrument_failed", instrument=instrument, error=str(exc))
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("update_order_book_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=60)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.update_cme_flow", bind=True, max_retries=2)
+def update_cme_flow(self):
+    """Fetch CME FX futures OI + volume data and cache in Redis.
+
+    Key: cme_flow:{instrument}  TTL: 2 hours per instrument.
+    Uses yfinance to pull 6E/6B/6J daily data. Runs every 2 hours.
+    Fail-open: 0.5 on miss. Requires yfinance to be installed.
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.data.cme_flow import fetch_and_store, _CME_MAP
+        import redis.asyncio as aioredis
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            for instrument in settings.instruments:
+                if instrument not in _CME_MAP:
+                    continue
+                try:
+                    result = await fetch_and_store(redis_client, instrument)
+                    logger.debug("cme_flow_updated", instrument=instrument,
+                                 raw_score=result.get("raw_score") if result else None)
+                except Exception as exc:
+                    logger.warning("cme_flow_instrument_failed", instrument=instrument, error=str(exc))
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("update_cme_flow_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=1_800)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.update_fx_options", bind=True, max_retries=2)
+def update_fx_options(self):
+    """Fetch FX ETF options chain and compute risk-reversal proxy, cache in Redis.
+
+    Key: fx_options_rr:{instrument}  TTL: 4 hours per instrument.
+    Uses yfinance options on FXE/FXB/FXY. Runs every 4 hours.
+    Fail-open: 0.5 on miss. Requires yfinance to be installed.
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.data.fx_options import fetch_and_store, _ETF_MAP
+        import redis.asyncio as aioredis
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            for instrument in settings.instruments:
+                if instrument not in _ETF_MAP:
+                    continue
+                try:
+                    result = await fetch_and_store(redis_client, instrument)
+                    logger.debug("fx_options_rr_updated", instrument=instrument,
+                                 raw_score=result.get("raw_score") if result else None)
+                except Exception as exc:
+                    logger.warning("fx_options_instrument_failed", instrument=instrument, error=str(exc))
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("update_fx_options_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=3_600)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.update_cross_asset", bind=True, max_retries=2)
+def update_cross_asset(self):
+    """Fetch SPY + GLD via yfinance, compute risk-on/off sentiment, cache in Redis.
+
+    Key: cross_asset_risk  TTL: 2 hours.
+    Drives the cross_asset confluence component for AUD, NZD, CAD, EUR_JPY.
+    """
+    async def _inner():
+        from anchor.config import settings
+        from anchor.data.cross_asset import fetch_and_store
+        import redis.asyncio as aioredis
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            result = await fetch_and_store(redis_client)
+            logger.info("cross_asset_updated",
+                        regime=result.get("regime") if result else None,
+                        sentiment=result.get("risk_sentiment") if result else None)
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("update_cross_asset_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=1_800)
+
+
 @celery_app.task(name="anchor.scheduler.jobs.startup_diagnostics", bind=True, max_retries=1)
 def startup_diagnostics(self):
     """Log system readiness at startup: candle counts, model files, session, account state.
@@ -1645,3 +1942,405 @@ def check_fit_weights_trigger(self):
                 "old_weights":  CURRENT_WEIGHTS,
             }),
         })
+
+
+# ── Live performance monitor ───────────────────────────────────────────────────
+
+# Backtest benchmarks (8-year OOS validation results).
+# Alert when rolling live metrics fall this far below benchmark.
+_PERF_BENCH = {
+    "LCR":    {"wr": 0.44, "pf": 1.40},   # worst qualifying LCR pair (GBP_USD)
+    "LONDON": {"wr": 0.50, "pf": 1.20},   # London Trend OOS result
+}
+_PERF_WR_MARGIN    = 0.08   # 8pp below benchmark WR → warning
+_PERF_MIN_TRADES   = 20     # minimum closed trades before comparing
+_PERF_WIN_DROUGHT  = 30     # days since last win → alert
+
+
+@celery_app.task(name="anchor.scheduler.jobs.monitor_live_performance", bind=True, max_retries=1)
+def monitor_live_performance(self):
+    """
+    Daily check: compare actual live trade performance vs backtested benchmarks.
+
+    Computes rolling WR and PF over the last 50 closed trades per strategy.
+    Alerts via Telegram if actual performance degrades below OOS expectations.
+
+    Alert triggers:
+      - Rolling WR < backtest_WR - 8pp  (strategy losing its edge)
+      - Rolling PF < 1.0               (strategy actively losing money)
+      - 30+ days since last winning trade (win drought)
+    """
+    import json
+    from sqlalchemy import create_engine, text as _text
+    import pandas as _pd
+    from anchor.config import get_settings
+
+    cfg = get_settings()
+    db  = create_engine(cfg.sync_database_url)
+
+    with db.connect() as conn:
+        rows = conn.execute(_text("""
+            SELECT
+                t.closed_at,
+                t.net_pl,
+                t.pl_pct,
+                t.instrument,
+                s.session,
+                s.confluence_score,
+                t.signal_id
+            FROM trades t
+            LEFT JOIN signals s ON s.id = t.signal_id
+            WHERE t.closed_at IS NOT NULL
+            ORDER BY t.closed_at DESC
+            LIMIT 200
+        """)).fetchall()
+
+    if not rows:
+        logger.info("live_perf_monitor_skip", reason="no_closed_trades")
+        return
+
+    df = _pd.DataFrame(
+        rows,
+        columns=["closed_at", "net_pl", "pl_pct", "instrument",
+                 "session", "confluence_score", "signal_id"],
+    )
+    df["closed_at"] = _pd.to_datetime(df["closed_at"], utc=True)
+    df["is_win"]    = df["pl_pct"] > 0
+
+    # Split by strategy via session tag
+    lcr_df    = df[df["session"] == "NY_LCR"].head(50)
+    london_df = df[df["session"].isin(["LONDON"])].head(50)
+
+    alerts: list[str]    = []
+    summaries: list[dict] = []
+
+    for label, bench, strat_df in [
+        ("LCR",    _PERF_BENCH["LCR"],    lcr_df),
+        ("LONDON", _PERF_BENCH["LONDON"], london_df),
+    ]:
+        n = len(strat_df)
+        if n < _PERF_MIN_TRADES:
+            summaries.append({"strategy": label, "n": n, "status": "insufficient_trades"})
+            continue
+
+        wr = float(strat_df["is_win"].mean())
+        wins   = strat_df[strat_df["is_win"]]
+        losses = strat_df[~strat_df["is_win"]]
+        gross_wins   = float(wins["pl_pct"].sum())
+        gross_losses = abs(float(losses["pl_pct"].sum()))
+        pf = gross_wins / gross_losses if gross_losses > 0 else float("inf")
+
+        # Days since last win
+        last_win_ts = strat_df[strat_df["is_win"]]["closed_at"].max()
+        neg_streak_days = 0
+        if _pd.notna(last_win_ts):
+            neg_streak_days = (_pd.Timestamp.utcnow() - last_win_ts).days
+
+        summary: dict = {
+            "strategy":         label,
+            "n_trades":         n,
+            "rolling_wr_pct":   round(wr * 100, 1),
+            "bench_wr_pct":     round(bench["wr"] * 100, 1),
+            "rolling_pf":       round(pf, 3) if pf != float("inf") else 9.999,
+            "bench_pf":         bench["pf"],
+            "days_since_win":   neg_streak_days,
+            "status":           "ok",
+        }
+
+        if wr < (bench["wr"] - _PERF_WR_MARGIN):
+            gap = (bench["wr"] - wr) * 100
+            alerts.append(
+                f"{label}: rolling WR {wr*100:.1f}% is {gap:.1f}pp below "
+                f"backtest benchmark {bench['wr']*100:.0f}% (last {n} trades)"
+            )
+            summary["status"] = "DEGRADED_WR"
+
+        if pf < 1.0:
+            alerts.append(
+                f"{label}: rolling PF {pf:.3f} < 1.0 (last {n} trades) — "
+                f"strategy is net-negative, review immediately"
+            )
+            summary["status"] = "UNPROFITABLE"
+
+        if neg_streak_days >= _PERF_WIN_DROUGHT:
+            alerts.append(
+                f"{label}: {neg_streak_days} days since last winning trade — "
+                f"possible regime change, consider pausing"
+            )
+            summary["status"] = "WIN_DROUGHT"
+
+        summaries.append(summary)
+        logger.info("live_perf_monitor", **summary)
+
+    # Write to system_events
+    severity = "WARNING" if alerts else "INFO"
+    message  = "; ".join(alerts) if alerts else "Live performance within benchmarks"
+    with db.begin() as conn:
+        conn.execute(_text("""
+            INSERT INTO system_events
+                (event_at, event_type, severity, component, message, metadata)
+            VALUES
+                (NOW(), 'LIVE_PERF_CHECK', :sev, 'monitor_live_performance',
+                 :msg, CAST(:meta AS jsonb))
+        """), {
+            "sev":  severity,
+            "msg":  message,
+            "meta": json.dumps({"summaries": summaries, "alerts": alerts}),
+        })
+
+    # Telegram alert if degrading
+    if alerts:
+        try:
+            alert_text = (
+                "*ANCHOR PERFORMANCE ALERT*\n\n"
+                + "\n".join(f"• {a}" for a in alerts)
+                + "\n\nCheck `make fit-weights-progress` and review recent trades."
+            )
+            _run_async(_alerts.send(alert_text))
+        except Exception as exc:
+            logger.warning("live_perf_alert_failed", error=str(exc))
+
+
+# ── Edge confidence monitor ────────────────────────────────────────────────────
+
+@celery_app.task(name="anchor.scheduler.jobs.assess_edge_confidence", bind=True, max_retries=1)
+def assess_edge_confidence(self):
+    """
+    Daily assessment of whether the macro environment supports Anchor's
+    session-based structural edges.
+
+    Runs three signals:
+      1. Session character  — London session trendiness vs choppiness
+      2. Pair correlation   — breakdown between normally-correlated pairs
+      3. Macro stress       — VIX acceleration + economic surprise extremes
+
+    Output: EDGE_CONFIDENCE_CHECK system event + Telegram alert on state change
+    or when confidence is REDUCED/LOW.
+
+    Runs daily after London close (18:00 UTC). Not a trading decision —
+    a signal to the human operator to review the environment.
+    """
+    import json as _json
+    from sqlalchemy import create_engine as _ce, text as _t
+    import redis.asyncio as _redis_async
+    from anchor.config import get_settings
+    from anchor.database.engine import AsyncSessionLocal
+    from anchor.monitoring.edge_confidence import assess_edge_confidence as _assess, build_alert_message
+
+    cfg = get_settings()
+    db  = _ce(cfg.sync_database_url)
+
+    # ── Load previous confidence level ────────────────────────────────────────
+    previous_confidence: str | None = None
+    with db.connect() as conn:
+        row = conn.execute(_t("""
+            SELECT metadata FROM system_events
+            WHERE event_type = 'EDGE_CONFIDENCE_CHECK'
+            ORDER BY event_at DESC LIMIT 1
+        """)).fetchone()
+        if row and row[0]:
+            try:
+                previous_confidence = row[0].get("confidence")
+            except (AttributeError, TypeError):
+                pass
+
+    # ── Run assessment ────────────────────────────────────────────────────────
+    async def _run():
+        redis_client = _redis_async.from_url(cfg.redis_url, decode_responses=True)
+        try:
+            async with AsyncSessionLocal() as db_session:
+                return await _assess(db_session, redis_client, previous_confidence)
+        finally:
+            await redis_client.aclose()
+
+    result = _run_async(_run())
+
+    # ── Write system event ────────────────────────────────────────────────────
+    severity = {"HIGH": "INFO", "REDUCED": "WARNING", "LOW": "CRITICAL"}.get(result.confidence, "INFO")
+    with db.begin() as conn:
+        conn.execute(_t("""
+            INSERT INTO system_events
+                (event_at, event_type, severity, component, message, metadata)
+            VALUES
+                (NOW(), 'EDGE_CONFIDENCE_CHECK', :sev, 'edge_confidence',
+                 :msg, CAST(:meta AS jsonb))
+        """), {
+            "sev":  severity,
+            "msg":  f"Edge confidence: {result.confidence} ({result.flag_count} flag(s))",
+            "meta": _json.dumps(result.to_dict()),
+        })
+
+    logger.info(
+        "edge_confidence_assessed",
+        confidence=result.confidence,
+        flags=result.flag_count,
+        previous=previous_confidence,
+    )
+
+    # ── Alert on state change or non-HIGH confidence ──────────────────────────
+    state_changed   = previous_confidence and previous_confidence != result.confidence
+    is_degraded     = result.confidence in ("REDUCED", "LOW")
+    should_alert    = state_changed or is_degraded
+
+    if should_alert:
+        try:
+            msg = build_alert_message(result)
+            if result.confidence == "LOW":
+                _run_async(_alerts.send_critical(msg))
+            elif result.confidence == "REDUCED":
+                _run_async(_alerts.send_warning(msg))
+            else:
+                _run_async(_alerts.send_info(msg))
+        except Exception as exc:
+            logger.warning("edge_confidence_alert_failed", error=str(exc))
+
+
+# ── AI Intelligence Layer ──────────────────────────────────────────────────────
+
+def _run_intelligence_brief(report_type: str) -> None:
+    """Shared async runner for all three brief types."""
+    async def _inner():
+        import redis.asyncio as aioredis
+        from anchor.config import settings
+        from anchor.database.engine import init_db, get_session
+        from anchor.database.models import IntelligenceReport
+        from anchor.intelligence.context_builder import build_context
+        from anchor.intelligence.report_generator import (
+            generate_presession_brief,
+            generate_postsession_debrief,
+            generate_weekly_synthesis,
+        )
+
+        if not settings.anthropic_api_key:
+            logger.warning("intelligence_skipped_no_api_key", report_type=report_type)
+            return
+
+        await init_db()
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+
+        try:
+            async with get_session() as session:
+                ctx = await build_context(report_type, session, redis_client)
+
+                if report_type == "PRESESSION":
+                    content, tokens = await generate_presession_brief(ctx)
+                    # Tier 1: generate structured session quality alongside the brief
+                    # Written to Redis 'session_quality' (TTL 8h) so engine + sizer can read it
+                    try:
+                        import json as _json
+                        from anchor.intelligence.session_quality import (
+                            generate_session_quality,
+                            _REDIS_KEY as _SQ_KEY,
+                            _TTL_SECONDS as _SQ_TTL,
+                        )
+                        sq = await generate_session_quality(ctx)
+                        await redis_client.set(_SQ_KEY, _json.dumps(sq), ex=_SQ_TTL)
+                        logger.info(
+                            "session_quality_cached",
+                            environment=sq["environment"],
+                            confidence=sq["confidence"],
+                            size_scale=sq["size_scale"],
+                            threshold_adj=sq["threshold_adjustment"],
+                        )
+                    except Exception as _sq_exc:
+                        logger.warning("session_quality_write_failed", error=str(_sq_exc))
+                elif report_type == "POSTSESSION":
+                    content, tokens = await generate_postsession_debrief(ctx)
+                    # Tier 2b: rolling session score (0–10 edge quality, last 5 sessions)
+                    try:
+                        from anchor.intelligence.report_generator import score_postsession as _score_ps
+                        _score = await _score_ps(content)
+                        await redis_client.lpush("rolling_session_scores", _score)
+                        await redis_client.ltrim("rolling_session_scores", 0, 4)
+                        _scores_raw = await redis_client.lrange("rolling_session_scores", 0, -1)
+                        _scores = [float(s) for s in _scores_raw]
+                        _rolling_avg = sum(_scores) / len(_scores) if _scores else 5.0
+                        await redis_client.set("rolling_score_avg", _rolling_avg, ex=7 * 86_400)
+                        logger.info(
+                            "rolling_session_score_updated",
+                            score=_score,
+                            rolling_avg=round(_rolling_avg, 2),
+                            n=len(_scores),
+                        )
+                    except Exception as _rs_exc:
+                        logger.warning("rolling_session_score_failed", error=str(_rs_exc))
+                    # Tier 2c: macro anomaly detection — flags price vs macro dissonance per pair
+                    try:
+                        from anchor.intelligence.anomaly_detector import detect_macro_anomaly
+                        _dissonant = await detect_macro_anomaly(ctx, redis_client)
+                        if _dissonant:
+                            logger.info("macro_anomaly_pairs_flagged", pairs=_dissonant)
+                    except Exception as _ma_exc:
+                        logger.warning("macro_anomaly_task_failed", error=str(_ma_exc))
+                else:
+                    content, tokens = await generate_weekly_synthesis(ctx)
+                    # Tier 2b: reset rolling scores on weekly synthesis (fresh week slate)
+                    try:
+                        await redis_client.delete("rolling_session_scores", "rolling_score_avg")
+                        logger.info("rolling_session_scores_reset")
+                    except Exception as _rs_exc:
+                        logger.warning("rolling_session_scores_reset_failed", error=str(_rs_exc))
+
+                report = IntelligenceReport(
+                    report_type=report_type,
+                    content=content,
+                    context_snapshot=ctx,
+                    tokens_used=tokens,
+                )
+                session.add(report)
+                await session.commit()
+                await session.refresh(report)
+
+            # Deliver via Telegram (truncate at 4096 chars)
+            header = {
+                "PRESESSION": "📊 PRE-SESSION BRIEF",
+                "POSTSESSION": "📋 POST-SESSION DEBRIEF",
+                "WEEKLY": "📈 WEEKLY SYNTHESIS",
+            }[report_type]
+            await _alerts.send_info(f"<b>{header}</b>\n\n{content[:3900]}")
+
+            # Mark delivered
+            async with get_session() as session:
+                r = await session.get(IntelligenceReport, report.id)
+                if r:
+                    r.delivered_telegram = True
+                    await session.commit()
+
+            logger.info("intelligence_brief_complete", report_type=report_type, tokens=tokens)
+
+        except Exception as exc:
+            logger.error("intelligence_brief_failed", report_type=report_type, error=str(exc))
+        finally:
+            await redis_client.aclose()
+
+    _run_async(_inner())
+
+
+@celery_app.task(name="anchor.scheduler.jobs.generate_presession_brief", bind=True, max_retries=2)
+def generate_presession_brief(self):
+    """Generate and deliver the London pre-session brief at 06:30 UTC (Mon–Fri)."""
+    try:
+        _run_intelligence_brief("PRESESSION")
+    except Exception as exc:
+        logger.error("presession_brief_task_error", error=str(exc))
+        raise self.retry(exc=exc, countdown=300)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.generate_postsession_debrief", bind=True, max_retries=2)
+def generate_postsession_debrief(self):
+    """Generate and deliver the post-London-session debrief at 12:30 UTC (Mon–Fri)."""
+    try:
+        _run_intelligence_brief("POSTSESSION")
+    except Exception as exc:
+        logger.error("postsession_debrief_task_error", error=str(exc))
+        raise self.retry(exc=exc, countdown=300)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.generate_weekly_synthesis", bind=True, max_retries=2)
+def generate_weekly_synthesis(self):
+    """Generate and deliver the weekly synthesis at 22:00 UTC on Sundays."""
+    try:
+        _run_intelligence_brief("WEEKLY")
+    except Exception as exc:
+        logger.error("weekly_synthesis_task_error", error=str(exc))
+        raise self.retry(exc=exc, countdown=600)

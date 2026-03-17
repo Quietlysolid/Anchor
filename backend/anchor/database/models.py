@@ -266,6 +266,19 @@ class RegimeHistory(Base):
     transition_from:  Mapped[str | None]   = mapped_column(String(16))
 
 
+class IntelligenceReport(Base):
+    """LLM-generated pre/post-session briefs and weekly synthesis."""
+    __tablename__ = "intelligence_reports"
+
+    id:                Mapped[uuid.UUID]       = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at:        Mapped[datetime]        = mapped_column(DateTime(timezone=True), server_default=func.now())
+    report_type:       Mapped[str]             = mapped_column(String(16), nullable=False)  # PRESESSION | POSTSESSION | WEEKLY
+    content:           Mapped[str]             = mapped_column(Text, nullable=False)
+    context_snapshot:  Mapped[dict | None]     = mapped_column(JSONB)
+    delivered_telegram: Mapped[bool]           = mapped_column(Boolean, nullable=False, default=False)
+    tokens_used:       Mapped[int | None]      = mapped_column(Integer)
+
+
 class SlippageRecord(Base):
     __tablename__ = "slippage_records"
 

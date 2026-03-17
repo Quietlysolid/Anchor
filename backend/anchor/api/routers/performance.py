@@ -80,9 +80,9 @@ async def get_trade_journal(
             "net_pl":        float(t.net_pl),
             "gross_pl":      float(t.gross_pl),
             "commission":    float(t.commission),
-            "close_reason":  t.close_reason,
-            "regime":        t.regime_at_entry,
-            "session":       t.session_at_entry,
+            "close_reason":     t.close_reason,
+            "regime_at_entry":  t.regime_at_entry,
+            "session_at_entry": t.session_at_entry,
         }
         for t in trades
     ]

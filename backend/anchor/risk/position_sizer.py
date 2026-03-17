@@ -81,8 +81,11 @@ class PositionSizer:
         correlation_scale: float = 1.0,
         drawdown_scale:    float = 1.0,
         vix_scale:         float = 1.0,
+        news_scale:        float = 1.0,
+        session_scale:     float = 1.0,
         current_atr:       float | None = None,
         reference_atr:     float | None = None,
+        rolling_score_scale: float = 1.0,
     ) -> int:
         """
         Returns position size in units (OANDA native).
@@ -91,6 +94,17 @@ class PositionSizer:
         vix_scale: VIX position-size multiplier from vix_filter.get_cached_multiplier()
             [0.25, 1.0] — reduces size when VIX is elevated (>20) to protect capital
             in high-fear regimes where FX spreads widen and edge degrades.
+
+        news_scale: 0.5 when a MEDIUM-impact event is within ±1h; 1.0 otherwise.
+            Trades near medium-impact events are allowed but sized down to reduce
+            event-risk exposure without fully suppressing the signal.
+
+        session_scale: Tier 1 session quality multiplier from Redis key 'session_quality'.
+            TRENDING=1.0, MIXED=0.85, CHOPPY=0.65. Defaults to 1.0 when key is absent.
+
+        rolling_score_scale: Tier 2b rolling session score multiplier.
+            0.75 when the 5-session rolling average drops below 5.0 (out of 10).
+            1.0 otherwise. Reset to 1.0 each Sunday after weekly synthesis.
 
         current_atr / reference_atr: when both are provided, applies
         volatility-regime normalization = reference_atr / current_atr,
@@ -122,9 +136,12 @@ class PositionSizer:
             if current_atr > 1e-10 and reference_atr > 1e-10:
                 vol_scale = max(0.5, min(1.5, reference_atr / current_atr))
 
-        # Scale factors (correlation, drawdown, VIX, volatility regime)
-        vix_scale = max(0.25, min(1.0, vix_scale))  # clamp to safe range
-        units_scaled = units_raw * correlation_scale * drawdown_scale * vix_scale * vol_scale
+        # Scale factors (correlation, drawdown, VIX, news proximity, session quality, rolling score, volatility regime)
+        vix_scale           = max(0.25, min(1.0, vix_scale))           # clamp to safe range
+        news_scale          = max(0.25, min(1.0, news_scale))           # clamp to safe range
+        session_scale       = max(0.50, min(1.0, session_scale))        # clamp to safe range
+        rolling_score_scale = max(0.75, min(1.0, rolling_score_scale))  # clamp: floor 0.75, no upside
+        units_scaled = units_raw * correlation_scale * drawdown_scale * vix_scale * news_scale * session_scale * rolling_score_scale * vol_scale
 
         # Snap to micro-lot boundary
         units = int(units_scaled // MICRO_LOT) * MICRO_LOT

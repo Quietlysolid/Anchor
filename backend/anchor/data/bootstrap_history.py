@@ -1,6 +1,6 @@
-"""Bootstrap historical candle data from Dukascopy into the database.
+"""Bootstrap historical candle data from Polygon.io into the database.
 
-Downloads 3 years of H1 candles for all instruments and inserts them into
+Downloads H1, H4, and D candles for all instruments and inserts them into
 the market_data table, then optionally triggers ML retraining.
 
 Usage (inside engine container):
@@ -20,12 +20,11 @@ from anchor.config import settings
 from anchor.database.engine import init_db, get_session
 from anchor.database.models import MarketData
 from anchor.database.repositories.market_data import MarketDataRepository
-from anchor.data.dukascopy import DukascopyDownloader
+from anchor.data.polygon import PolygonDownloader
 
 logger = structlog.get_logger(__name__)
 
-_TIMEFRAME = "H1"
-_CHUNK_DAYS = 30          # insert in monthly chunks to keep memory low
+_TIMEFRAMES = ["H1", "H4", "D"]
 _DEFAULT_YEARS_BACK = 3
 
 
@@ -33,58 +32,48 @@ async def _import_instrument(
     instrument: str,
     start: datetime,
     end: datetime,
+    api_key: str,
 ) -> int:
-    """Download and insert candles for one instrument. Returns rows inserted."""
+    """Download and insert candles for one instrument across all timeframes."""
     total = 0
-    current = start
 
-    async with DukascopyDownloader() as dl:
-        while current < end:
-            chunk_end = min(current + timedelta(days=_CHUNK_DAYS), end)
-            logger.info(
-                "bootstrap_chunk",
-                instrument=instrument,
-                from_=current.date(),
-                to=chunk_end.date(),
-            )
+    async with PolygonDownloader(api_key) as dl:
+        for timeframe in _TIMEFRAMES:
+            logger.info("bootstrap_fetch", instrument=instrument, timeframe=timeframe,
+                        from_=start.date(), to=end.date())
 
-            candles_df = await dl.fetch_range_as_candles(
-                instrument, current, chunk_end, _TIMEFRAME
-            )
+            candles_df = await dl.fetch_candles(instrument, start, end, timeframe)
 
-            if not candles_df.empty:
-                def _to_utc(ts) -> datetime:
-                    dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    return dt
+            if candles_df.empty:
+                logger.warning("bootstrap_no_data", instrument=instrument, timeframe=timeframe)
+                continue
 
-                rows = [
-                    MarketData(
-                        time=_to_utc(row.time),
-                        instrument=instrument,
-                        timeframe=_TIMEFRAME,
-                        open=float(row.open),
-                        high=float(row.high),
-                        low=float(row.low),
-                        close=float(row.close),
-                        volume=int(row.volume) if row.volume else None,
-                        spread_avg=float(row.spread) if hasattr(row, "spread") and row.spread else None,
-                        source="dukascopy",
-                    )
-                    for row in candles_df.itertuples(index=False)
-                ]
+            rows = [
+                MarketData(
+                    time=row.time.to_pydatetime(),
+                    instrument=instrument,
+                    timeframe=timeframe,
+                    open=float(row.open),
+                    high=float(row.high),
+                    low=float(row.low),
+                    close=float(row.close),
+                    volume=int(row.volume) if row.volume else None,
+                    source="polygon",
+                )
+                for row in candles_df.itertuples(index=False)
+            ]
 
+            _CHUNK = 500
+            inserted = 0
+            for i in range(0, len(rows), _CHUNK):
+                chunk = rows[i:i + _CHUNK]
                 async with get_session() as session:
                     repo = MarketDataRepository(session)
-                    # bulk_insert_candles uses ON CONFLICT DO NOTHING — idempotent,
-                    # no manual dedup needed (which had a tz-aware/naive mismatch risk).
-                    inserted = await repo.bulk_insert_candles(rows)
+                    inserted += await repo.bulk_insert_candles(chunk)
                     await session.commit()
-                    total += inserted
-                    logger.info("bootstrap_inserted", instrument=instrument, rows=inserted)
-
-            current = chunk_end + timedelta(seconds=1)
+            total += inserted
+            logger.info("bootstrap_inserted", instrument=instrument,
+                        timeframe=timeframe, rows=inserted)
 
     return total
 
@@ -93,9 +82,14 @@ async def main(start: datetime, end: datetime, retrain: bool) -> None:
     await init_db()
     logger.info("bootstrap_start", instruments=settings.instruments, start=start.date(), end=end.date())
 
+    api_key = settings.polygon_api_key
+    if not api_key:
+        logger.error("bootstrap_no_polygon_key")
+        return
+
     grand_total = 0
     for instrument in settings.instruments:
-        rows = await _import_instrument(instrument, start, end)
+        rows = await _import_instrument(instrument, start, end, api_key)
         grand_total += rows
         logger.info("bootstrap_instrument_done", instrument=instrument, rows=rows)
 

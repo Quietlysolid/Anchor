@@ -27,13 +27,11 @@ export function SystemHealthPanel() {
   return (
     <div className="bg-card rounded-lg p-4 border border-border">
       <h3 className="text-sm font-semibold mb-3 text-foreground">System Health</h3>
-      <Row label="WebSocket" value={wsConnected ? 'Connected' : 'Disconnected'} ok={wsConnected} />
-      <Row label="Heartbeat" value={heartbeatAge !== null ? `${heartbeatAge}s ago` : 'Unknown'} ok={hbOk} />
-      <Row label="Stream" value={data?.stream_connected ? 'Live' : 'Offline'} ok={data?.stream_connected} />
-      <Row label="Open Positions" value={String(data?.open_positions ?? '—')} />
-      <Row label="Balance" value={data ? `$${(data.account_balance ?? 0).toFixed(2)}` : '—'} />
-      <Row label="Equity" value={data ? `$${(data.account_equity ?? 0).toFixed(2)}` : '—'} />
-      <Row label="Last Reconcile" value={data?.last_reconciliation ? new Date(data.last_reconciliation).toLocaleTimeString() : 'Never'} />
+      <Row label="Dashboard feed"  value={wsConnected ? 'Connected' : 'Disconnected'} ok={wsConnected} />
+      <Row label="Last ping"       value={heartbeatAge !== null ? heartbeatAge < 5 ? 'Just now' : heartbeatAge < 60 ? `${heartbeatAge}s ago` : `${Math.round(heartbeatAge / 60)}m ago` : 'Unknown'} ok={hbOk} />
+      <Row label="Price stream"    value={data?.stream_connected ? 'Live' : 'Offline'} ok={data?.stream_connected} />
+      <Row label="Open positions"  value={String(data?.open_positions ?? '—')} />
+      <Row label="Last sync"       value={data?.last_reconciliation ? new Date(data.last_reconciliation).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) : 'Never'} />
     </div>
   )
 }

@@ -37,6 +37,12 @@ export interface Signal {
   csi_score: number | null
   cot_score: number | null
   rate_divergence_score: number | null
+  order_book_score: number | null
+  cme_flow_score: number | null
+  fx_options_score: number | null
+  econ_surprise_score: number | null
+  cross_asset_score: number | null
+  news_multiplier: number | null
   ml_confidence: number | null
   regime_state: Regime | null
   session: Session | null
@@ -107,8 +113,6 @@ export interface PerformanceSummary {
   max_drawdown_pct: number  // alias — frontend uses this
   avg_win_pips: number
   avg_loss_pips: number
-  avg_win: number           // alias
-  avg_loss: number          // alias
   net_pnl: number
   gross_pnl: number
   total_commission: number
@@ -143,6 +147,46 @@ export interface SystemHealth {
   account_equity: number
 }
 
+// ── Edge confidence ───────────────────────────────────────────
+export interface EdgeConfidenceSignal {
+  flagged: boolean
+  reason:  string
+  detail:  Record<string, unknown>
+}
+
+export interface EdgeConfidence {
+  confidence:          'HIGH' | 'REDUCED' | 'LOW' | null
+  assessed_at:         string | null
+  flag_count:          number
+  message:             string | null
+  previous_confidence: string | null
+  signals: {
+    session:     EdgeConfidenceSignal | null
+    correlation: EdgeConfidenceSignal | null
+    macro:       EdgeConfidenceSignal | null
+  } | null
+}
+
+// ── Live performance check ────────────────────────────────────
+export interface PerfCheckSummary {
+  strategy:        string
+  n_trades:        number
+  rolling_wr_pct:  number
+  bench_wr_pct:    number
+  rolling_pf:      number
+  bench_pf:        number
+  days_since_win:  number
+  status:          'ok' | 'DEGRADED_WR' | 'UNPROFITABLE' | 'WIN_DROUGHT' | 'insufficient_trades'
+}
+
+export interface PerfCheckResult {
+  event_at:  string
+  severity:  'INFO' | 'WARNING'
+  message:   string
+  summaries: PerfCheckSummary[]
+  alerts:    string[]
+}
+
 // ── Calendar ─────────────────────────────────────────────────
 export interface EconomicEvent {
   event_time: string
@@ -154,7 +198,7 @@ export interface EconomicEvent {
 }
 
 // ── WebSocket ────────────────────────────────────────────────
-export type WsChannel = 'ticks' | 'signals' | 'positions' | 'orders' | 'regime' | 'heartbeat'
+export type WsChannel = 'ticks' | 'signals' | 'positions' | 'orders' | 'regime' | 'heartbeat' | 'account'
 
 export interface WsMessage {
   channel: WsChannel

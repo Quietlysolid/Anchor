@@ -35,8 +35,13 @@ from anchor.signals.multi_timeframe   import check_mtf_alignment
 from anchor.signals.currency_strength import compute_csi, csi_signal_score
 from anchor.signals.oanda_sentiment   import sentiment_signal_score, get_cached_score as get_sentiment_score
 from anchor.signals.cot_signal        import get_cot_score
+from anchor.signals.order_book_signal import get_cached_score as get_order_book_score
 from anchor.signals.vix_filter        import get_cached_multiplier as get_vix_multiplier, get_cached_vix
 from anchor.data.fred_rates           import get_rate_divergence_score
+from anchor.data.cme_flow             import get_cached_score as get_cme_flow_score
+from anchor.data.fx_options           import get_cached_score as get_fx_options_score
+from anchor.data.cross_asset          import get_cached_score as get_cross_asset_score
+from anchor.signals.economic_surprise import get_surprise_score
 from anchor.signals.session_filter    import check_session
 from anchor.signals.news_filter       import NewsFilter
 from anchor.utils.time_utils          import utcnow, get_session_name
@@ -70,6 +75,7 @@ class SignalResult:
     suppressed:       bool           = True
     suppression_reason: str | None   = None
     vix_multiplier:   float          = 1.0
+    news_multiplier:  float          = 1.0
     created_at:       datetime       = field(default_factory=utcnow)
     metadata:         dict           = field(default_factory=dict)
 
@@ -144,14 +150,22 @@ def _nr4_compression(df_h1: pd.DataFrame | None, dt: "datetime") -> bool:
 
 
 WEIGHTS = {
-    "rsi_divergence":    0.20,   # entry timing booster (was 0.24)
-    "bb_kc_squeeze":     0.22,   # momentum / compression breakout (was 0.20)
-    "adx_filter":        0.15,   # trend strength gate (unchanged)
-    "sr_strength":       0.20,   # structural level confirmation (was 0.24)
-    "mtf_agreement":     0.10,   # PRIMARY: 4H+Daily trend alignment (was 0.04)
-    "oanda_sentiment":   0.04,   # contrarian retail sentiment (unchanged)
-    "cot_signal":        0.05,   # institutional positioning, fail-open (unchanged)
-    "rate_divergence":   0.04,   # carry-trade macro filter, fail-open (unchanged)
+    # ── Core technical components ──────────────────────────────────────────
+    "rsi_divergence":    0.16,   # entry timing booster
+    "bb_kc_squeeze":     0.17,   # momentum / compression breakout
+    "adx_filter":        0.13,   # trend strength gate
+    "sr_strength":       0.16,   # structural level confirmation
+    "mtf_agreement":     0.10,   # PRIMARY: 4H+Daily trend alignment
+    # ── Macro / sentiment ─────────────────────────────────────────────────
+    "oanda_sentiment":   0.06,   # contrarian retail book
+    "cot_signal":        0.05,   # CFTC non-commercial positioning
+    "rate_divergence":   0.02,   # carry + CB velocity (STIR proxy)
+    "economic_surprise": 0.04,   # actual vs consensus surprise score
+    # ── Institutional-grade signals ───────────────────────────────────────
+    "order_book":        0.03,   # OANDA pending-order liquidity magnet
+    "cme_flow":          0.03,   # CME futures OI + volume trend
+    "fx_options_rr":     0.02,   # FX options risk reversal via ETFs
+    "cross_asset":       0.03,   # SPY/GLD risk-on/off → AUD/NZD/JPY/CAD bias
 }
 
 
@@ -179,10 +193,17 @@ class ConfluenceEngine:
         ablation_mtf:            bool = True,
         ablation_sentiment:      bool = True,
         ablation_rate_divergence: bool = True,
+        ablation_order_book:     bool = True,   # False → skip OANDA order-book signal
+        ablation_cme_flow:       bool = True,   # False → skip CME futures flow signal
+        ablation_fx_options:     bool = True,   # False → skip FX options RR signal
         ablation_hmm_gate:       bool = True,   # False → skip VOLATILE block
         ablation_session:        bool = True,   # False → trade all hours
         ablation_ml:             bool = True,   # False → skip ML gate entirely
         ablation_tsmom:          bool = True,   # False → skip TSMOM direction gate
+        ablation_cot_gate:       bool = True,   # False → COT conflict never hard-blocks
+        ablation_cme_gate:       bool = True,   # False → CME conflict never hard-blocks
+        ablation_econ_surprise:  bool = True,   # False → skip economic surprise signal
+        ablation_cross_asset:    bool = True,   # False → skip cross-asset risk sentiment
     ):
         self.news_filter      = news_filter or NewsFilter()
         self.spread_monitor   = spread_monitor
@@ -199,12 +220,19 @@ class ConfluenceEngine:
         self._abl_adx            = ablation_adx
         self._abl_sr             = ablation_sr
         self._abl_mtf            = ablation_mtf
-        self._abl_sentiment      = ablation_sentiment
+        self._abl_sentiment       = ablation_sentiment
         self._abl_rate_divergence = ablation_rate_divergence
-        self._abl_hmm_gate       = ablation_hmm_gate
+        self._abl_order_book      = ablation_order_book
+        self._abl_cme_flow        = ablation_cme_flow
+        self._abl_fx_options      = ablation_fx_options
+        self._abl_hmm_gate        = ablation_hmm_gate
         self._abl_session        = ablation_session
         self._abl_ml             = ablation_ml
         self._abl_tsmom          = ablation_tsmom
+        self._abl_cot_gate       = ablation_cot_gate
+        self._abl_cme_gate       = ablation_cme_gate
+        self._abl_econ_surprise  = ablation_econ_surprise
+        self._abl_cross_asset    = ablation_cross_asset
 
     async def evaluate(
         self,
@@ -225,10 +253,11 @@ class ConfluenceEngine:
         else:
             result.session = get_session_name(dt)
 
-        news_ok, news_reason = await self.news_filter.check(instrument, dt)
+        news_ok, news_reason, news_mult = await self.news_filter.check(instrument, dt)
         if not news_ok:
             result.suppression_reason = news_reason
             return result
+        result.news_multiplier = news_mult
 
         if self.spread_monitor:
             # Fast check: spike vs rolling median (no ATR needed)
@@ -242,6 +271,41 @@ class ConfluenceEngine:
             if not drawdown_ok:
                 result.suppression_reason = drawdown_reason
                 return result
+
+        # ── Step 1c: Session quality gate (Tier 1 + Tier 2a) ─────────────
+        # Read from Redis key 'session_quality' (written by presession brief task at 06:30 UTC).
+        # On CHOPPY days with high confidence, skip non-top-3 pairs to concentrate edge.
+        # Threshold adjustment is applied at the final confluence check below.
+        # Fails open: if key is missing, sq_env=MIXED, no pair filtering, no threshold change.
+        _sq_env = "MIXED"
+        _sq_conf = 0.5
+        _sq_threshold_adj = 0.0
+        _sq_pair_rankings: list[str] = []
+        _sq_size_scale = 1.0
+        if self.redis_client is not None:
+            try:
+                import json as _json_sq
+                _sq_raw = await self.redis_client.get("session_quality")
+                if _sq_raw:
+                    _sq = _json_sq.loads(_sq_raw)
+                    _sq_env = _sq.get("environment", "MIXED")
+                    _sq_conf = float(_sq.get("confidence", 0.5))
+                    _sq_threshold_adj = float(_sq.get("threshold_adjustment", 0.0))
+                    _sq_pair_rankings = _sq.get("pair_rankings", [])
+                    _sq_size_scale = float(_sq.get("size_scale", 1.0))
+            except Exception:
+                pass  # fail-open — defaults already set above
+
+        # Tier 2a: CHOPPY + high confidence → only evaluate the top 3 pairs by macro tailwind
+        if _sq_env == "CHOPPY" and _sq_conf >= 0.7 and _sq_pair_rankings:
+            top3 = _sq_pair_rankings[:3]
+            if instrument not in top3:
+                result.suppression_reason = f"CHOPPY_PAIR_FILTER:not_in_top3"
+                result.metadata["session_quality_top3"] = top3
+                return result
+
+        result.metadata["session_quality_env"] = _sq_env
+        result.metadata["session_quality_size_scale"] = _sq_size_scale
 
         # ── Step 1b: HMM regime gate ──────────────────────────────────────
         # London trend strategy requires a TRENDING regime.
@@ -398,6 +462,77 @@ class ConfluenceEngine:
         else:
             rate_div_score = 0.5
 
+        # ── OANDA Order Book (liquidity magnet) ───────────────────────────────
+        # Reads from Redis key "order_book:{instrument}" (5-min TTL).
+        # Identifies where pending orders cluster above vs below current price.
+        # Returns (0.5, None) when data unavailable — fail-open.
+        if self.redis_client is not None:
+            order_book_score, order_book_meta = await get_order_book_score(
+                self.redis_client, instrument, direction
+            )
+        else:
+            order_book_score, order_book_meta = 0.5, None
+
+        # ── CME Futures Flow (institutional OI + volume) ──────────────────────
+        # Reads from Redis key "cme_flow:{instrument}" (2-hour TTL).
+        # Uses yfinance to fetch 6E/6B/6J futures data; inferred OI trend.
+        # Returns (0.5, None) when data unavailable — fail-open.
+        if self.redis_client is not None:
+            cme_flow_score, cme_flow_meta = await get_cme_flow_score(
+                self.redis_client, instrument, direction
+            )
+        else:
+            cme_flow_score, cme_flow_meta = 0.5, None
+
+        # ── FX Options Risk Reversal (currency ETF proxy) ─────────────────────
+        # Reads from Redis key "fx_options_rr:{instrument}" (4-hour TTL).
+        # Computes IV skew from FXE/FXB/FXY listed options (yfinance).
+        # Returns (0.5, None) when data unavailable — fail-open.
+        if self.redis_client is not None:
+            fx_options_score, fx_options_meta = await get_fx_options_score(
+                self.redis_client, instrument, direction
+            )
+        else:
+            fx_options_score, fx_options_meta = 0.5, None
+
+        # ── Economic Surprise (actual vs consensus, per-currency) ─────────────
+        # Reads per-currency surprise scores from Redis (TTL 1h).
+        # Populated by update_economic_surprise scheduler task (every 30 min).
+        # Returns 0.5 (neutral) when data unavailable — fail-open.
+        if self.redis_client is not None and self._abl_econ_surprise:
+            econ_surprise_score = await get_surprise_score(
+                self.redis_client, instrument, direction
+            )
+        else:
+            econ_surprise_score = 0.5
+
+        # ── Cross-Asset Risk Sentiment (SPY + GLD regime) ─────────────────────
+        # Reads from Redis key "cross_asset_risk" (2-hour TTL).
+        # Populated by update_cross_asset scheduler task every 2 hours.
+        # Captures risk-on/off flows that drive AUD, NZD, CAD, JPY pairs.
+        # Returns (0.5, None) when data unavailable — fail-open.
+        if self.redis_client is not None and self._abl_cross_asset:
+            cross_asset_score, cross_asset_meta = await get_cross_asset_score(
+                self.redis_client, instrument, direction
+            )
+        else:
+            cross_asset_score, cross_asset_meta = 0.5, None
+
+        # ── COT hard gate ─────────────────────────────────────────────────────
+        # score < 0.25 means CFTC non-commercial positioning strongly opposes
+        # our direction — this is not a haircut situation, it's a conflict.
+        # Fail-open: only blocks when Redis is live (score defaults to 0.5).
+        if self._abl_cot_gate and cot_score < 0.25:
+            result.suppression_reason = f"COT_CONFLICT:{cot_score:.2f}"
+            return result
+
+        # ── CME flow hard gate ────────────────────────────────────────────────
+        # score < 0.25 means futures OI + volume strongly opposes direction.
+        # Only blocks when we have live data (defaults to 0.5 → never blocks).
+        if self._abl_cme_gate and cme_flow_score < 0.25:
+            result.suppression_reason = f"CME_CONFLICT:{cme_flow_score:.2f}"
+            return result
+
         # ── VIX position-size multiplier ──────────────────────────────────
         # Reads from Redis cache (populated by scheduler every 4 h via FRED).
         # Returns 1.0 (no reduction) when Redis or FRED is unavailable.
@@ -421,8 +556,13 @@ class ConfluenceEngine:
             "sr_strength":     (sr_score,               self._abl_sr),
             "mtf_agreement":   (mtf_score,              self._abl_mtf),
             "oanda_sentiment":  (oanda_sentiment_score,  self._abl_sentiment),
-            "cot_signal":       (cot_score,              True),  # always on, fail-open
+            "cot_signal":        (cot_score,              True),   # always on, fail-open
             "rate_divergence":  (rate_div_score,         self._abl_rate_divergence),
+            "economic_surprise": (econ_surprise_score,   self._abl_econ_surprise),
+            "order_book":       (order_book_score,       self._abl_order_book),
+            "cme_flow":         (cme_flow_score,         self._abl_cme_flow),
+            "fx_options_rr":    (fx_options_score,       self._abl_fx_options),
+            "cross_asset":      (cross_asset_score,      self._abl_cross_asset),
         }
         active_weight_total = sum(
             WEIGHTS[k] for k, (_, active) in _components.items() if active
@@ -451,12 +591,22 @@ class ConfluenceEngine:
             "squeeze_on":           squeeze_on,
             "csi":                  csi,          # kept for diagnostics
             "rsi_confirmed":        rsi_confirmed,
-            "oanda_sentiment_raw":  raw_sentiment,
+            "oanda_sentiment_raw":   raw_sentiment,
             "oanda_sentiment_score": oanda_sentiment_score,
-            "cot_score":            cot_score,
+            "cot_score":             cot_score,
             "rate_divergence_score": rate_div_score,
-            "vix":                  vix_val,
-            "vix_multiplier":       vix_mult,
+            "order_book_score":      order_book_score,
+            "order_book_meta":       order_book_meta,
+            "cme_flow_score":        cme_flow_score,
+            "cme_flow_meta":         cme_flow_meta,
+            "fx_options_score":       fx_options_score,
+            "fx_options_meta":        fx_options_meta,
+            "econ_surprise_score":    econ_surprise_score,
+            "cross_asset_score":      cross_asset_score,
+            "cross_asset_meta":       cross_asset_meta,
+            "news_multiplier":        result.news_multiplier,
+            "vix":                    vix_val,
+            "vix_multiplier":        vix_mult,
         })
 
         # ── Step 6: ML confidence overlay ────────────────────────────────
@@ -490,8 +640,34 @@ class ConfluenceEngine:
                 result.metadata["ml_fallback"] = True
                 # ML unavailable — continue with base confluence threshold only
 
+        # ── Step 6b: Macro dissonance penalty (Tier 2c) ──────────────────
+        # Redis key macro_dissonance:{pair} is written by the postsession anomaly
+        # detector when price action contradicted the macro setup for this pair.
+        # Penalty: -0.05 confluence.  Key TTL: 20h (auto-expires after next session).
+        # Fail-open: missing key or Redis error → no penalty applied.
+        if self.redis_client is not None:
+            try:
+                _dissonance_val = await self.redis_client.get(f"macro_dissonance:{instrument}")
+                if _dissonance_val:
+                    confluence = max(0.0, confluence - 0.05)
+                    result.metadata["macro_dissonance"] = _dissonance_val
+                    logger.debug(
+                        "macro_dissonance_penalty",
+                        instrument=instrument,
+                        confluence_after=round(confluence, 4),
+                    )
+            except Exception:
+                pass  # fail-open
+
         # ── Step 7: Final threshold ───────────────────────────────────────
-        if confluence < settings.min_confluence_score:
+        # Tier 1: apply session quality threshold adjustment.
+        # TRENDING → lowers threshold (e.g. 0.72 - 0.02 = 0.70) to capture more signals.
+        # CHOPPY   → raises threshold (e.g. 0.72 + 0.06 = 0.78) to demand higher conviction.
+        # MIXED    → no change (adjustment = 0.0).
+        # Falls back to base threshold when session_quality key is missing.
+        _effective_threshold = settings.min_confluence_score + _sq_threshold_adj
+        result.metadata["effective_threshold"] = round(_effective_threshold, 4)
+        if confluence < _effective_threshold:
             result.suppression_reason = f"LOW_CONFLUENCE:{confluence:.3f}"
             return result
 

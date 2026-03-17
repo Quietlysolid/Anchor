@@ -129,7 +129,7 @@ class MeanReversionEngine:
         result.session = get_session_name(dt)
 
         # ── Gate 2: News ──────────────────────────────────────────────────
-        news_ok, news_reason = await self.news_filter.check(instrument, dt)
+        news_ok, news_reason, _news_mult = await self.news_filter.check(instrument, dt)
         if not news_ok:
             result.suppression_reason = news_reason
             return result

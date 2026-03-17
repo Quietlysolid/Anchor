@@ -70,7 +70,7 @@ settings = get_settings()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-LCR_INSTRUMENTS = {"EUR_USD", "GBP_USD", "USD_JPY"}
+LCR_INSTRUMENTS = {"EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "EUR_JPY", "GBP_JPY", "NZD_USD", "USD_CHF"}
 
 LCR_CONFLUENCE_THRESHOLD = 0.55
 
@@ -165,7 +165,7 @@ class LondonCloseReversionEngine:
             return result
 
         # ── Gate 3: News filter ───────────────────────────────────────────
-        news_ok, news_reason = await self.news_filter.check(instrument, dt)
+        news_ok, news_reason, _news_mult = await self.news_filter.check(instrument, dt)
         if not news_ok:
             result.suppression_reason = news_reason
             return result

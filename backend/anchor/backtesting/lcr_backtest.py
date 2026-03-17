@@ -47,6 +47,12 @@ _SPREAD_COST = {
     "EUR_USD": 0.00002,
     "GBP_USD": 0.00004,
     "USD_JPY": 0.050,
+    "AUD_USD": 0.00012,   # ~1.2 pip NY session spread
+    "USD_CAD": 0.00015,   # ~1.5 pip NY session spread
+    "EUR_JPY": 0.030,     # ~3 pip NY session spread
+    "GBP_JPY": 0.040,     # ~4 pip NY session spread — widest of the majors
+    "NZD_USD": 0.00015,   # ~1.5 pip NY session spread
+    "USD_CHF": 0.00010,   # ~1.0 pip NY session spread
 }
 # Minimum SL in pips — skip degenerate signals where entry ≈ SL (tiny ATR or bad alignment)
 _MIN_SL_PIPS = 3
@@ -55,6 +61,27 @@ _LCR_RISK = {
     "EUR_USD": 0.01,
     "GBP_USD": 0.01,
     "USD_JPY": 0.005,   # 0.5% — -41% max DD at 1% is too high
+    "AUD_USD": 0.01,
+    "USD_CAD": 0.01,    # 1.0% — walk-forward confirmed 7/7 profitable, lowest DD (-15.2%)
+    "EUR_JPY": 0.0075,  # 0.75% — wider spread, start conservative
+    "GBP_JPY": 0.005,   # 0.5% — widest spread, most volatile
+    "NZD_USD": 0.01,    # 1% — similar spread to AUD_USD, start standard
+    "USD_CHF": 0.01,    # 1% — tight spread, standard risk
+}
+# Overnight swap/rollover cost in pips per OANDA day-end (22:00 UTC).
+# Positive = receive swap, negative = pay swap.
+# Conservative averages across the historical period (2016-2024).
+# LCR trades (17-19 UTC entry) may cross 22:00 UTC rollover if not closed same day.
+_SWAP_PIPS: dict[str, dict[str, float]] = {
+    "EUR_USD": {"LONG": -0.4, "SHORT": +0.3},
+    "GBP_USD": {"LONG": -0.4, "SHORT": +0.3},
+    "USD_JPY": {"LONG": +0.8, "SHORT": -1.5},
+    "AUD_USD": {"LONG": -0.5, "SHORT": +0.3},
+    "USD_CAD": {"LONG": +0.3, "SHORT": -0.5},
+    "EUR_JPY": {"LONG": -0.8, "SHORT": +0.5},
+    "GBP_JPY": {"LONG": -0.8, "SHORT": +0.5},
+    "NZD_USD": {"LONG": -0.4, "SHORT": +0.3},
+    "USD_CHF": {"LONG": +0.4, "SHORT": -0.5},
 }
 
 
@@ -142,6 +169,16 @@ class LCRBacktestEngine:
                     pl_pips = sign * pips
                     # Correct 1% fixed-fractional: win = +(dist/sl_dist)×1%, loss = -1×1%
                     pl_pct  = sign * (dist / sl_dist) * position["risk_fraction"]
+
+                    # Apply swap/rollover cost: each 22:00 UTC boundary crossed costs/earns pips
+                    # swap_pips is net (positive=received, negative=paid)
+                    swap_net = position["swap_pips"]
+                    if swap_net != 0.0:
+                        sl_dist_pips = sl_dist / pip if pip > 0 else 1.0
+                        swap_pct = (swap_net * position["risk_fraction"]) / sl_dist_pips
+                        pl_pips += swap_net
+                        pl_pct  += swap_pct
+
                     balance *= 1.0 + pl_pct
 
                     trades.append({
@@ -155,11 +192,17 @@ class LCRBacktestEngine:
                         "reason":     close_reason,
                         "pl_pips":    round(pl_pips, 1),
                         "pl_pct":     round(pl_pct * 100, 3),
+                        "swap_pips":  round(swap_net, 2),
                         "balance":    round(balance, 2),
                         "confluence": position["confluence"],
                         "london_mid": position["london_mid"],
                     })
                     position = None
+
+                if not closed and dt.hour == 22:
+                    # 22:00 UTC rollover boundary — accrue swap cost for this overnight hold
+                    pair_swap = _SWAP_PIPS.get(instrument, {})
+                    position["swap_pips"] += pair_swap.get(direction, 0.0)
 
             if position is not None:
                 continue  # one position at a time
@@ -209,6 +252,7 @@ class LCRBacktestEngine:
                 "risk_fraction": _LCR_RISK.get(instrument, 0.01),
                 "confluence":    result.confluence_score,
                 "london_mid":    result.london_mid,
+                "swap_pips":     0.0,  # accrued rollover cost; updated each 22:00 UTC bar
             }
 
         # ── Summary statistics ─────────────────────────────────────────────
@@ -268,8 +312,9 @@ def main():
     parser.add_argument("--end",     default=None)
     args = parser.parse_args()
 
-    if args.instrument not in LCR_INSTRUMENTS:
-        print(f"LCR only supports: {', '.join(sorted(LCR_INSTRUMENTS))}")
+    _BACKTEST_INSTRUMENTS = LCR_INSTRUMENTS
+    if args.instrument not in _BACKTEST_INSTRUMENTS:
+        print(f"LCR backtest supports: {', '.join(sorted(_BACKTEST_INSTRUMENTS))}")
         return
 
     df_h1 = _load_csv(args.h1_csv)

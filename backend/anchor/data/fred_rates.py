@@ -62,7 +62,11 @@ _INSTRUMENT_CURRENCIES: Dict[str, tuple] = {
     "USD_CHF": ("USD", "CHF"),
     "EUR_GBP": ("EUR", "GBP"),
     "GBP_JPY": ("GBP", "JPY"),
+    "EUR_JPY": ("EUR", "JPY"),
 }
+
+# DXY — FRED Trade Weighted USD Index (Broad Goods, daily)
+_DXY_SERIES = "DTWEXBGS"
 
 # Normalise raw rate differentials to roughly [-1, 1].
 # Most FX rate diffs stay within ±10 percentage points.
@@ -82,66 +86,92 @@ class FredRateFetcher:
         if self._client:
             await self._client.aclose()
 
-    async def fetch_latest_rate(self, series_id: str) -> Optional[float]:
-        """Fetch the most recent observation for a FRED series."""
+    async def fetch_rate_history(self, series_id: str, limit: int = 12) -> list[float]:
+        """Fetch the last `limit` valid observations for a FRED series (descending)."""
         assert self._client is not None
         params = {
-            "series_id":      series_id,
-            "api_key":        self._api_key,
-            "file_type":      "json",
-            "sort_order":     "desc",
-            "limit":          "5",       # grab last 5 in case latest is "."
-            "observation_start": "2020-01-01",
+            "series_id":         series_id,
+            "api_key":           self._api_key,
+            "file_type":         "json",
+            "sort_order":        "desc",
+            "limit":             str(limit),
+            "observation_start": "2023-01-01",
         }
         try:
             resp = await self._client.get(FRED_BASE, params=params)
             resp.raise_for_status()
             observations = resp.json().get("observations", [])
-            for obs in observations:
-                val = obs.get("value", ".")
-                if val != ".":
-                    return float(val)
+            return [
+                float(obs["value"])
+                for obs in observations
+                if obs.get("value", ".") != "."
+            ]
         except Exception as exc:
-            logger.warning("fred_fetch_failed", series=series_id, error=str(exc))
-        return None
+            logger.warning("fred_fetch_history_failed", series=series_id, error=str(exc))
+        return []
 
-    async def fetch_all_rates(self) -> Dict[str, Optional[float]]:
-        """Return {currency: rate_pct} for all tracked currencies."""
-        rates: Dict[str, Optional[float]] = {}
+    async def fetch_latest_rate(self, series_id: str) -> Optional[float]:
+        """Fetch the most recent observation for a FRED series."""
+        history = await self.fetch_rate_history(series_id, limit=5)
+        return history[0] if history else None
+
+    async def fetch_all_rates(self) -> Dict[str, Dict]:
+        """Return {currency: {rate, velocity}} for all tracked currencies.
+
+        velocity = change in policy rate over the last ~6 observations
+        (≈6 months for monthly series, captures direction of CB policy).
+        Normalised to [-1, 1] with a ±3 pp velocity cap.
+        """
+        rates: Dict[str, Dict] = {}
         for currency, series_id in _RATE_SERIES.items():
-            rate = await self.fetch_latest_rate(series_id)
-            rates[currency] = rate
-            logger.debug("fred_rate", currency=currency, series=series_id, rate=rate)
+            history = await self.fetch_rate_history(series_id, limit=12)
+            if not history:
+                rates[currency] = None
+                continue
+            current = history[0]
+            # velocity: current vs oldest available (up to 6 periods back)
+            lookback = min(6, len(history) - 1)
+            velocity = current - history[lookback] if lookback > 0 else 0.0
+            rates[currency] = {"rate": current, "velocity": round(velocity, 4)}
+            logger.debug("fred_rate", currency=currency, rate=current, velocity=velocity)
         return rates
 
     @staticmethod
-    def compute_differentials(rates: Dict[str, Optional[float]]) -> Dict[str, Dict]:
-        """Compute rate differential per instrument from raw currency rates.
+    def compute_differentials(rates: Dict[str, Optional[Dict]]) -> Dict[str, Dict]:
+        """Compute rate differential + velocity per instrument.
 
         Returns:
-            {instrument: {"rate_diff": float, "base_rate": float,
-                          "quote_rate": float, "available": bool}}
+            {instrument: {
+                "rate_diff":      float,   # carry: base_rate - quote_rate (pp)
+                "velocity_diff":  float,   # velocity: base_velocity - quote_velocity (pp)
+                "base_rate":      float,
+                "quote_rate":     float,
+                "available":      bool,
+            }}
         """
         result: Dict[str, Dict] = {}
         for instrument, (base, quote) in _INSTRUMENT_CURRENCIES.items():
-            base_rate  = rates.get(base)
-            quote_rate = rates.get(quote)
-            if base_rate is not None and quote_rate is not None:
-                diff = base_rate - quote_rate
+            base_data  = rates.get(base)
+            quote_data = rates.get(quote)
+            if base_data is not None and quote_data is not None:
+                diff     = base_data["rate"]     - quote_data["rate"]
+                vel_diff = base_data["velocity"] - quote_data["velocity"]
                 result[instrument] = {
-                    "rate_diff":  round(diff, 4),
-                    "base_rate":  round(base_rate, 4),
-                    "quote_rate": round(quote_rate, 4),
-                    "available":  True,
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "rate_diff":     round(diff, 4),
+                    "velocity_diff": round(vel_diff, 4),
+                    "base_rate":     round(base_data["rate"], 4),
+                    "quote_rate":    round(quote_data["rate"], 4),
+                    "available":     True,
+                    "fetched_at":    datetime.now(timezone.utc).isoformat(),
                 }
             else:
                 result[instrument] = {
-                    "rate_diff":  0.0,
-                    "base_rate":  base_rate,
-                    "quote_rate": quote_rate,
-                    "available":  False,
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "rate_diff":     0.0,
+                    "velocity_diff": 0.0,
+                    "base_rate":     None,
+                    "quote_rate":    None,
+                    "available":     False,
+                    "fetched_at":    datetime.now(timezone.utc).isoformat(),
                 }
         return result
 
@@ -164,26 +194,75 @@ async def fetch_and_store(redis_client, api_key: str) -> Dict[str, Dict]:
     return differentials
 
 
+async def fetch_and_store_dxy(redis_client, api_key: str) -> Optional[Dict]:
+    """Fetch DXY (Trade Weighted USD Index) from FRED, compute 5-day momentum, cache in Redis.
+
+    Redis key: dxy_data
+    Structure: {value, change_5d_pct, trend: UP|DOWN|NEUTRAL, fetched_at}
+    Trend: UP if change > +0.5%, DOWN if < -0.5%, else NEUTRAL
+    """
+    try:
+        async with FredRateFetcher(api_key) as fetcher:
+            assert fetcher._client is not None
+            params = {
+                "series_id":         _DXY_SERIES,
+                "api_key":           api_key,
+                "file_type":         "json",
+                "sort_order":        "desc",
+                "limit":             "10",
+                "observation_start": "2020-01-01",
+            }
+            resp = await fetcher._client.get(FRED_BASE, params=params)
+            resp.raise_for_status()
+            obs = [
+                float(o["value"])
+                for o in resp.json().get("observations", [])
+                if o.get("value", ".") != "."
+            ]
+
+        if len(obs) < 2:
+            return None
+
+        current   = obs[0]   # most recent (desc order)
+        prior_5d  = obs[min(4, len(obs) - 1)]
+        change_5d = round((current - prior_5d) / prior_5d * 100, 3)
+
+        trend = "UP" if change_5d > 0.5 else ("DOWN" if change_5d < -0.5 else "NEUTRAL")
+        data  = {
+            "value":         round(current, 3),
+            "change_5d_pct": change_5d,
+            "trend":         trend,
+            "fetched_at":    datetime.now(timezone.utc).isoformat(),
+        }
+        await redis_client.set("dxy_data", json.dumps(data), ex=25 * 3_600)
+        logger.info("dxy_stored", value=current, change_5d_pct=change_5d, trend=trend)
+        return data
+    except Exception as exc:
+        logger.warning("dxy_fetch_failed", error=str(exc))
+        return None
+
+
 async def get_rate_divergence_score(
     redis_client,
     instrument: str,
     direction: str,
 ) -> float:
-    """Return a rate-divergence confluence score [0.0, 1.0].
+    """Return a rate-divergence + velocity confluence score [0.0, 1.0].
 
-    Logic (Carry trade theory — Uncovered Interest Rate Parity):
-      - Positive rate_diff (base rate > quote rate) → base currency expected to
-        strengthen → confirms LONG signal.
-      - Negative rate_diff → base currency expected to weaken → confirms SHORT.
-      - Magnitude matters: a 5pp differential is stronger than 0.5pp.
+    Blends two signals:
+      1. Carry (static level): base_rate - quote_rate → which CB pays more now
+      2. Velocity (direction of change): base_velocity - quote_velocity →
+         which CB is hiking/cutting, capturing STIR repricing before it's
+         fully reflected in the spot rate (e.g. RBA hike surprise scenario).
 
-    Score mapping:
-      1.0 → strong rate differential confirms signal direction
-      0.5 → neutral / data unavailable (fail-open, never blocks alone)
-      0.0 → rate differential opposes signal direction
+    Score = 0.60 * carry_score + 0.40 * velocity_score
 
-    Normalisation: ±_RATE_DIFF_SCALE (10pp) maps to ±1.0.
+    Normalisation:
+      carry:    ±_RATE_DIFF_SCALE (10 pp) → ±1.0
+      velocity: ±3 pp over ~6 periods → ±1.0
     """
+    _VEL_SCALE = 3.0  # pp over ~6 months; RBA hiked ~4pp in 2022–23
+
     if redis_client is None:
         return 0.5
 
@@ -198,17 +277,23 @@ async def get_rate_divergence_score(
             return 0.5
 
         rate_diff = float(entry["rate_diff"])
-        # Normalize to [-1, 1]
-        norm = max(-1.0, min(1.0, rate_diff / _RATE_DIFF_SCALE))
+        vel_diff  = float(entry.get("velocity_diff", 0.0))
 
-        # Convert to directional score [0, 1]
+        # Carry component
+        carry_norm = max(-1.0, min(1.0, rate_diff / _RATE_DIFF_SCALE))
         if direction == "LONG":
-            # positive diff (base > quote) confirms LONG
-            score = 0.5 + norm * 0.5
+            carry_score = 0.5 + carry_norm * 0.5
         else:
-            # negative diff (base < quote) confirms SHORT
-            score = 0.5 - norm * 0.5
+            carry_score = 0.5 - carry_norm * 0.5
 
+        # Velocity component: positive vel_diff = base CB hiking faster than quote
+        vel_norm = max(-1.0, min(1.0, vel_diff / _VEL_SCALE))
+        if direction == "LONG":
+            vel_score = 0.5 + vel_norm * 0.5
+        else:
+            vel_score = 0.5 - vel_norm * 0.5
+
+        score = 0.60 * carry_score + 0.40 * vel_score
         return round(max(0.0, min(1.0, score)), 4)
 
     except Exception as exc:

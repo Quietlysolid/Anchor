@@ -20,6 +20,8 @@ from anchor.api.routers import (
     system,
     calendar,
     backtest,
+    market,
+    intelligence,
 )
 from anchor.api.websocket import router as ws_router, manager as ws_manager
 from anchor.monitoring.heartbeat import HeartbeatService
@@ -32,23 +34,50 @@ logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 
-async def _reconcile_account(stream_client: OANDAStreamClient) -> None:
-    """Poll OANDA REST API every 60s to keep balance/equity current."""
-    import oandapyV20
+async def _reconcile_account(stream_client: OANDAStreamClient, redis_client=None) -> None:
+    """Poll OANDA REST API every 60s — update balance/equity and broadcast positions via WS."""
     from oandapyV20 import API
     from oandapyV20.endpoints.accounts import AccountDetails
+    from anchor.utils.time_utils import utcnow
 
     client = API(access_token=settings.oanda_api_key, environment=settings.oanda_environment)
     while stream_client._running:
         try:
             r = AccountDetails(settings.oanda_account_id)
             client.request(r)
-            acc = r.response["account"]
-            set_account_info(
-                balance=float(acc["balance"]),
-                equity=float(acc["NAV"]),
-                reconciled_at=acc.get("lastTransactionID"),
-            )
+            acc     = r.response["account"]
+            balance = float(acc["balance"])
+            equity  = float(acc["NAV"])
+            set_account_info(balance=balance, equity=equity, reconciled_at=utcnow().isoformat())
+
+            if redis_client:
+                # Push balance/equity to dashboard without REST polling
+                await redis_client.publish("account", json.dumps({
+                    "channel": "account",
+                    "data": {"balance": balance, "equity": equity},
+                }))
+                # Push open positions with live unrealized P&L straight from OANDA
+                raw_trades = acc.get("trades", [])
+                positions = []
+                for t in raw_trades:
+                    units = float(t.get("currentUnits", 0))
+                    positions.append({
+                        "oanda_trade_id":  t.get("id"),
+                        "instrument":      t.get("instrument"),
+                        "direction":       "LONG" if units > 0 else "SHORT",
+                        "units":           abs(units),
+                        "avg_entry_price": float(t.get("price", 0)),
+                        "current_price":   float(t.get("price", 0)),
+                        "unrealized_pl":   float(t.get("unrealizedPL", 0)),
+                        "stop_loss":       float(t["stopLossOrder"]["price"])   if "stopLossOrder"   in t else None,
+                        "take_profit":     float(t["takeProfitOrder"]["price"]) if "takeProfitOrder" in t else None,
+                        "status":          "OPEN",
+                    })
+                await redis_client.publish("positions", json.dumps({
+                    "channel": "positions",
+                    "data": positions,
+                }))
+
         except Exception as exc:
             logger.warning("reconcile_error", error=str(exc))
         await asyncio.sleep(60)
@@ -102,9 +131,9 @@ async def lifespan(app: FastAPI):
                     set_stream_status(False)
 
             async def _redis_fanout():
-                """Subscribe to Redis 'ticks' channel and broadcast to WebSocket clients."""
+                """Subscribe to Redis channels and broadcast to WebSocket clients."""
                 pubsub = redis_client.pubsub()
-                await pubsub.subscribe("ticks", "regime", "signals")
+                await pubsub.subscribe("ticks", "regime", "signals", "positions", "orders", "account")
                 async for message in pubsub.listen():
                     if message["type"] == "message":
                         try:
@@ -117,7 +146,7 @@ async def lifespan(app: FastAPI):
                             logger.warning("fanout_error", error=str(exc))
 
             asyncio.create_task(_stream_with_status())
-            asyncio.create_task(_reconcile_account(stream_client))
+            asyncio.create_task(_reconcile_account(stream_client, redis_client))
             asyncio.create_task(_redis_fanout())
             logger.info("oanda_stream_started")
 
@@ -183,6 +212,8 @@ def create_app() -> FastAPI:
     app.include_router(system.router, prefix=prefix, tags=["system"])
     app.include_router(calendar.router,  prefix=prefix, tags=["calendar"])
     app.include_router(backtest.router,  prefix=prefix, tags=["backtest"])
+    app.include_router(market.router,       prefix=prefix, tags=["market"])
+    app.include_router(intelligence.router, prefix=prefix, tags=["intelligence"])
     app.include_router(ws_router)
 
     return app

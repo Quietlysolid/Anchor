@@ -38,6 +38,20 @@ logger = structlog.get_logger(__name__)
 
 ATR_PERIOD = 14
 
+# Overnight swap cost in pips per OANDA 22:00 UTC rollover (positive = receive, negative = pay).
+# London trades (07-12 UTC) mostly close before rollover but can carry overnight.
+_SWAP_PIPS: dict[str, dict[str, float]] = {
+    "EUR_USD": {"LONG": -0.4, "SHORT": +0.3},
+    "GBP_USD": {"LONG": -0.4, "SHORT": +0.3},
+    "USD_JPY": {"LONG": +0.8, "SHORT": -1.5},
+    "AUD_USD": {"LONG": -0.5, "SHORT": +0.3},
+    "USD_CAD": {"LONG": +0.3, "SHORT": -0.5},
+    "EUR_JPY": {"LONG": -0.8, "SHORT": +0.5},
+    "GBP_JPY": {"LONG": -0.8, "SHORT": +0.5},
+    "NZD_USD": {"LONG": -0.4, "SHORT": +0.3},
+    "USD_CHF": {"LONG": +0.4, "SHORT": -0.5},
+}
+
 
 def _compute_atr(df: pd.DataFrame, idx: int) -> float:
     end   = idx + 1
@@ -146,6 +160,15 @@ class MRBacktestEngine:
                     pl_pips = sign * pips
                     # Correct 1% fixed-fractional: win = +(dist/sl_dist)×1%, loss = -1×1%
                     pl_pct  = sign * (dist / sl_dist) * position["risk_fraction"]
+
+                    # Apply swap/rollover cost for each 22:00 UTC boundary crossed
+                    swap_net = position["swap_pips"]
+                    if swap_net != 0.0:
+                        sl_dist_pips = sl_dist / pip if pip > 0 else 1.0
+                        swap_pct = (swap_net * position["risk_fraction"]) / sl_dist_pips
+                        pl_pips += swap_net
+                        pl_pct  += swap_pct
+
                     balance *= (1 + pl_pct)
 
                     trades.append({
@@ -159,9 +182,15 @@ class MRBacktestEngine:
                         "reason":      close_reason,
                         "pl_pips":     round(pl_pips, 1),
                         "pl_pct":      round(pl_pct * 100, 3),
+                        "swap_pips":   round(swap_net, 2),
                         "balance":     round(balance, 2),
                     })
                     position = None
+
+                if not closed and dt.hour == 22:
+                    # 22:00 UTC rollover — accrue overnight swap
+                    pair_swap = _SWAP_PIPS.get(instrument, {})
+                    position["swap_pips"] += pair_swap.get(direction, 0.0)
 
             if position is not None:
                 continue  # one position at a time
@@ -200,6 +229,7 @@ class MRBacktestEngine:
                 "entry_time":    dt,
                 "risk_fraction": risk_fraction,
                 "confluence":    result.confluence_score,
+                "swap_pips":     0.0,  # accrued at each 22:00 UTC rollover
             }
 
         # ── Summary statistics ─────────────────────────────────────────────

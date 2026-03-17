@@ -6,7 +6,7 @@ import type {
 } from '../../types'
 
 export const useSystemHealth = () =>
-  useQuery({ queryKey: ['system-health'], queryFn: () => api.get<SystemHealth>('/system/health'), refetchInterval: 15_000 })
+  useQuery({ queryKey: ['system-health'], queryFn: () => api.get<SystemHealth>('/system/health'), refetchInterval: 60_000 })
 
 export const usePerformance = () =>
   useQuery({ queryKey: ['performance'], queryFn: () => api.get<PerformanceSummary>('/performance/summary'), refetchInterval: 60_000 })
@@ -44,14 +44,96 @@ export const usePendingOrders = () =>
   useQuery({ queryKey: ['pending-orders'], queryFn: () => api.get<import('../../types').Order[]>('/orders'), refetchInterval: 10_000 })
 
 export const useCandles = (instrument: string, timeframe: string) => {
-  const key = ['candles', instrument, timeframe]
+  // Refresh rate based on candle duration — no need to poll faster than the candle closes
+  const interval = timeframe === '15m' ? 30_000 : timeframe === '1h' ? 60_000 : 5 * 60_000
 
   return useQuery({
-    queryKey: key,
+    queryKey: ['candles', instrument, timeframe],
     queryFn: () => api.get<{ time: number; open: number; high: number; low: number; close: number }[]>(
       `/market-data/${instrument}/${timeframe}?limit=500`
     ),
-    refetchInterval: 5_000,
-    staleTime: 2_000,
+    refetchInterval: interval,
+    staleTime: interval - 5_000,
   })
 }
+
+export const useEdgeConfidence = () =>
+  useQuery({
+    queryKey: ['edge-confidence'],
+    queryFn:  () => api.get<import('../../types').EdgeConfidence>('/system/edge-confidence'),
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
+  })
+
+export const useLatestPerfCheck = () =>
+  useQuery({
+    queryKey: ['perf-check'],
+    queryFn: async () => {
+      type RawEvent = {
+        event_at: string; severity: string; message: string
+        event_type: string; metadata: { summaries?: import('../../types').PerfCheckSummary[]; alerts?: string[] }
+      }
+      const events = await api.get<RawEvent[]>('/system/events?limit=20')
+      const latest = events.find(e => e.event_type === 'LIVE_PERF_CHECK')
+      if (!latest) return null
+      return {
+        event_at:  latest.event_at,
+        severity:  latest.severity as 'INFO' | 'WARNING',
+        message:   latest.message,
+        summaries: latest.metadata?.summaries ?? [],
+        alerts:    latest.metadata?.alerts ?? [],
+      } satisfies import('../../types').PerfCheckResult
+    },
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
+  })
+
+export const useMarketContext = () =>
+  useQuery({
+    queryKey: ['market-context'],
+    queryFn: () => api.get<{
+      dxy:  { value: number; change_5d_pct: number; trend: 'UP' | 'DOWN' | 'NEUTRAL' } | null
+      vix:  { vix: number } | null
+      atr_profile: Record<string, { current_atr_pips: number; avg_atr_pips: number; ratio: number; status: 'QUIET' | 'NORMAL' | 'VOLATILE' }>
+      correlation: Record<string, Record<string, number>>
+    }>('/market/context'),
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
+  })
+
+export type IntelligenceReport = {
+  id: string
+  type: 'PRESESSION' | 'POSTSESSION' | 'WEEKLY'
+  created_at: string
+  content: string
+  tokens_used: number
+  delivered: boolean
+}
+
+export type SessionQuality = {
+  environment: 'TRENDING' | 'CHOPPY' | 'MIXED'
+  confidence: number
+  size_scale: number
+  threshold_adjustment: number
+  pair_rankings: string[]
+}
+
+export const useIntelligenceBrief = (reportType?: 'PRESESSION' | 'POSTSESSION' | 'WEEKLY') =>
+  useQuery({
+    queryKey: ['intelligence-brief', reportType ?? 'any'],
+    queryFn: async () => {
+      const qs = reportType ? `?report_type=${reportType}` : ''
+      const res = await api.get<{ report: IntelligenceReport | null }>(`/intelligence/latest${qs}`)
+      return res.report
+    },
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
+  })
+
+export const useSessionQuality = () =>
+  useQuery({
+    queryKey: ['session-quality'],
+    queryFn: () => api.get<SessionQuality>('/intelligence/session-quality'),
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
+  })

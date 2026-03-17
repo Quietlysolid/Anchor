@@ -1,6 +1,7 @@
 .PHONY: up down dev logs shell-engine shell-db migrate upgrade seed backtest backtest-all lint test \
         download-history ablation walk-forward fit-weights instrument-confidence monte-carlo lcr-backtest lcr-backtest-all \
-        lcr-walkforward lcr-walkforward-all
+        lcr-walkforward lcr-walkforward-all london-walk-forward london-walk-forward-all \
+        threshold-sweep threshold-sweep-london portfolio-backtest live-perf-check
 
 up:
 	docker compose up -d
@@ -160,7 +161,7 @@ lcr-backtest-all:
 	done
 
 lcr-walkforward:
-	docker compose exec engine python -m anchor.backtesting.lcr_walkforward \
+	docker compose exec engine python -m anchor.backtesting.walk_forward \
 		--instrument $(or $(PAIR),EUR_USD) \
 		--h1-csv data/$(or $(PAIR),EUR_USD)_H1.csv
 
@@ -168,6 +169,62 @@ lcr-walkforward-all:
 	@for pair in EUR_USD GBP_USD USD_JPY; do \
 		$(MAKE) lcr-walkforward PAIR=$$pair; \
 	done
+
+## ── London Trend walk-forward ───────────────────────────────────────────────
+
+# Walk-forward OOS validation for the London Trend strategy.
+# Tests each annual window 2018-2024 independently (no parameter fitting per window).
+# Target: 75%+ windows profitable, avg PF > 1.2.
+london-walk-forward:
+	docker compose exec engine python -m anchor.backtesting.london_walk_forward \
+		--instrument $(or $(PAIR),EUR_USD) \
+		--h1-csv data/$(or $(PAIR),EUR_USD)_H1.csv \
+		--h4-csv data/$(or $(PAIR),EUR_USD)_H4.csv \
+		--d-csv  data/$(or $(PAIR),EUR_USD)_D.csv
+
+london-walk-forward-all:
+	@for pair in EUR_USD GBP_USD NZD_USD USD_CAD EUR_JPY AUD_USD; do \
+		echo "========== LONDON WF: $$pair =========="; \
+		$(MAKE) london-walk-forward PAIR=$$pair; \
+	done
+
+## ── Threshold sensitivity sweep ─────────────────────────────────────────────
+
+# Sweeps confluence threshold (0.40→0.70 for LCR, 0.65→0.78 for London Trend).
+# A robust edge keeps PF > 1.0 across all thresholds (not just at the hand-tuned value).
+threshold-sweep:
+	docker compose exec engine python -m anchor.backtesting.threshold_sweep \
+		--instrument $(or $(PAIR),EUR_USD) \
+		--strategy lcr \
+		--h1-csv data/$(or $(PAIR),EUR_USD)_H1.csv
+
+threshold-sweep-london:
+	docker compose exec engine python -m anchor.backtesting.threshold_sweep \
+		--instrument $(or $(PAIR),EUR_USD) \
+		--strategy london \
+		--h1-csv data/$(or $(PAIR),EUR_USD)_H1.csv \
+		--h4-csv data/$(or $(PAIR),EUR_USD)_H4.csv \
+		--d-csv  data/$(or $(PAIR),EUR_USD)_D.csv
+
+## ── Portfolio backtest ───────────────────────────────────────────────────────
+
+# Runs LCR on all 6 active pairs and combines into a single portfolio equity curve.
+# Measures: combined MaxDD, diversification ratio, inter-pair correlation.
+# Key question: do 6 pairs together compound drawdowns or diversify them?
+portfolio-backtest:
+	docker compose exec engine python -m anchor.backtesting.portfolio_backtest \
+		--pairs EUR_USD,GBP_USD,NZD_USD,USD_CAD,EUR_JPY,AUD_USD \
+		--data-dir data \
+		--balance 10000
+
+## ── Live performance check ───────────────────────────────────────────────────
+
+# Manually trigger the live performance monitoring job (normally runs daily via Celery).
+# Compares rolling live WR/PF vs 8-year backtest benchmarks.
+# Alerts if actual performance degrades significantly.
+live-perf-check:
+	docker compose exec celery_worker celery -A anchor.scheduler.celery_app call \
+		anchor.scheduler.jobs.monitor_live_performance
 
 import-cot:
 	docker compose exec engine python -m anchor.data.cot_parser

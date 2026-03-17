@@ -57,7 +57,7 @@ class Reconciler:
                     if closed:
                         realized_pl  = float(closed.get("realizedPL", 0.0))
                         exit_price   = float(closed.get("averageClosePrice", 0)) or None
-                        close_reason = closed.get("closingTransactionIDs") and "TP_SL" or "MANUAL"
+                        close_reason = "SL_TP_OR_MANUAL" if closed.get("closingTransactionIDs") else "MANUAL"
                 except Exception:
                     pass
 

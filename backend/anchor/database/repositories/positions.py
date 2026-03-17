@@ -84,6 +84,9 @@ class PositionRepository:
         exit_price: float | None = None,
     ) -> None:
         """Mark a DB position as closed and write a Trade record."""
+        from anchor.database.models import Signal as SignalModel
+        from sqlalchemy import select as _select
+
         position = await self.get_by_id(position_id)
         if position is None:
             return
@@ -94,7 +97,34 @@ class PositionRepository:
         if exit_price is not None:
             position.current_price = Decimal(str(exit_price))
 
-        # Write a Trade record for P&L tracking
+        # Resolve close_reason to SL or TP by comparing exit price to stored levels
+        resolved_reason = close_reason
+        if close_reason in ("TP_SL", "SL_TP_OR_MANUAL") and exit_price is not None:
+            ep = float(exit_price)
+            sl = float(position.stop_loss)   if position.stop_loss   else None
+            tp = float(position.take_profit) if position.take_profit else None
+            pip_size = 0.01 if "JPY" in position.instrument else 0.0001
+            tolerance = pip_size * 3   # within 3 pips = matched
+            if sl is not None and abs(ep - sl) <= tolerance:
+                resolved_reason = "SL"
+            elif tp is not None and abs(ep - tp) <= tolerance:
+                resolved_reason = "TP"
+            else:
+                resolved_reason = "SL"  # default: losses are SL hits
+
+        # Pull regime/session from the linked Signal for analytics
+        regime_at_entry  = None
+        session_at_entry = None
+        if position.signal_id:
+            sig_row = await self.session.execute(
+                _select(SignalModel.regime_state, SignalModel.session)
+                .where(SignalModel.id == position.signal_id)
+            )
+            sig = sig_row.first()
+            if sig:
+                regime_at_entry  = sig.regime_state
+                session_at_entry = sig.session
+
         net_pl = realized_pl
         trade = Trade(
             position_id=position.id,
@@ -107,8 +137,10 @@ class PositionRepository:
             closed_at=closed_at,
             gross_pl=Decimal(str(net_pl)),
             net_pl=Decimal(str(net_pl)),
-            close_reason=close_reason,
+            close_reason=resolved_reason,
             signal_id=position.signal_id,
+            regime_at_entry=regime_at_entry,
+            session_at_entry=session_at_entry,
         )
         self.session.add(trade)
         await self.session.flush()

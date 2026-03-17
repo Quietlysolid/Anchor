@@ -52,6 +52,9 @@ class Settings(BaseSettings):
             return "https://stream-fxtrade.oanda.com"
         return "https://stream-fxpractice.oanda.com"
 
+    # ── Polygon.io ────────────────────────────────────────────
+    polygon_api_key: str = ""
+
     # ── FRED ──────────────────────────────────────────────────
     fred_api_key: str = ""
 
@@ -71,23 +74,28 @@ class Settings(BaseSettings):
     correlation_block_threshold: float = 0.70
     spread_spike_multiplier: float = 3.0   # suppress if spread > 3x session median
 
+    # ── Anthropic ─────────────────────────────────────────────
+    anthropic_api_key: str = ""
+
     # ── MLflow ────────────────────────────────────────────────
     mlflow_tracking_uri: str = "http://mlflow:5000"
 
     # ── Instruments ───────────────────────────────────────────
     instruments: list[str] = [
-        # Core 3: all run both London trend (07-12 UTC) and LCR (17-19 UTC)
-        # EUR_USD: highest liquidity, tightest spread, primary LCR pair
-        # GBP_USD: strong London directional moves, solid LCR edge
-        # USD_JPY: highest LCR PF (1.91), clean NY session behaviour
+        # Top 6 by LCR backtest (8-year, spread-adjusted, ranked by PF × DD trade-off):
+        # NZD_USD: PF 1.697, DD -18.7%, 11.6/mo — #1 overall despite being overlooked
+        # EUR_USD: PF 1.669, DD -23.6%, 13.3/mo — highest liquidity
+        # USD_CAD: PF 1.540, DD -15.2%, ~11/mo  — best risk-adjusted (lowest DD) — 0.75% risk
+        # EUR_JPY: PF 1.511, DD -18.6%, ~12/mo  — beats USD_JPY on every metric — 0.75% risk
+        # AUD_USD: PF 1.470, DD ~-20%, ~12/mo   — solid diversification
+        # GBP_USD: PF 1.434, DD -20.9%, 13.5/mo — strong London moves
         #
         # Removed:
-        #   AUD_USD  — no LCR edge; London PF marginal after spread
-        #   NZD_USD  — wide spread eats the edge
-        #   USD_CHF  — r=-0.85 with EUR_USD (redundant, no diversification)
-        #   EUR_GBP  — 15 pip/day ATR, too narrow; signal quality poor
-        #   GBP_JPY  — good ATR but no LCR edge; re-evaluate after 3 months live data
-        "EUR_USD", "GBP_USD", "USD_JPY",
+        #   USD_JPY  — PF 1.367, DD -22.8%, dominated by EUR_JPY in all metrics
+        #   USD_CHF  — PF 1.557 but DD -39.7% at 1% risk — disqualified by drawdown
+        #   GBP_JPY  — weak edge, ~PF 1.2, wide spread
+        #   NZD_USD  — re-added 2026-03-16 after backtest confirmed PF 1.697
+        "EUR_USD", "GBP_USD", "NZD_USD", "USD_CAD", "EUR_JPY", "AUD_USD",
     ]
 
     # ── Timeframes ────────────────────────────────────────────
