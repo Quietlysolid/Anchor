@@ -1,7 +1,10 @@
 """
-LLM-powered brief, debrief, and weekly synthesis generation using Claude Opus.
+LLM-powered brief, debrief, and weekly synthesis generation.
 
-Uses streaming + adaptive thinking so long synthesis tasks never time out.
+Model strategy (cost vs quality):
+  Presession / Postsession — Sonnet 4.6, no thinking (structured template, fast)
+  Weekly synthesis         — Sonnet 4.6 + adaptive thinking (cross-week reasoning)
+  Journal analysis         — Opus 4.6 + adaptive thinking (deep 90-day pattern mining)
 """
 from __future__ import annotations
 
@@ -16,7 +19,8 @@ from anchor.config import get_settings
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 
-_MODEL = "claude-opus-4-6"
+_MODEL_SONNET = "claude-sonnet-4-6"   # presession, postsession, weekly
+_MODEL_OPUS   = "claude-opus-4-6"    # journal analysis only
 
 _PRESESSION_SYSTEM = """\
 You are the intelligence layer for Anchor, an autonomous algorithmic FX trading system.
@@ -165,32 +169,60 @@ async def score_postsession(debrief_content: str) -> int:
 
 async def generate_presession_brief(context: dict[str, Any]) -> tuple[str, int]:
     """Generate London pre-session brief. Returns (content, tokens_used)."""
-    return await _generate("PRESESSION", _PRESESSION_SYSTEM, context)
+    return await _generate_fast("PRESESSION", _PRESESSION_SYSTEM, context)
 
 
 async def generate_postsession_debrief(context: dict[str, Any]) -> tuple[str, int]:
     """Generate post-London-session debrief. Returns (content, tokens_used)."""
-    return await _generate("POSTSESSION", _POSTSESSION_SYSTEM, context)
+    return await _generate_fast("POSTSESSION", _POSTSESSION_SYSTEM, context)
 
 
 async def generate_weekly_synthesis(context: dict[str, Any]) -> tuple[str, int]:
     """Generate weekly synthesis. Returns (content, tokens_used)."""
-    return await _generate("WEEKLY", _WEEKLY_SYSTEM, context)
+    return await _generate_deep("WEEKLY", _WEEKLY_SYSTEM, context, model=_MODEL_SONNET)
 
 
-async def _generate(report_type: str, system_prompt: str, context: dict[str, Any]) -> tuple[str, int]:
+async def _generate_fast(report_type: str, system_prompt: str, context: dict[str, Any]) -> tuple[str, int]:
+    """Sonnet 4.6, no extended thinking — for daily structured briefs."""
     if not settings.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY not configured")
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-
     context_str = json.dumps(context, indent=2, default=str)
     user_message = f"Live system context as of {context.get('generated_at_utc', 'now')}:\n\n{context_str}"
 
-    logger.info("intelligence_generating", report_type=report_type, context_chars=len(context_str))
+    logger.info("intelligence_generating", report_type=report_type, model=_MODEL_SONNET, context_chars=len(context_str))
+
+    response = await client.messages.create(
+        model=_MODEL_SONNET,
+        max_tokens=1200,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    content = next((b.text for b in response.content if b.type == "text"), "")
+    tokens  = response.usage.input_tokens + response.usage.output_tokens
+    logger.info("intelligence_generated", report_type=report_type, tokens=tokens, chars=len(content))
+    return content, tokens
+
+
+async def _generate_deep(
+    report_type: str,
+    system_prompt: str,
+    context: dict[str, Any],
+    model: str = _MODEL_OPUS,
+) -> tuple[str, int]:
+    """Streaming with adaptive thinking — for weekly/journal deep analysis."""
+    if not settings.anthropic_api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not configured")
+
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    context_str = json.dumps(context, indent=2, default=str)
+    user_message = f"Live system context as of {context.get('generated_at_utc', 'now')}:\n\n{context_str}"
+
+    logger.info("intelligence_generating", report_type=report_type, model=model, context_chars=len(context_str))
 
     async with client.messages.stream(
-        model=_MODEL,
+        model=model,
         max_tokens=1200,
         thinking={"type": "adaptive"},
         system=system_prompt,
@@ -198,16 +230,7 @@ async def _generate(report_type: str, system_prompt: str, context: dict[str, Any
     ) as stream:
         final = await stream.get_final_message()
 
-    content = next(
-        (block.text for block in final.content if block.type == "text"),
-        "",
-    )
-    tokens = final.usage.input_tokens + final.usage.output_tokens
-
-    logger.info(
-        "intelligence_generated",
-        report_type=report_type,
-        tokens=tokens,
-        chars=len(content),
-    )
+    content = next((b.text for b in final.content if b.type == "text"), "")
+    tokens  = final.usage.input_tokens + final.usage.output_tokens
+    logger.info("intelligence_generated", report_type=report_type, tokens=tokens, chars=len(content))
     return content, tokens
