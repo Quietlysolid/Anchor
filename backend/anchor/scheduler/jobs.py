@@ -2344,3 +2344,100 @@ def generate_weekly_synthesis(self):
     except Exception as exc:
         logger.error("weekly_synthesis_task_error", error=str(exc))
         raise self.retry(exc=exc, countdown=600)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.run_intrabar_anomaly_check", bind=True, max_retries=1)
+def run_intrabar_anomaly_check(self):
+    """
+    Hourly intrabar macro dissonance check during London session (07:05–11:05 UTC Mon–Fri).
+
+    Fetches the last 4 H1 bars per pair + macro snapshot from Redis, then asks
+    Claude Haiku whether current price action contradicts the macro backdrop.
+    Flags are written as macro_dissonance:{pair} with a 2-hour TTL — the same
+    Redis key the signal engine already reads for the -0.05 confluence penalty.
+    The postsession check at 12:30 UTC owns clearing stale flags.
+    """
+    import json as _json
+    from datetime import datetime, timezone as _tz
+    import redis.asyncio as _redis_async
+    from anchor.config import get_settings as _get_settings
+    from anchor.database.engine import AsyncSessionLocal
+    from anchor.database.repositories.market_data import MarketDataRepository
+    from anchor.intelligence.anomaly_detector import detect_intrabar_anomaly as _detect
+
+    cfg = _get_settings()
+
+    async def _inner():
+        now_utc = datetime.now(_tz.utc)
+        if not (7 <= now_utc.hour < 12):
+            logger.info("intrabar_anomaly_skipped_outside_london", hour=now_utc.hour)
+            return
+
+        redis_client = _redis_async.from_url(cfg.redis_url, decode_responses=True)
+        try:
+            # ── Macro snapshot from Redis ─────────────────────────────────────
+            async def _rget(key: str):
+                try:
+                    raw = await redis_client.get(key)
+                    return _json.loads(raw) if raw else None
+                except Exception:
+                    return None
+
+            macro: dict = {}
+            for rkey, label in [
+                ("vix_data",         "vix"),
+                ("fred_rate_diff",   "rate_differentials"),
+                ("cross_asset_risk", "cross_asset"),
+                ("cot_data",         "cot_positioning"),
+            ]:
+                val = await _rget(rkey)
+                if val is not None:
+                    macro[label] = val
+
+            surprises = {}
+            for ccy in ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "NZD"]:
+                val = await _rget(f"econ_surprise:{ccy}")
+                if val is not None:
+                    surprises[ccy] = val
+            if surprises:
+                macro["economic_surprise"] = surprises
+
+            # ── Last 4 H1 bars per pair ───────────────────────────────────────
+            pairs_bars: dict = {}
+            async with AsyncSessionLocal() as session:
+                repo = MarketDataRepository(session)
+                for pair in cfg.instruments:
+                    candles = await repo.get_latest_n_candles(pair, "H1", 4)
+                    pairs_bars[pair] = [
+                        {
+                            "time":  str(c.time),
+                            "open":  float(c.open),
+                            "high":  float(c.high),
+                            "low":   float(c.low),
+                            "close": float(c.close),
+                        }
+                        for c in candles
+                    ]
+
+            if not any(pairs_bars.values()):
+                logger.warning("intrabar_anomaly_no_candle_data")
+                return
+
+            dissonant = await _detect(pairs_bars, macro, redis_client)
+
+            if dissonant:
+                msg = (
+                    f"\u26a0\ufe0f Intrabar dissonance {now_utc.strftime('%H:%M')} UTC\n"
+                    f"Pairs: {', '.join(dissonant)}\n"
+                    f"Confluence penalty active — new entries suppressed on flagged pairs."
+                )
+                await _alerts.send_warning(msg)
+
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("intrabar_anomaly_check_task_error", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)

@@ -137,6 +137,10 @@ celery_app.conf.update(
             "schedule": 1_800.0,  # 30 min — cheap DB read, only meaningful after releases
         },
         # ── AI Intelligence Layer ────────────────────────────────────────────
+        "intrabar-anomaly-check-london-hourly": {
+            "task": "anchor.scheduler.jobs.run_intrabar_anomaly_check",
+            "schedule": crontab(hour="7-11", minute=5, day_of_week="1-5"),  # 07:05–11:05 UTC Mon–Fri
+        },
         "presession-brief-weekdays": {
             "task": "anchor.scheduler.jobs.generate_presession_brief",
             "schedule": crontab(hour=6, minute=30, day_of_week="1-5"),  # Mon–Fri 06:30 UTC
