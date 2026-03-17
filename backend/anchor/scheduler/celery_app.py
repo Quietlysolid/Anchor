@@ -42,6 +42,7 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.check_fit_weights_trigger":  {"queue": "default"},
         "anchor.scheduler.jobs.monitor_live_performance":   {"queue": "default"},
         "anchor.scheduler.jobs.assess_edge_confidence":       {"queue": "default"},
+        "anchor.scheduler.jobs.run_backtest":                  {"queue": "default"},
         "anchor.scheduler.jobs.generate_presession_brief":    {"queue": "default"},
         "anchor.scheduler.jobs.generate_postsession_debrief": {"queue": "default"},
         "anchor.scheduler.jobs.generate_weekly_synthesis":    {"queue": "default"},

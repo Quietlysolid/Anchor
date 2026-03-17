@@ -25,9 +25,12 @@ Formula:
   stop_pips = |entry - stop_loss| / pip_size
   units = risk_amount / (stop_pips * pip_value_per_unit)
 """
+import structlog
+
 from anchor.config import get_settings
 from anchor.utils.math_utils import get_pip_size
 
+logger = structlog.get_logger(__name__)
 settings = get_settings()
 MICRO_LOT = 1_000   # OANDA minimum unit
 
@@ -86,6 +89,7 @@ class PositionSizer:
         current_atr:       float | None = None,
         reference_atr:     float | None = None,
         rolling_score_scale: float = 1.0,
+        regime_scale:      float = 1.0,
     ) -> int:
         """
         Returns position size in units (OANDA native).
@@ -105,6 +109,11 @@ class PositionSizer:
         rolling_score_scale: Tier 2b rolling session score multiplier.
             0.75 when the 5-session rolling average drops below 5.0 (out of 10).
             1.0 otherwise. Reset to 1.0 each Sunday after weekly synthesis.
+
+        regime_scale: market regime multiplier derived from HMM/ATR regime classifier.
+            Trend-following (London/M15): TRENDING=1.0, RANGING=0.80, VOLATILE=0.60.
+            Mean-reversion (LCR/MR):     RANGING=1.0,  TRENDING=0.80, VOLATILE=0.60.
+            Clamped to [0.50, 1.0]. Defaults to 1.0 when regime is UNKNOWN or unavailable.
 
         current_atr / reference_atr: when both are provided, applies
         volatility-regime normalization = reference_atr / current_atr,
@@ -136,12 +145,13 @@ class PositionSizer:
             if current_atr > 1e-10 and reference_atr > 1e-10:
                 vol_scale = max(0.5, min(1.5, reference_atr / current_atr))
 
-        # Scale factors (correlation, drawdown, VIX, news proximity, session quality, rolling score, volatility regime)
+        # Scale factors (correlation, drawdown, VIX, news proximity, session quality, rolling score, volatility regime, market regime)
         vix_scale           = max(0.25, min(1.0, vix_scale))           # clamp to safe range
         news_scale          = max(0.25, min(1.0, news_scale))           # clamp to safe range
         session_scale       = max(0.50, min(1.0, session_scale))        # clamp to safe range
         rolling_score_scale = max(0.75, min(1.0, rolling_score_scale))  # clamp: floor 0.75, no upside
-        units_scaled = units_raw * correlation_scale * drawdown_scale * vix_scale * news_scale * session_scale * rolling_score_scale * vol_scale
+        regime_scale        = max(0.50, min(1.0, regime_scale))         # clamp: floor 0.50, never upsize
+        units_scaled = units_raw * correlation_scale * drawdown_scale * vix_scale * news_scale * session_scale * rolling_score_scale * vol_scale * regime_scale
 
         # Snap to micro-lot boundary
         units = int(units_scaled // MICRO_LOT) * MICRO_LOT
@@ -154,7 +164,20 @@ class PositionSizer:
             max_units_by_notional = (max_units_by_notional // MICRO_LOT) * MICRO_LOT
             units = min(units, max(max_units_by_notional, MICRO_LOT))
 
-        return max(units, MICRO_LOT)
+        final = max(units, MICRO_LOT)
+        logger.debug(
+            "position_sized",
+            instrument=instrument,
+            units=final,
+            risk_pct=round(settings.max_risk_per_trade * 100, 2),
+            stop_pips=round(stop_pips, 1),
+            vol_scale=round(vol_scale, 3),
+            vix_scale=round(vix_scale, 3),
+            drawdown_scale=round(drawdown_scale, 3),
+            session_scale=round(session_scale, 3),
+            regime_scale=round(regime_scale, 3),
+        )
+        return final
 
     def compute_units(
         self,

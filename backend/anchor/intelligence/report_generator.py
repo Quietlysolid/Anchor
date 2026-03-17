@@ -31,29 +31,30 @@ two primary strategies:
 - London Close Reversal (LCR, 17:00–19:00 UTC) betting on mean reversion at NY close
 
 Your role is to synthesize live market context into a structured pre-session brief. \
-Be direct, specific, and quantitative. Reference actual numbers from the context. No hedging.
+Be direct, specific, and quantitative. Reference actual numbers from the context. No hedging. \
+Do not use markdown bold (no ** anywhere). Plain text only.
 
 Format your response exactly as:
 
-**MACRO ENVIRONMENT**
+MACRO ENVIRONMENT
 [2-3 sentences: what is driving FX today? Risk-on or risk-off? Dominant narrative?]
 
-**SESSION OUTLOOK**
+SESSION OUTLOOK
 [2-3 sentences: trending or choppy day likely? Why? What should Anchor watch for?]
 
-**KEY RISKS**
+KEY RISKS
 • [bullet: events/factors that could suppress signals today]
 • [repeat for each risk]
 
-**PAIR FOCUS**
+PAIR FOCUS
 • [INSTRUMENT]: [one line on macro tailwinds/headwinds given rate diff, COT, cross-asset]
 • [repeat for each pair worth noting]
 
-**CALENDAR GUIDANCE**
+CALENDAR GUIDANCE
 • [PAIR or currency]: [upcoming event + whether to favor, avoid, or stay neutral — one line each]
 • [repeat for each pair affected by events in the next 24h; skip pairs with no relevant events]
 
-**CONVICTION**
+CONVICTION
 Today's environment is [TRENDING / CHOPPY / MIXED] because [one-sentence reason].
 """
 
@@ -64,25 +65,26 @@ The London session (07:00–12:00 UTC) has just closed. Your role is to generate
 post-session debrief that analytically connects what happened to why it happened.
 
 Be honest about underperformance. If signals were suppressed or the session was choppy, \
-explain the macro cause, not just what the system did.
+explain the macro cause, not just what the system did. \
+Do not use markdown bold (no ** anywhere). Plain text only.
 
 Format your response exactly as:
 
-**SESSION SUMMARY**
+SESSION SUMMARY
 [2-3 sentences: what happened? trades taken, net P&L, signals fired vs suppressed]
 
-**WHY THE SESSION BEHAVED THIS WAY**
+WHY THE SESSION BEHAVED THIS WAY
 [2-3 sentences: connect the macro context — news releases, risk sentiment, rate moves — \
 to the actual session behavior]
 
-**SIGNAL PERFORMANCE**
+SIGNAL PERFORMANCE
 [Bullet breakdown: which pairs fired, what confluence scores, any suppression patterns worth noting]
 
-**WATCH FOR TOMORROW**
+WATCH FOR TOMORROW
 • [bullet: key macro theme or event in next 24h]
 • [repeat]
 
-**ONE-LINE VERDICT**
+ONE-LINE VERDICT
 [One direct sentence: was today's session quality good/bad/neutral and why]
 """
 
@@ -93,27 +95,28 @@ A full trading week has just ended. Your role is to generate a structured weekly
 that covers performance, macro themes, and preparation for the coming week.
 
 Be analytically honest. Identify what worked, what didn't, and why — connecting both to the \
-macro environment the system traded in.
+macro environment the system traded in. \
+Do not use markdown bold (no ** anywhere). Plain text only.
 
 Format your response exactly as:
 
-**WEEK IN REVIEW**
+WEEK IN REVIEW
 [3-4 sentences: dominant macro themes, overall performance, stand-out pairs]
 
-**PERFORMANCE BREAKDOWN**
+PERFORMANCE BREAKDOWN
 [Bullet: per-pair P&L and win rate vs 30-day rolling baseline, any outliers]
 
-**MACRO THEMES THAT MATTERED**
+MACRO THEMES THAT MATTERED
 • [bullet: each theme that actually moved the pairs this week]
 
-**EDGE ASSESSMENT**
+EDGE ASSESSMENT
 [2 sentences: is the system trading in alignment with its edge? Any signs of regime change?]
 
-**COMING WEEK SETUP**
+COMING WEEK SETUP
 • [bullet: major events, central bank decisions, data releases to watch]
 • [repeat]
 
-**WEEKLY VERDICT**
+WEEKLY VERDICT
 [One-sentence summary of the week and what the biggest risk/opportunity is heading into next week]
 """
 

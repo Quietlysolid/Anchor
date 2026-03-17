@@ -180,13 +180,39 @@ def _collect_live_trades() -> pd.DataFrame:
     return df
 
 
-def _fit(df: pd.DataFrame, C: float = 1.0) -> dict[str, float]:
+def _compute_time_weights(df: pd.DataFrame, half_life_days: float = 90.0) -> np.ndarray:
+    """Exponential decay weights: recent trades count more.
+
+    weight = exp(-ln(2) / half_life_days * age_days)
+
+    A trade closed today has weight 1.0; one closed half_life_days ago has weight 0.5.
+    Requires a 'closed_at' column (datetime). Falls back to uniform weights if absent.
+    """
+    if "closed_at" not in df.columns:
+        return np.ones(len(df))
+
+    now = pd.Timestamp.utcnow().tz_localize(None)
+    closed = pd.to_datetime(df["closed_at"], utc=True).dt.tz_localize(None)
+    age_days = (now - closed).dt.total_seconds() / 86400.0
+    age_days = age_days.clip(lower=0.0).values
+
+    lam = np.log(2.0) / half_life_days
+    weights = np.exp(-lam * age_days)
+    # Normalize so weights sum to len(df) — keeps effective sample size interpretable
+    weights = weights / weights.mean()
+    return weights.astype(float)
+
+
+def _fit(df: pd.DataFrame, C: float = 1.0, sample_weight: np.ndarray | None = None) -> dict[str, float]:
     """
     Fit L1 logistic regression. Returns normalized weights dict.
 
     The scaler is applied so all features have equal variance before
     regularization — prevents L1 from penalizing small-scale components
     (e.g., mtf_score which has low variance) unfairly.
+
+    sample_weight: per-sample weights (e.g. from _compute_time_weights).
+        None = uniform weights (original behaviour).
     """
     feature_cols = list(COMPONENT_MAP.keys())
     X = df[feature_cols].fillna(0.0).values
@@ -203,10 +229,11 @@ def _fit(df: pd.DataFrame, C: float = 1.0) -> dict[str, float]:
         random_state=42,
         class_weight="balanced",   # handle slight class imbalance
     )
-    clf.fit(X_sc, y)
+    clf.fit(X_sc, y, sample_weight=sample_weight)
 
     # Cross-validation accuracy (5-fold)
-    cv_scores = cross_val_score(clf, X_sc, y, cv=5, scoring="accuracy")
+    cv_scores = cross_val_score(clf, X_sc, y, cv=5, scoring="accuracy",
+                                 fit_params={"sample_weight": sample_weight} if sample_weight is not None else {})
     print(f"\n  Cross-validation accuracy: {cv_scores.mean():.3f} ± {cv_scores.std():.3f}")
     print(f"  Breakeven accuracy for this R:R: {1/(1 + 2.0/1.5):.3f}  (need to beat this)")
 
@@ -379,6 +406,19 @@ def main() -> None:
         help="Automatically patch WEIGHTS in engine.py and CURRENT_WEIGHTS in this file, "
              "and write an audit event to the system_events table.",
     )
+    parser.add_argument(
+        "--time-weighted",
+        action="store_true",
+        help="Apply exponential decay to sample weights so recent trades count more. "
+             "Use --half-life to tune the decay rate. Only meaningful with --live-trades.",
+    )
+    parser.add_argument(
+        "--half-life",
+        type=float,
+        default=90.0,
+        help="Half-life in days for time-weighted mode. A trade closed N days ago has "
+             "weight exp(-ln(2)/half_life * N). Default: 90 days.",
+    )
     args = parser.parse_args()
 
     instruments = [i.strip() for i in args.instruments.split(",")]
@@ -391,7 +431,9 @@ def main() -> None:
 
     if args.live_trades:
         source = "live_trades"
-        print("  Mode        : LIVE TRADES (PostgreSQL OOS validation)")
+        tw_note = f"  (half-life {args.half_life}d)" if args.time_weighted else ""
+        print(f"  Mode        : LIVE TRADES (PostgreSQL OOS validation){tw_note}")
+        print(f"  Time-weight : {'YES — recent trades weighted higher' if args.time_weighted else 'NO — uniform weights'}")
         print(f"  Minimum     : {_MIN_LIVE_TRADES} trades required")
         print(f"  L1 strength : C={args.C}")
         print(f"  Engine path : {engine_path}")
@@ -442,7 +484,12 @@ def main() -> None:
             print(f"    {inst:<12}  {len(grp):>4} trades  WR {wins/len(grp)*100:.1f}%")
 
     print("\nStep 2 — Fitting L1 logistic regression...")
-    new_weights = _fit(df, C=args.C)
+    sample_weight = None
+    if getattr(args, "time_weighted", False):
+        sample_weight = _compute_time_weights(df, half_life_days=args.half_life)
+        eff_n = float(np.sum(sample_weight) ** 2 / np.sum(sample_weight ** 2))
+        print(f"  Time-weighting applied (half-life={args.half_life}d, effective N≈{eff_n:.0f})")
+    new_weights = _fit(df, C=args.C, sample_weight=sample_weight)
 
     print("\nStep 3 — Results")
     _compare(new_weights)

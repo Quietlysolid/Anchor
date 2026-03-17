@@ -1,0 +1,40 @@
+# Prod overrides — immutable baked images, tighter logging, no exposed ports
+# Usage: ./deploy.sh
+# Never use volume mounts for code here — the image IS the deployment artifact
+
+services:
+
+  engine:
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  celery_worker:
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  celery_beat:
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  watchdog:
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  frontend:
+    restart: always

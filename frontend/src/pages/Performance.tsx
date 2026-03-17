@@ -1,5 +1,6 @@
 import { usePerformance, useMonteCarlo, useEquityCurve, useLatestPerfCheck } from '../api/hooks'
 import { EquityCurveChart } from '../components/charts/EquityCurveChart'
+import { CorrelationPanel } from '../components/panels/CorrelationPanel'
 import { RefreshCw } from 'lucide-react'
 import { useWeightsStore } from '../store'
 import type { PerfCheckSummary } from '../types'
@@ -323,6 +324,9 @@ export default function Performance() {
           </div>
         )}
       </div>
+
+      {/* ── Correlation guard ── */}
+      <CorrelationPanel />
     </div>
   )
 }

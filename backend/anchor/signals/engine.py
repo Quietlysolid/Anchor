@@ -204,6 +204,7 @@ class ConfluenceEngine:
         ablation_cme_gate:       bool = True,   # False → CME conflict never hard-blocks
         ablation_econ_surprise:  bool = True,   # False → skip economic surprise signal
         ablation_cross_asset:    bool = True,   # False → skip cross-asset risk sentiment
+        confluence_threshold:    float | None = None,  # overrides settings.min_confluence_score
     ):
         self.news_filter      = news_filter or NewsFilter()
         self.spread_monitor   = spread_monitor
@@ -233,6 +234,7 @@ class ConfluenceEngine:
         self._abl_cme_gate       = ablation_cme_gate
         self._abl_econ_surprise  = ablation_econ_surprise
         self._abl_cross_asset    = ablation_cross_asset
+        self._confluence_threshold = confluence_threshold
 
     async def evaluate(
         self,
@@ -665,7 +667,8 @@ class ConfluenceEngine:
         # CHOPPY   → raises threshold (e.g. 0.72 + 0.06 = 0.78) to demand higher conviction.
         # MIXED    → no change (adjustment = 0.0).
         # Falls back to base threshold when session_quality key is missing.
-        _effective_threshold = settings.min_confluence_score + _sq_threshold_adj
+        _base = self._confluence_threshold if self._confluence_threshold is not None else settings.min_confluence_score
+        _effective_threshold = _base + _sq_threshold_adj
         result.metadata["effective_threshold"] = round(_effective_threshold, 4)
         if confluence < _effective_threshold:
             result.suppression_reason = f"LOW_CONFLUENCE:{confluence:.3f}"

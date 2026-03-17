@@ -35,10 +35,10 @@ Threshold: 0.55 (lower than trend engine — LCR entry point is already at an
 extreme, making it structurally cleaner. Entry confirmation via RSI + rejection
 provides sufficient quality gate.)
 
-Allowed instruments: EUR_USD, GBP_USD, USD_JPY
-  - These have the highest London-close reversal effect (most London-driven)
-  - GBP_JPY excluded: Asian session (not London) primarily drives JPY
-  - NZD_USD excluded: insufficient NY liquidity, wide spread costs eat edge
+Allowed instruments: derived from config.instruments (currently EUR_USD, GBP_USD,
+  NZD_USD, USD_CAD, EUR_JPY, AUD_USD). Previously included USD_JPY, USD_CHF,
+  GBP_JPY — all removed after 8-year backtest (DD disqualifiers or weak edge).
+  LCR_INSTRUMENTS is now `set(settings.instruments)` — edit config.py to change.
 
 Session window: 17:00–19:59 UTC (bars opening at 17, 18, 19)
   - 17:00 = first bar after London close → strongest initial reversal signal
@@ -70,7 +70,7 @@ settings = get_settings()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-LCR_INSTRUMENTS = {"EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "EUR_JPY", "GBP_JPY", "NZD_USD", "USD_CHF"}
+LCR_INSTRUMENTS = set(settings.instruments)  # derived from config — single source of truth
 
 LCR_CONFLUENCE_THRESHOLD = 0.55
 

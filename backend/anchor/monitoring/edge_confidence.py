@@ -37,7 +37,6 @@ Usage (from Celery task):
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -46,10 +45,13 @@ import numpy as np
 import pandas as pd
 import structlog
 
+from anchor.config import get_settings
+
 logger = structlog.get_logger(__name__)
+settings = get_settings()
 
 # ── Active pairs ──────────────────────────────────────────────────────────────
-_ACTIVE_PAIRS = ["EUR_USD", "GBP_USD", "NZD_USD", "USD_CAD", "EUR_JPY", "AUD_USD"]
+_ACTIVE_PAIRS = settings.instruments  # derived from config — edit config.py to change
 
 # Pairs that should be strongly correlated under normal conditions
 _CORRELATION_PAIRS = [

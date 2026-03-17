@@ -32,10 +32,10 @@ function FactorBar({ label, desc, score }: { label: string; desc: string; score:
   return (
     <div className="group" title={desc}>
       <div className="flex justify-between items-center mb-0.5">
-        <span className="text-[11px] text-muted-foreground group-hover:text-foreground transition-colors">{label}</span>
-        <span className={`text-[11px] font-mono tabular-nums ${txtColor}`}>{score !== null ? `${pct}%` : '—'}</span>
+        <span className="text-[10px] text-muted-foreground group-hover:text-foreground transition-colors truncate pr-1">{label}</span>
+        <span className={`text-[10px] font-mono tabular-nums shrink-0 ${txtColor}`}>{score !== null ? `${pct}%` : '—'}</span>
       </div>
-      <div className="h-1 bg-muted rounded-full overflow-hidden">
+      <div className="h-0.5 bg-muted rounded-full overflow-hidden">
         <div className={`h-full rounded-full transition-all duration-300 ${barColor}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -115,21 +115,17 @@ export function SignalScoringPanel({ instrument }: Props) {
   const factors     = isLCR ? LCR_FACTORS : LONDON_FACTORS
 
   return (
-    <div className="bg-card rounded-lg p-4 border border-border h-full flex flex-col gap-3">
+    <div className="bg-card rounded-lg p-3 border border-border h-full flex flex-col gap-2.5">
 
       {/* ── Header ── */}
-      <div>
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-sm font-semibold">All Signals</h3>
-          <span className="text-xs text-primary font-mono">{selected.replace('_', '/')}</span>
-        </div>
-        <p className="text-[11px] text-muted-foreground/60 mt-0.5">
-          Live setup scores — breakdown updates when you switch pairs above
-        </p>
+      <div className="flex items-baseline gap-2">
+        <h3 className="text-sm font-semibold">All Signals</h3>
+        <span className="text-xs text-primary font-mono">{selected.replace('_', '/')}</span>
+        <span className="text-[10px] text-muted-foreground/40 ml-auto">breakdown updates on pair switch</span>
       </div>
 
       {/* ── Overview: all pairs ── */}
-      <div className="space-y-0.5">
+      <div className="space-y-px">
         {instruments.map(instr => (
           <PairRow
             key={instr}
@@ -157,36 +153,36 @@ export function SignalScoringPanel({ instrument }: Props) {
         </div>
       )}
       {latest && (
-        <div className="flex flex-col gap-2.5 pt-3 border-t border-border">
+        <div className="flex flex-col gap-2 pt-2 border-t border-border">
 
           {/* Status + direction */}
           {suppressed ? (
-            <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground leading-relaxed">
+            <div className="rounded bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground leading-relaxed">
               <span className="font-medium text-foreground/60">{selected.replace('_', '/')} — not trading: </span>
               {suppressionText(latest.suppression_reason)}
             </div>
           ) : (
-            <div className={`rounded-lg px-3 py-2.5 flex items-center gap-2.5 ${
+            <div className={`rounded px-2.5 py-2 flex items-center gap-2 ${
               latest.direction === 'LONG'
                 ? 'bg-green-400/10 border border-green-400/20'
                 : 'bg-red-400/10 border border-red-400/20'
             }`}>
-              <span className={`text-xl font-bold ${latest.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>
+              <span className={`text-base font-bold ${latest.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>
                 {latest.direction === 'LONG' ? '↑' : '↓'}
               </span>
-              <div className="flex-1">
-                <div className="text-sm font-bold">
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-bold">
                   {latest.direction === 'LONG' ? 'Buy' : 'Sell'} {selected.replace('_', '/')}
                 </div>
-                <div className="text-[10px] text-muted-foreground/60">
+                <div className="text-[10px] text-muted-foreground/60 truncate">
                   {passes
                     ? 'Score is high enough — system may place this trade'
-                    : `Needs ${needed} more points to trigger (${scorePct}% of ${threshPct}% required)`
+                    : `Needs ${needed} more points (${scorePct}% of ${threshPct}% required)`
                   }
                 </div>
               </div>
               <div className="text-right shrink-0">
-                <div className={`text-lg font-bold font-mono ${passes ? 'text-green-400' : 'text-amber-400'}`}>
+                <div className={`text-base font-bold font-mono ${passes ? 'text-green-400' : 'text-amber-400'}`}>
                   {scorePct}%
                 </div>
                 <div className="text-[10px] text-muted-foreground/40">of {threshPct}%</div>
@@ -213,11 +209,13 @@ export function SignalScoringPanel({ instrument }: Props) {
           )}
 
           {/* Factor breakdown */}
-          <div className="space-y-1.5">
-            <p className="text-[10px] text-muted-foreground/40 uppercase tracking-wider">What the system checked</p>
-            {factors.map(({ key, label, desc }) => (
-              <FactorBar key={String(key)} label={label} desc={desc} score={(latest as any)[key] ?? null} />
-            ))}
+          <div>
+            <p className="text-[10px] text-muted-foreground/40 uppercase tracking-wider mb-1.5">What the system checked</p>
+            <div className={`gap-x-3 gap-y-1.5 ${factors.length > 5 ? 'grid grid-cols-2' : 'flex flex-col'}`}>
+              {factors.map(({ key, label, desc }) => (
+                <FactorBar key={String(key)} label={label} desc={desc} score={(latest as any)[key] ?? null} />
+              ))}
+            </div>
           </div>
 
           {/* LCR range */}

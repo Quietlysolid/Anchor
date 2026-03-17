@@ -5,7 +5,8 @@ Replays historical H1 candle data through LondonCloseReversionEngine — the sam
 logic used in live trading. Produces WR, PF, monthly return, and drawdown stats.
 
 Only fires on bars with open hour 17, 18, or 19 UTC (NY session window).
-Allowed instruments: EUR_USD, GBP_USD, USD_JPY.
+Active instruments (see config.py): EUR_USD, GBP_USD, NZD_USD, USD_CAD, EUR_JPY, AUD_USD.
+Spread/swap/risk dicts below also include decommissioned pairs for historical analysis.
 
 Usage:
     python -m anchor.backtesting.lcr_backtest \\
@@ -13,8 +14,8 @@ Usage:
         --h1-csv  data/EUR_USD_H1.csv \\
         --balance 10000
 
-    # All LCR pairs
-    for pair in EUR_USD GBP_USD USD_JPY; do
+    # All active LCR pairs
+    for pair in EUR_USD GBP_USD NZD_USD USD_CAD EUR_JPY AUD_USD; do
         python -m anchor.backtesting.lcr_backtest \\
             --instrument $pair \\
             --h1-csv data/${pair}_H1.csv
@@ -31,7 +32,7 @@ import numpy as np
 import pandas as pd
 import structlog
 
-from anchor.signals.london_close_reversion import LondonCloseReversionEngine, LCR_INSTRUMENTS
+from anchor.signals.london_close_reversion import LondonCloseReversionEngine
 from anchor.utils.math_utils import get_pip_size
 
 logger = structlog.get_logger(__name__)
@@ -105,7 +106,7 @@ class LCRBacktestEngine:
         start: str | None = None,
         end: str | None = None,
     ) -> dict:
-        if instrument not in LCR_INSTRUMENTS:
+        if instrument not in _SPREAD_COST:
             return {"error": f"LCR not defined for {instrument}", "trades": [], "stats": {}}
 
         if start:
@@ -312,7 +313,7 @@ def main():
     parser.add_argument("--end",     default=None)
     args = parser.parse_args()
 
-    _BACKTEST_INSTRUMENTS = LCR_INSTRUMENTS
+    _BACKTEST_INSTRUMENTS = set(_SPREAD_COST.keys())
     if args.instrument not in _BACKTEST_INSTRUMENTS:
         print(f"LCR backtest supports: {', '.join(sorted(_BACKTEST_INSTRUMENTS))}")
         return

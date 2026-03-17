@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react'
-// npm install react-router-dom @types/react-router-dom
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { Menu } from 'lucide-react'
+import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Sidebar } from './components/layout/Sidebar'
-import Dashboard   from './pages/Dashboard'
-import Performance from './pages/Performance'
-import Journal     from './pages/Journal'
-import Backtest    from './pages/Backtest'
-import Settings    from './pages/Settings'
-import { wsClient } from './api/websocket'
+import { DisconnectedBanner } from './components/layout/DisconnectedBanner'
+import Cockpit      from './pages/Cockpit'  // exports as Dashboard internally
+import Intelligence from './pages/Intelligence'
+import Trades       from './pages/Trades'
+import { wsClient }  from './api/websocket'
 import { useLatestSignals, useRegime, usePositions } from './api/hooks'
 import { useMarketStore, useSystemStore, useSignalStore, usePositionStore, useWeightsStore } from './store'
 import type { LivePrice, Signal, Position } from './types'
@@ -20,29 +19,24 @@ function WsBootstrap() {
   const setPositions  = usePositionStore(s => s.setPositions)
   const fetchWeights  = useWeightsStore(s => s.fetchWeights)
   const queryClient   = useQueryClient()
-  const { data: seedSignals  } = useLatestSignals()
-  const { data: seedRegime   } = useRegime()
+  const { data: seedSignals   } = useLatestSignals()
+  const { data: seedRegime    } = useRegime()
   const { data: seedPositions } = usePositions()
 
-  // Fetch signal weights once on load
   useEffect(() => { fetchWeights() }, [])
 
-  // Seed signal store from REST on page load (before first WS event arrives)
   useEffect(() => {
-    if (seedSignals && seedSignals.length > 0) {
-      const store = useSignalStore.getState()
-      if (store.signals.length === 0) seedSignals.forEach(s => pushSignal(s))
+    if (seedSignals?.length && useSignalStore.getState().signals.length === 0) {
+      seedSignals.forEach(s => pushSignal(s))
     }
   }, [seedSignals])
 
-  // Seed regime store from REST on page load
   useEffect(() => {
     if (seedRegime && Object.keys(seedRegime).length > 0) {
       if (Object.keys(useSystemStore.getState().currentRegime).length === 0) setRegime(seedRegime)
     }
   }, [seedRegime])
 
-  // Seed position store from REST on page load (WS takes over after first broadcast)
   useEffect(() => {
     if (seedPositions && usePositionStore.getState().positions.length === 0) {
       setPositions(seedPositions)
@@ -64,7 +58,6 @@ function WsBootstrap() {
       }),
       wsClient.on('positions', (d) => {
         setPositions(d as Position[])
-        // A position change means trades closed/opened — invalidate perf data
         queryClient.invalidateQueries({ queryKey: ['performance'] })
         queryClient.invalidateQueries({ queryKey: ['trade-journal'] })
         queryClient.invalidateQueries({ queryKey: ['equity-curve'] })
@@ -85,14 +78,23 @@ function WsBootstrap() {
 }
 
 function Layout() {
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen]     = useState(false)
+  const [bannerDismissed, setBannerDismissed] = useState(false)
+  const { wsConnected } = useSystemStore()
   const location = useLocation()
 
-  // Close sidebar on navigation
   useEffect(() => { setSidebarOpen(false) }, [location.pathname])
+  useEffect(() => { if (wsConnected) setBannerDismissed(false) }, [wsConnected])
+
+  const showBanner = !wsConnected && !bannerDismissed
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-anchor-void">
+      <DisconnectedBanner
+        visible={showBanner}
+        onDismiss={() => setBannerDismissed(true)}
+      />
+
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -108,31 +110,35 @@ function Layout() {
       </div>
 
       {/* Main */}
-      <main className="flex-1 overflow-y-auto min-w-0">
+      <main className={`flex-1 overflow-y-auto min-w-0 transition-all ${showBanner ? 'pt-9' : ''}`}>
         {/* Mobile top bar */}
-        <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-3 bg-background border-b border-border md:hidden">
+        <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-3 bg-anchor-void border-b border-anchor-border md:hidden">
           <button
             type="button"
             onClick={() => setSidebarOpen(true)}
-            className="text-muted-foreground hover:text-foreground p-1"
-            aria-label="Open menu"
+            className="text-anchor-muted hover:text-anchor-text p-1"
           >
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-              <rect y="3" width="20" height="2" rx="1"/>
-              <rect y="9" width="20" height="2" rx="1"/>
-              <rect y="15" width="20" height="2" rx="1"/>
-            </svg>
+            <Menu size={18} />
           </button>
-          <span className="text-primary text-lg">⚓</span>
-          <span className="font-bold text-sm tracking-tight">ANCHOR</span>
+          {/* Anchor mark — identical to sidebar */}
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" className="text-anchor-green">
+            <circle cx="10" cy="4"  r="2.2" stroke="currentColor" strokeWidth="1.5"/>
+            <line x1="10" y1="6.2"  x2="10"  y2="17"  stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            <line x1="5"  y1="8.8"  x2="15"  y2="8.8"  stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            <path d="M10 17 Q 5.5 17.5 4.5 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none"/>
+            <path d="M10 17 Q 14.5 17.5 15.5 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none"/>
+          </svg>
+          <span className="font-mono font-semibold text-sm tracking-[0.15em] text-anchor-text">ANCHOR</span>
         </div>
 
         <Routes>
-          <Route path="/"            element={<Dashboard />} />
-          <Route path="/performance" element={<Performance />} />
-          <Route path="/journal"     element={<Journal />} />
-          <Route path="/backtest"    element={<Backtest />} />
-          <Route path="/settings"    element={<Settings />} />
+          <Route path="/"             element={<Cockpit />} />
+          <Route path="/intelligence" element={<Intelligence />} />
+          <Route path="/trades"       element={<Trades />} />
+          {/* Legacy redirects */}
+          <Route path="/performance"  element={<Navigate to="/trades" replace />} />
+          <Route path="/journal"      element={<Navigate to="/intelligence" replace />} />
+          <Route path="/settings"     element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>

@@ -1,31 +1,35 @@
-# Development overrides — hot reload, exposed ports, volume mounts
-# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Dev overrides — live-mount backend source so code changes take effect on restart
+# Usage: ./dev.sh up -d
+# To apply a change: ./dev.sh restart engine   (or celery_worker, celery_beat, watchdog)
 
 services:
 
   engine:
+    environment:
+      - LOG_LEVEL=debug
     volumes:
-      - ./backend:/app     # live code reload
-      - mlflow_artifacts:/app/mlflow_artifacts
+      - ./backend/anchor:/app/anchor
+    # Hot-reload on file change
     command: uvicorn anchor.main:app --host 0.0.0.0 --port 8000 --reload
-    ports:
-      - "8000:8000"        # expose directly in dev
 
   celery_worker:
+    environment:
+      - LOG_LEVEL=debug
     volumes:
-      - ./backend:/app
+      - ./backend/anchor:/app/anchor
 
-  frontend:
+  celery_beat:
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    command: npm run dev -- --host 0.0.0.0
-    ports:
-      - "5173:5173"        # Vite dev server port
+      - ./backend/anchor:/app/anchor
 
+  watchdog:
+    volumes:
+      - ./backend/anchor:/app/anchor
+
+  # Expose DB and Redis directly in dev for local tooling (TablePlus, redis-cli, etc.)
   db:
     ports:
-      - "5432:5432"        # expose for local DB tools in dev
+      - "5432:5432"
 
   redis:
     ports:

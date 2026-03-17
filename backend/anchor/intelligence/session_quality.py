@@ -30,7 +30,7 @@ _MODEL = "claude-sonnet-4-6"   # Sonnet for latency; this is a structured task n
 _REDIS_KEY = "session_quality"
 _TTL_SECONDS = 28_800           # 8 hours
 
-_ACTIVE_PAIRS = ["EUR_USD", "GBP_USD", "NZD_USD", "USD_CAD", "EUR_JPY", "AUD_USD"]
+_ACTIVE_PAIRS = settings.instruments  # derived from config — edit config.py to change
 
 _SYSTEM = """\
 You are the risk management layer for Anchor, an autonomous FX trading system.

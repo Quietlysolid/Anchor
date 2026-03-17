@@ -12,8 +12,8 @@ Usage:
         --d-csv   data/EUR_USD_D.csv \\
         --balance 10000
 
-    # All pairs
-    for pair in EUR_USD GBP_USD USD_JPY AUD_USD USD_CAD NZD_USD USD_CHF EUR_GBP GBP_JPY; do
+    # All active pairs
+    for pair in EUR_USD GBP_USD NZD_USD USD_CAD EUR_JPY AUD_USD; do
         python -m anchor.backtesting.mr_backtest \\
             --instrument $pair \\
             --h1-csv data/${pair}_H1.csv \\

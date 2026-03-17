@@ -2,14 +2,10 @@ import { useState, useEffect } from 'react'
 import { CandlestickChart } from '../components/charts/CandlestickChart'
 import { SignalScoringPanel } from '../components/panels/SignalScoringPanel'
 import { RegimePanel } from '../components/panels/RegimePanel'
-import { RiskMetricsPanel } from '../components/panels/RiskMetricsPanel'
 import { EconomicCalendarPanel } from '../components/panels/EconomicCalendarPanel'
-import { MarketContextPanel } from '../components/panels/MarketContextPanel'
-import { CorrelationPanel } from '../components/panels/CorrelationPanel'
-import { EdgeConfidencePanel } from '../components/panels/EdgeConfidencePanel'
 import { IntelligenceBriefPanel } from '../components/panels/IntelligenceBriefPanel'
 import { PositionsTable } from '../components/tables/PositionTable'
-import { useCandles, useTradeJournal } from '../api/hooks'
+import { useCandles, useTradeJournal, useEdgeConfidence, useMarketContext, usePerformance } from '../api/hooks'
 import { useMarketStore, useSignalStore, useWeightsStore } from '../store'
 import { suppressionText } from '../utils/session'
 
@@ -99,10 +95,82 @@ function MacroBadge({ label, score }: { label: string; score: number | null }) {
   )
 }
 
+// ── Status strip: edge confidence + drawdown + market flags ──────────────────
+
+function StatusStrip() {
+  const { data: edge }   = useEdgeConfidence()
+  const { data: ctx }    = useMarketContext()
+  const { data: perf }   = usePerformance()
+  const thresholds       = useWeightsStore(s => s.thresholds)
+
+  const conf = edge?.confidence ?? null
+  const confCfg = conf === 'HIGH'
+    ? { text: 'text-green-400', bg: 'bg-green-400/10', dot: 'bg-green-500' }
+    : conf === 'REDUCED'
+    ? { text: 'text-amber-400', bg: 'bg-amber-400/10', dot: 'bg-amber-400 animate-pulse' }
+    : conf === 'LOW'
+    ? { text: 'text-red-400',   bg: 'bg-red-400/10',   dot: 'bg-red-500 animate-pulse' }
+    : null
+
+  const dd = perf?.max_drawdown_pct ?? 0
+  const ddPct = Math.round(Math.abs(dd) * 100)
+  const ddColor = ddPct >= Math.round(thresholds.london * 100 * 2)
+    ? 'text-red-400' : ddPct >= 5 ? 'text-amber-400' : 'text-muted-foreground/60'
+
+  const vix = ctx?.vix?.vix ?? null
+  const dxy = ctx?.dxy ?? null
+  const vixFlag = vix !== null && vix >= 25
+  const dxyFlag = dxy !== null && Math.abs(dxy.change_5d_pct) > 1.5
+  const flagCount = (vixFlag ? 1 : 0) + (dxyFlag ? 1 : 0)
+
+  return (
+    <div className="flex items-center gap-2.5 text-[11px]">
+      {/* Edge confidence */}
+      {confCfg && conf && (
+        <span className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-medium ${confCfg.text} ${confCfg.bg}`}>
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${confCfg.dot}`} />
+          Edge {conf}
+        </span>
+      )}
+
+      {/* Drawdown — only show if meaningful */}
+      {ddPct >= 2 && (
+        <>
+          <span className="text-border">·</span>
+          <span className={`font-mono ${ddColor}`}>DD {ddPct}%</span>
+        </>
+      )}
+
+      {/* Market flags */}
+      {flagCount > 0 && (
+        <>
+          <span className="text-border">·</span>
+          <span className="text-amber-400/80 flex items-center gap-1">
+            <span>⚠</span>
+            {vixFlag && <span>VIX {vix?.toFixed(0)}</span>}
+            {vixFlag && dxyFlag && <span className="text-border">/</span>}
+            {dxyFlag && <span>DXY {dxy!.change_5d_pct > 0 ? '+' : ''}{dxy!.change_5d_pct.toFixed(1)}%</span>}
+            <span className="text-amber-400/50">— reduced size</span>
+          </span>
+        </>
+      )}
+
+      {/* All clear */}
+      {flagCount === 0 && conf === 'HIGH' && ddPct < 2 && (
+        <>
+          <span className="text-border">·</span>
+          <span className="text-muted-foreground/40">all clear</span>
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function Dashboard() {
-  const [pair, setPair] = useState('EUR_USD')
-  const [tf,   setTf]   = useState('1h')
-  const [now,  setNow]  = useState(() => new Date())
+  const [pair,        setPair]        = useState('EUR_USD')
+  const [tf,          setTf]          = useState('1h')
+  const [now,         setNow]         = useState(() => new Date())
+  const [briefOpen,   setBriefOpen]   = useState(false)
   const { data: candles } = useCandles(pair, tf)
   const { data: trades  } = useTradeJournal()
   const prices      = useMarketStore(s => s.prices)
@@ -118,13 +186,17 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">Live Dashboard</h1>
+
+      {/* ── Header ── */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-xl font-bold">Live Dashboard</h1>
+          <StatusStrip />
+        </div>
         <SessionClock now={now} />
       </div>
 
-      {/* ── Pair selector — governs both chart and signal breakdown ── */}
+      {/* ── Pair selector ── */}
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[11px] text-muted-foreground/50 mr-0.5">Pair</span>
         {instruments.map(i => (
@@ -139,11 +211,9 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* ── Top section: Chart + Signal panel side-by-side ── */}
+      {/* ── Chart + Signal panel ── */}
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
-        {/* Chart card — takes 3/5 on xl */}
         <div className="xl:col-span-3 bg-card border border-border rounded-lg p-4">
-          {/* Timeframe selector */}
           <div className="flex gap-1 mb-2 justify-end">
             {TIMEFRAMES.map(t => (
               <button type="button" key={t} onClick={() => setTf(t)}
@@ -157,7 +227,6 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Live price + signal strip */}
           <div className="flex items-center gap-3 mb-3 min-h-[24px]">
             {live ? (
               <div className="text-xs font-mono text-muted-foreground">
@@ -205,7 +274,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Signal scoring — takes 2/5 on xl */}
         <div className="xl:col-span-2">
           <SignalScoringPanel instrument={pair} />
         </div>
@@ -214,34 +282,31 @@ export default function Dashboard() {
       {/* ── Open positions ── */}
       <PositionsTable />
 
-      {/* ── 3-panel info row: Regime · Scorecard · Calendar ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* ── Regime + Calendar ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <RegimePanel />
-        <RiskMetricsPanel />
         <EconomicCalendarPanel />
       </div>
 
-      {/* ── Macro context + Correlation ── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <MarketContextPanel />
-        <CorrelationPanel />
-      </div>
-
-      {/* ── Edge confidence ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <EdgeConfidencePanel />
-        <div className="bg-card rounded-lg p-4 border border-border">
-          <h3 className="text-sm font-semibold mb-2">What This Means</h3>
-          <div className="space-y-2 text-[11px] text-muted-foreground/70 leading-relaxed">
-            <p><span className="text-green-400 font-semibold">HIGH</span> — Session structure is directional, pairs correlate normally, macro is calm. Trade the system as designed.</p>
-            <p><span className="text-amber-400 font-semibold">REDUCED</span> — One signal is flagged. Edge likely still holds but something in the environment is shifting. Consider 75% size and closer monitoring.</p>
-            <p><span className="text-red-400 font-semibold">LOW</span> — Two or more signals flagged. A macro driver may be overriding session mechanics. Review what's happening before the next trading day — don't pause automatically, but understand why.</p>
+      {/* ── AI Co-Pilot (collapsible) ── */}
+      <div className="bg-card border border-border rounded-lg overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setBriefOpen(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold">AI Co-Pilot Brief</span>
+            <span className="text-[10px] text-muted-foreground/50">Pre/post-session analysis &amp; patterns</span>
           </div>
-        </div>
+          <span className={`text-muted-foreground/60 text-xs transition-transform duration-200 ${briefOpen ? 'rotate-180' : ''}`}>▼</span>
+        </button>
+        {briefOpen && (
+          <div className="border-t border-border">
+            <IntelligenceBriefPanel />
+          </div>
+        )}
       </div>
-
-      {/* ── AI Co-Pilot brief ── */}
-      <IntelligenceBriefPanel />
 
     </div>
   )

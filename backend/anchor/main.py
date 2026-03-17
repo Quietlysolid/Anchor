@@ -27,7 +27,7 @@ from anchor.api.websocket import router as ws_router, manager as ws_manager
 from anchor.monitoring.heartbeat import HeartbeatService
 from anchor.data.oanda_stream import OANDAStreamClient
 from anchor.api.routers.system import set_stream_status, set_account_info
-from anchor.scheduler.jobs import _spread_monitor as _shared_spread_monitor
+from anchor.scheduler._shared import _spread_monitor as _shared_spread_monitor
 from anchor.risk.weekend_guard import WeekendGuard
 
 logger = structlog.get_logger(__name__)

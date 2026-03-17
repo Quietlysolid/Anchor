@@ -27,8 +27,7 @@ from typing import Any
 
 import pandas as pd
 
-from anchor.backtesting.lcr_backtest import LCRBacktestEngine, _load_csv
-from anchor.signals.london_close_reversion import LCR_INSTRUMENTS
+from anchor.backtesting.lcr_backtest import LCRBacktestEngine, _load_csv, _SPREAD_COST
 
 
 # Annual OOS windows (inclusive). Adjust end year if data ends earlier.
@@ -182,7 +181,7 @@ def _print_table(instrument: str, rows: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Walk-forward validation for LCR strategy")
-    parser.add_argument("--instrument", required=True, choices=sorted(LCR_INSTRUMENTS))
+    parser.add_argument("--instrument", required=True, choices=sorted(_SPREAD_COST.keys()))
     parser.add_argument("--h1-csv",     required=True, help="Path to H1 CSV file")
     parser.add_argument("--balance",    type=float, default=10_000.0)
     args = parser.parse_args()

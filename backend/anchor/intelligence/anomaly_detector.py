@@ -39,7 +39,7 @@ _MODEL = "claude-haiku-4-5-20251001"
 _TTL_SECONDS = 72_000        # 20 hours — postsession: covers remainder of day + next London + LCR
 _INTRABAR_TTL = 7_200        # 2 hours — intrabar: expires before next hourly check
 
-_ACTIVE_PAIRS = ["EUR_USD", "GBP_USD", "NZD_USD", "USD_CAD", "EUR_JPY", "AUD_USD"]
+_ACTIVE_PAIRS = settings.instruments  # derived from config — edit config.py to change
 
 _SYSTEM = """\
 You are the risk management layer for Anchor, an autonomous FX trading system.
