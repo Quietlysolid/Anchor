@@ -137,3 +137,46 @@ export const useSessionQuality = () =>
     refetchInterval: 5 * 60_000,
     staleTime: 4 * 60_000,
   })
+
+export type TradeExplanation = {
+  id: string
+  created_at: string
+  content: string
+  trade_id: string | null
+  instrument: string | null
+  outcome: 'WIN' | 'LOSS' | null
+  net_pl: number | null
+  session: string | null
+}
+
+export const useTradeExplanations = (limit = 20) =>
+  useQuery({
+    queryKey: ['trade-explanations', limit],
+    queryFn: async () => {
+      const res = await api.get<{ explanations: TradeExplanation[] }>(
+        `/intelligence/trade-explanations?limit=${limit}`
+      )
+      return res.explanations
+    },
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
+  })
+
+export type JournalAnalysis = {
+  id: string
+  created_at: string
+  content: string
+  trade_count: number | null
+  tokens_used: number | null
+}
+
+export const useJournalAnalysis = () =>
+  useQuery({
+    queryKey: ['journal-analysis'],
+    queryFn: async () => {
+      const res = await api.get<{ analysis: JournalAnalysis | null }>('/intelligence/journal-analysis')
+      return res.analysis
+    },
+    refetchInterval: 30 * 60_000,
+    staleTime: 29 * 60_000,
+  })

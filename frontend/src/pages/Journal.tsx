@@ -1,4 +1,5 @@
-import { useTradeJournal } from '../api/hooks'
+import { useState } from 'react'
+import { useTradeJournal, useTradeExplanations, useJournalAnalysis } from '../api/hooks'
 import { TradeJournalTable } from '../components/tables/TradeJournalTable'
 import { useWeightsStore } from '../store'
 
@@ -13,7 +14,17 @@ function utcToET(h: number, m: number): string {
 
 export default function Journal() {
   const { data: trades, isLoading } = useTradeJournal()
+  const { data: explanations } = useTradeExplanations(20)
+  const { data: journalAnalysis } = useJournalAnalysis()
   const { win_rate_good, win_rate_warn } = useWeightsStore(s => s.targets)
+  const [expandedAnalysis, setExpandedAnalysis] = useState(false)
+
+  // Build a lookup: trade_id → explanation text
+  const explanationMap = Object.fromEntries(
+    (explanations ?? [])
+      .filter(e => e.trade_id)
+      .map(e => [e.trade_id!, e.content])
+  )
 
   const wins    = trades?.filter(t => t.net_pl > 0).length ?? 0
   const losses  = trades?.filter(t => t.net_pl < 0).length ?? 0
@@ -77,6 +88,32 @@ export default function Journal() {
         ))}
       </div>
 
+      {/* Weekly Journal Analysis */}
+      {journalAnalysis && (
+        <div className="bg-card border border-border rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">AI Pattern Analysis</span>
+              <span className="ml-2 text-[10px] text-muted-foreground/50">
+                {new Date(journalAnalysis.created_at).toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' })}
+                {journalAnalysis.trade_count != null && ` · ${journalAnalysis.trade_count} trades`}
+              </span>
+            </div>
+            <button
+              onClick={() => setExpandedAnalysis(x => !x)}
+              className="text-xs text-primary hover:underline"
+            >
+              {expandedAnalysis ? 'Hide' : 'Show analysis'}
+            </button>
+          </div>
+          {expandedAnalysis && (
+            <pre className="text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed mt-2 font-sans">
+              {journalAnalysis.content}
+            </pre>
+          )}
+        </div>
+      )}
+
       <div className="bg-card border border-border rounded-lg p-4">
         {isLoading ? (
           <div className="space-y-3 py-4">
@@ -93,7 +130,7 @@ export default function Journal() {
             </p>
           </div>
         ) : (
-          <TradeJournalTable trades={trades} />
+          <TradeJournalTable trades={trades} explanations={explanationMap} />
         )}
       </div>
     </div>

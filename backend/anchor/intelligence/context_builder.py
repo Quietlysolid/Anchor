@@ -55,10 +55,11 @@ async def _get_macro_context(redis_client) -> dict:
             return None
 
     for key, label in [
-        ("fred_rate_diff",   "rate_differentials"),
-        ("cot_data",         "cot_positioning"),
-        ("cross_asset_risk", "cross_asset"),
-        ("vix_data",         "vix"),
+        ("fred_rate_diff",    "rate_differentials"),
+        ("cot_data",          "cot_positioning"),
+        ("cot_interpretation","cot_bias"),        # plain-English bias per currency (Haiku-generated)
+        ("cross_asset_risk",  "cross_asset"),
+        ("vix_data",          "vix"),
     ]:
         val = await _get(key)
         if val is not None:

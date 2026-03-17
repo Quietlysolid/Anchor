@@ -137,6 +137,14 @@ celery_app.conf.update(
             "schedule": 1_800.0,  # 30 min — cheap DB read, only meaningful after releases
         },
         # ── AI Intelligence Layer ────────────────────────────────────────────
+        "generate-trade-explanations-every-30-min": {
+            "task": "anchor.scheduler.jobs.generate_trade_explanations",
+            "schedule": 1_800.0,  # every 30 min — catches trades from last London or LCR session
+        },
+        "analyze-journal-patterns-weekly": {
+            "task": "anchor.scheduler.jobs.analyze_journal_patterns",
+            "schedule": crontab(hour=21, minute=0, day_of_week=0),  # Sunday 21:00 UTC
+        },
         "intrabar-anomaly-check-london-hourly": {
             "task": "anchor.scheduler.jobs.run_intrabar_anomaly_check",
             "schedule": crontab(hour="7-11", minute=5, day_of_week="1-5"),  # 07:05–11:05 UTC Mon–Fri

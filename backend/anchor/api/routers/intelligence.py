@@ -69,6 +69,59 @@ async def get_brief_history(
     }
 
 
+@router.get("/trade-explanations")
+async def get_trade_explanations(
+    limit: int = Query(20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return recent trade-level AI explanations (latest first)."""
+    result = await db.execute(
+        select(IntelligenceReport)
+        .where(IntelligenceReport.report_type == "TRADE_EXPLANATION")
+        .order_by(desc(IntelligenceReport.created_at))
+        .limit(limit)
+    )
+    reports = result.scalars().all()
+    return {
+        "explanations": [
+            {
+                "id":          str(r.id),
+                "created_at":  r.created_at.isoformat(),
+                "content":     r.content,
+                "trade_id":    (r.context_snapshot or {}).get("trade_id"),
+                "instrument":  (r.context_snapshot or {}).get("instrument"),
+                "outcome":     (r.context_snapshot or {}).get("outcome"),
+                "net_pl":      (r.context_snapshot or {}).get("net_pl"),
+                "session":     (r.context_snapshot or {}).get("session"),
+            }
+            for r in reports
+        ]
+    }
+
+
+@router.get("/journal-analysis")
+async def get_journal_analysis(db: AsyncSession = Depends(get_db)):
+    """Return the latest weekly journal pattern analysis."""
+    result = await db.execute(
+        select(IntelligenceReport)
+        .where(IntelligenceReport.report_type == "JOURNAL_ANALYSIS")
+        .order_by(desc(IntelligenceReport.created_at))
+        .limit(1)
+    )
+    report = result.scalar_one_or_none()
+    if not report:
+        return {"analysis": None}
+    return {
+        "analysis": {
+            "id":          str(report.id),
+            "created_at":  report.created_at.isoformat(),
+            "content":     report.content,
+            "trade_count": (report.context_snapshot or {}).get("trade_count"),
+            "tokens_used": report.tokens_used,
+        }
+    }
+
+
 @router.get("/session-quality")
 async def get_session_quality():
     """Return the current session quality assessment from Redis (written at 06:30 UTC)."""

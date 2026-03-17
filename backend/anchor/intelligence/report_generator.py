@@ -45,6 +45,10 @@ Format your response exactly as:
 • [INSTRUMENT]: [one line on macro tailwinds/headwinds given rate diff, COT, cross-asset]
 • [repeat for each pair worth noting]
 
+**CALENDAR GUIDANCE**
+• [PAIR or currency]: [upcoming event + whether to favor, avoid, or stay neutral — one line each]
+• [repeat for each pair affected by events in the next 24h; skip pairs with no relevant events]
+
 **CONVICTION**
 Today's environment is [TRENDING / CHOPPY / MIXED] because [one-sentence reason].
 """

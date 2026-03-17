@@ -182,6 +182,20 @@ def update_cot_data(self):
         redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
         try:
             await redis_client.set("cot_data", json.dumps(serialisable), ex=8 * 86_400)
+
+            # Translate raw COT numbers into plain-English directional bias per currency
+            try:
+                from anchor.intelligence.trade_intelligence import interpret_cot as _interpret_cot
+                interpreted, _tok = await _interpret_cot(serialisable)
+                if interpreted:
+                    await redis_client.set(
+                        "cot_interpretation",
+                        json.dumps(interpreted),
+                        ex=8 * 86_400,
+                    )
+                    logger.info("cot_interpretation_stored", currencies=list(interpreted.keys()), tokens=_tok)
+            except Exception as _ci_exc:
+                logger.warning("cot_interpretation_failed", error=str(_ci_exc))
         finally:
             await redis_client.aclose()
 
@@ -460,6 +474,10 @@ def run_signal_scan(self):
             hmm_detector=None,  # injected per-instrument inside the scan loop below
         )
 
+        # Guard: fire drawdown narration at most once per unique trigger event.
+        # Redis key dd_narrated:{date}:{type} gates narration across scan cycles.
+        _dd_narration_fired_this_scan: bool = False
+
         # Evaluate + persist each instrument in its own isolated session
         # so one DB error doesn't poison the others
         for instrument in settings.instruments:
@@ -589,6 +607,60 @@ def run_signal_scan(self):
                     if not dd_ok:
                         logger.warning("trade_blocked_drawdown", instrument=instrument, reason=dd_reason)
                         await _alerts.send_critical(f"Drawdown circuit breaker triggered\n{dd_reason}\nBalance: ${balance:.2f}")
+
+                        # Narrate the drawdown once per trigger event (gated by Redis TTL)
+                        if not _dd_narration_fired_this_scan:
+                            _dd_narration_fired_this_scan = True
+                            try:
+                                from datetime import date as _date
+                                _trigger_type = "HALT" if "HALT" in (dd_reason or "") else "REDUCE"
+                                _gate_key = f"dd_narrated:{_date.today().isoformat()}:{_trigger_type}"
+                                if not await redis_client.exists(_gate_key):
+                                    await redis_client.set(_gate_key, "1", ex=4 * 3_600)
+
+                                    # Fetch recent trades for context
+                                    from sqlalchemy import text as _sqlt
+                                    from anchor.database.engine import AsyncSessionLocal as _ASL
+                                    _recent_trades: list[dict] = []
+                                    try:
+                                        async with _ASL() as _s:
+                                            _rows = (await _s.execute(_sqlt("""
+                                                SELECT instrument, direction, net_pl,
+                                                       session_at_entry, regime_at_entry,
+                                                       close_reason, closed_at
+                                                FROM trades
+                                                WHERE closed_at IS NOT NULL
+                                                ORDER BY closed_at DESC LIMIT 20
+                                            """))).fetchall()
+                                            _recent_trades = [dict(r._mapping) for r in _rows]
+                                    except Exception:
+                                        pass
+
+                                    # Macro snapshot from Redis
+                                    import json as _j
+                                    _macro: dict = {}
+                                    for _rk, _rl in [("vix_data", "vix"), ("cross_asset_risk", "cross_asset"), ("fred_rate_diff", "rate_differentials")]:
+                                        try:
+                                            _rv = await redis_client.get(_rk)
+                                            if _rv:
+                                                _macro[_rl] = _j.loads(_rv)
+                                        except Exception:
+                                            pass
+
+                                    from anchor.intelligence.trade_intelligence import narrate_drawdown as _narrate_dd
+                                    _narration, _ = await _narrate_dd(
+                                        _trigger_type,
+                                        drawdown_monitor.current_drawdown,
+                                        _recent_trades,
+                                        _macro,
+                                    )
+                                    if _narration:
+                                        await _alerts.send_warning(
+                                            f"🧠 Drawdown Analysis ({_trigger_type} — {drawdown_monitor.current_drawdown:.1%})\n\n{_narration}"
+                                        )
+                            except Exception as _dd_narr_exc:
+                                logger.warning("drawdown_narration_failed", error=str(_dd_narr_exc))
+
                         await session.commit()
                         continue
 
@@ -2100,6 +2172,38 @@ def monitor_live_performance(self):
         except Exception as exc:
             logger.warning("live_perf_alert_failed", error=str(exc))
 
+        # AI diagnosis for each degraded strategy
+        async def _run_drift_diagnoses():
+            import redis.asyncio as _r
+            from anchor.intelligence.trade_intelligence import diagnose_parameter_drift as _diagnose
+            cfg2 = get_settings()
+            _redis = _r.from_url(cfg2.redis_url, decode_responses=True)
+            try:
+                for s in summaries:
+                    if s.get("status") in ("DEGRADED_WR", "UNPROFITABLE", "WIN_DROUGHT"):
+                        _lbl = s["strategy"]
+                        _bench = _PERF_BENCH.get(_lbl, {})
+                        # Gather per-pair breakdown from raw trades for this strategy
+                        _session_filter = "NY_LCR" if _lbl == "LCR" else "LONDON"
+                        _strat_rows = [
+                            {"instrument": r[3], "direction": r[1] if len(r) > 1 else None,
+                             "net_pl": float(r[1]) if _lbl == "net_pl_idx" else None,
+                             "closed_at": str(r[0])}
+                            for r in rows if r[4] == _session_filter  # session col
+                        ]
+                        _diagnosis, _ = await _diagnose(_lbl, s, _bench, _strat_rows[:30])
+                        if _diagnosis:
+                            await _alerts.send_warning(
+                                f"🧠 Drift Diagnosis — {_lbl}\n\n{_diagnosis}"
+                            )
+            finally:
+                await _redis.aclose()
+
+        try:
+            _run_async(_run_drift_diagnoses())
+        except Exception as _dd_exc:
+            logger.warning("drift_diagnosis_failed", error=str(_dd_exc))
+
 
 # ── Edge confidence monitor ────────────────────────────────────────────────────
 
@@ -2441,3 +2545,227 @@ def run_intrabar_anomaly_check(self):
     except Exception as exc:
         logger.error("intrabar_anomaly_check_task_error", error=str(exc))
         raise self.retry(exc=exc, countdown=120)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.generate_trade_explanations", bind=True, max_retries=1)
+def generate_trade_explanations(self):
+    """
+    Generate Claude Haiku explanations for recently closed trades (every 30 min).
+
+    Finds trades closed in the last 35 minutes that have no entry in
+    intelligence_reports with report_type='TRADE_EXPLANATION'. For each,
+    fetches the linked Signal row + macro context from Redis, generates a
+    2-3 sentence explanation, and saves as IntelligenceReport.
+    """
+    import json as _json
+    import redis.asyncio as _redis_async
+    from datetime import datetime, timedelta, timezone as _tz
+    from anchor.config import get_settings as _get_settings
+    from anchor.database.engine import AsyncSessionLocal
+    from anchor.database.models import IntelligenceReport, Signal, Trade
+    from anchor.intelligence.trade_intelligence import explain_trade as _explain
+    from sqlalchemy import select as _sel, text as _sqlt
+
+    cfg = _get_settings()
+
+    async def _inner():
+        redis_client = _redis_async.from_url(cfg.redis_url, decode_responses=True)
+        try:
+            # Macro snapshot from Redis
+            macro: dict = {}
+            for _rk, _rl in [
+                ("vix_data",         "vix"),
+                ("fred_rate_diff",   "rate_differentials"),
+                ("cross_asset_risk", "cross_asset"),
+                ("cot_interpretation", "cot_bias"),
+            ]:
+                try:
+                    _rv = await redis_client.get(_rk)
+                    if _rv:
+                        macro[_rl] = _json.loads(_rv)
+                except Exception:
+                    pass
+
+            cutoff = datetime.now(_tz.utc) - timedelta(minutes=35)
+
+            async with AsyncSessionLocal() as session:
+                # Trades closed in the last 35 minutes
+                trade_rows = (await session.execute(_sqlt("""
+                    SELECT t.id, t.instrument, t.direction,
+                           CAST(t.entry_price AS float), CAST(t.exit_price AS float),
+                           CAST(t.net_pl AS float),
+                           COALESCE(CAST(t.net_pl AS float) /
+                               NULLIF(CAST(t.entry_price AS float), 0) * 100, 0)
+                               AS pl_pct,
+                           t.duration_minutes, t.close_reason,
+                           t.regime_at_entry, t.session_at_entry,
+                           t.signal_id, t.closed_at
+                    FROM trades t
+                    WHERE t.closed_at >= :cutoff
+                    ORDER BY t.closed_at DESC
+                    LIMIT 20
+                """), {"cutoff": cutoff})).fetchall()
+
+                if not trade_rows:
+                    return
+
+                # Find which trades already have explanations
+                existing_ids = set()
+                ex_rows = (await session.execute(_sqlt("""
+                    SELECT context_snapshot->>'trade_id'
+                    FROM intelligence_reports
+                    WHERE report_type = 'TRADE_EXPLANATION'
+                      AND created_at >= :cutoff
+                """), {"cutoff": cutoff})).fetchall()
+                existing_ids = {r[0] for r in ex_rows if r[0]}
+
+                for row in trade_rows:
+                    trade_id = str(row[0])
+                    if trade_id in existing_ids:
+                        continue
+
+                    trade_data = {
+                        "id":              trade_id,
+                        "instrument":      row[1],
+                        "direction":       row[2],
+                        "entry_price":     row[3],
+                        "exit_price":      row[4],
+                        "net_pl":          row[5],
+                        "pl_pct":          round(row[6], 4),
+                        "duration_minutes": row[7],
+                        "close_reason":    row[8],
+                        "regime_at_entry": row[9],
+                        "session_at_entry": row[10],
+                        "closed_at":       str(row[12]),
+                    }
+                    outcome = "WIN" if row[5] > 0 else "LOSS"
+
+                    # Fetch linked signal
+                    signal_data: dict | None = None
+                    if row[11]:  # signal_id
+                        try:
+                            sig = (await session.execute(
+                                _sel(Signal).where(Signal.id == row[11])
+                            )).scalar_one_or_none()
+                            if sig:
+                                signal_data = {
+                                    "confluence_score": float(sig.confluence_score),
+                                    "rsi_score":   float(sig.rsi_score)   if sig.rsi_score   else None,
+                                    "bb_kc_score": float(sig.bb_kc_score) if sig.bb_kc_score else None,
+                                    "adx_score":   float(sig.adx_score)   if sig.adx_score   else None,
+                                    "sr_score":    float(sig.sr_score)    if sig.sr_score    else None,
+                                    "mtf_score":   float(sig.mtf_score)   if sig.mtf_score   else None,
+                                    "regime":      sig.regime_state,
+                                    "session":     sig.session,
+                                    "metadata":    sig.signal_metadata or {},
+                                }
+                        except Exception:
+                            pass
+
+                    explanation, tokens = await _explain(trade_data, signal_data, macro)
+                    if not explanation:
+                        continue
+
+                    report = IntelligenceReport(
+                        report_type="TRADE_EXPLANATION",
+                        content=explanation,
+                        context_snapshot={
+                            "trade_id":   trade_id,
+                            "instrument": row[1],
+                            "outcome":    outcome,
+                            "net_pl":     row[5],
+                            "session":    row[10],
+                        },
+                        tokens_used=tokens,
+                    )
+                    session.add(report)
+
+                await session.commit()
+                logger.info("trade_explanations_generated", count=len(trade_rows))
+
+        finally:
+            await redis_client.aclose()
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("generate_trade_explanations_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.analyze_journal_patterns", bind=True, max_retries=1)
+def analyze_journal_patterns(self):
+    """
+    Weekly AI analysis of the last 90 days of trades to surface performance patterns.
+
+    Runs Sunday 21:00 UTC (just before weekly synthesis at 22:00). Uses Claude Opus
+    to identify best/worst pairs, time-of-day patterns, signal quality correlations,
+    and regime performance. Saves as IntelligenceReport(JOURNAL_ANALYSIS).
+    """
+    from anchor.database.engine import AsyncSessionLocal
+    from anchor.database.models import IntelligenceReport
+    from anchor.intelligence.trade_intelligence import analyze_journal_patterns as _analyze
+    from sqlalchemy import text as _sqlt
+    from datetime import datetime, timedelta, timezone as _tz
+
+    async def _inner():
+        cutoff = datetime.now(_tz.utc) - timedelta(days=90)
+
+        async with AsyncSessionLocal() as session:
+            rows = (await session.execute(_sqlt("""
+                SELECT
+                    t.instrument, t.direction,
+                    t.session_at_entry, t.regime_at_entry,
+                    s.confluence_score,
+                    CAST(t.net_pl AS float),
+                    COALESCE(CAST(t.net_pl AS float) /
+                        NULLIF(CAST(t.entry_price AS float), 0) * 100, 0) AS pl_pct,
+                    t.duration_minutes, t.close_reason,
+                    t.opened_at, t.closed_at
+                FROM trades t
+                LEFT JOIN signals s ON s.id = t.signal_id
+                WHERE t.closed_at >= :cutoff
+                ORDER BY t.closed_at DESC
+                LIMIT 500
+            """), {"cutoff": cutoff})).fetchall()
+
+            if not rows or len(rows) < 10:
+                logger.info("journal_analysis_skipped", reason="insufficient_trades", count=len(rows))
+                return
+
+            trades_data = [
+                {
+                    "instrument":      r[0],
+                    "direction":       r[1],
+                    "session":         r[2],
+                    "regime":          r[3],
+                    "confluence_score": float(r[4]) if r[4] else None,
+                    "net_pl":          r[5],
+                    "pl_pct":          round(r[6], 4),
+                    "duration_minutes": r[7],
+                    "close_reason":    r[8],
+                    "opened_at":       str(r[9]),
+                    "closed_at":       str(r[10]),
+                }
+                for r in rows
+            ]
+
+            content, tokens = await _analyze(trades_data)
+            if not content:
+                return
+
+            report = IntelligenceReport(
+                report_type="JOURNAL_ANALYSIS",
+                content=content,
+                context_snapshot={"trade_count": len(trades_data), "days": 90},
+                tokens_used=tokens,
+            )
+            session.add(report)
+            await session.commit()
+            logger.info("journal_analysis_saved", trades=len(trades_data), tokens=tokens)
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("analyze_journal_patterns_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=300)
