@@ -173,7 +173,7 @@ def run_intrabar_anomaly_check(self):
     from datetime import datetime, timezone as _tz
     import redis.asyncio as _redis_async
     from anchor.config import get_settings as _get_settings
-    from anchor.database.engine import AsyncSessionLocal
+    from anchor.database.engine import get_session as _get_session_ia
     from anchor.database.repositories.market_data import MarketDataRepository
     from anchor.intelligence.anomaly_detector import detect_intrabar_anomaly as _detect
 
@@ -216,7 +216,7 @@ def run_intrabar_anomaly_check(self):
 
             # ── Last 4 H1 bars per pair ───────────────────────────────────────
             pairs_bars: dict = {}
-            async with AsyncSessionLocal() as session:
+            async with _get_session_ia() as session:
                 repo = MarketDataRepository(session)
                 for pair in cfg.instruments:
                     candles = await repo.get_latest_n_candles(pair, "H1", 4)
@@ -269,7 +269,7 @@ def generate_trade_explanations(self):
     import redis.asyncio as _redis_async
     from datetime import datetime, timedelta, timezone as _tz
     from anchor.config import get_settings as _get_settings
-    from anchor.database.engine import AsyncSessionLocal
+    from anchor.database.engine import get_session as _get_session_te
     from anchor.database.models import IntelligenceReport, Signal, Trade
     from anchor.intelligence.trade_intelligence import explain_trade as _explain
     from sqlalchemy import select as _sel, text as _sqlt
@@ -277,6 +277,8 @@ def generate_trade_explanations(self):
     cfg = _get_settings()
 
     async def _inner():
+        from anchor.database.engine import init_db as _init_db
+        await _init_db()
         redis_client = _redis_async.from_url(cfg.redis_url, decode_responses=True)
         try:
             # Macro snapshot from Redis
@@ -294,10 +296,12 @@ def generate_trade_explanations(self):
                 except Exception:
                     pass
 
-            cutoff = datetime.now(_tz.utc) - timedelta(minutes=35)
+            # Look back 30 days — catches historical trades without explanations
+            cutoff = datetime.now(_tz.utc) - timedelta(days=30)
 
-            async with AsyncSessionLocal() as session:
-                # Trades closed in the last 35 minutes
+            from anchor.database.engine import get_session as _get_session
+            async with _get_session() as session:
+                # All trades in the window, most recent first
                 trade_rows = (await session.execute(_sqlt("""
                     SELECT t.id, t.instrument, t.direction,
                            CAST(t.entry_price AS float), CAST(t.exit_price AS float),
@@ -317,13 +321,12 @@ def generate_trade_explanations(self):
                 if not trade_rows:
                     return
 
-                # Find which trades already have explanations
+                # Find all existing explanations (no time filter — prevents duplicates)
                 ex_rows = (await session.execute(_sqlt("""
                     SELECT context_snapshot->>'trade_id'
                     FROM intelligence_reports
                     WHERE report_type = 'TRADE_EXPLANATION'
-                      AND created_at >= :cutoff
-                """), {"cutoff": cutoff})).fetchall()
+                """))).fetchall()
                 existing_ids = {r[0] for r in ex_rows if r[0]}
 
                 for row in trade_rows:
@@ -409,16 +412,18 @@ def analyze_journal_patterns(self):
     to identify best/worst pairs, time-of-day patterns, signal quality correlations,
     and regime performance. Saves as IntelligenceReport(JOURNAL_ANALYSIS).
     """
-    from anchor.database.engine import AsyncSessionLocal
+    from anchor.database.engine import get_session as _get_session_ja
     from anchor.database.models import IntelligenceReport
     from anchor.intelligence.trade_intelligence import analyze_journal_patterns as _analyze
     from sqlalchemy import text as _sqlt
     from datetime import datetime, timedelta, timezone as _tz
 
     async def _inner():
+        from anchor.database.engine import init_db as _init_db_ja
+        await _init_db_ja()
         cutoff = datetime.now(_tz.utc) - timedelta(days=90)
 
-        async with AsyncSessionLocal() as session:
+        async with _get_session_ja() as session:
             rows = (await session.execute(_sqlt("""
                 SELECT
                     t.instrument, t.direction,

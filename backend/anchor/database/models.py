@@ -272,7 +272,7 @@ class IntelligenceReport(Base):
 
     id:                Mapped[uuid.UUID]       = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     created_at:        Mapped[datetime]        = mapped_column(DateTime(timezone=True), server_default=func.now())
-    report_type:       Mapped[str]             = mapped_column(String(16), nullable=False)  # PRESESSION | POSTSESSION | WEEKLY
+    report_type:       Mapped[str]             = mapped_column(String(32), nullable=False)  # PRESESSION | POSTSESSION | WEEKLY | TRADE_EXPLANATION | JOURNAL_ANALYSIS
     content:           Mapped[str]             = mapped_column(Text, nullable=False)
     context_snapshot:  Mapped[dict | None]     = mapped_column(JSONB)
     delivered_telegram: Mapped[bool]           = mapped_column(Boolean, nullable=False, default=False)

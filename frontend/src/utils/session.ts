@@ -1,3 +1,42 @@
+// ── Session phase logic ──────────────────────────────────────
+export type SessionPhase = 'pre' | 'london' | 'post' | 'lcr' | 'off'
+
+export interface PhaseInfo {
+  phase:      SessionPhase
+  label:      string
+  remaining:  number | null  // minutes until this phase ends
+  nextLabel:  string
+  nextIn:     number         // minutes until next trading session
+}
+
+export function getPhaseInfo(utcMins: number): PhaseInfo {
+  const PRE   = 6 * 60 + 30   // 390
+  const LON_S = 7 * 60        // 420
+  const LON_E = 12 * 60       // 720
+  const POST  = 12 * 60 + 30  // 750
+  const LCR_S = 17 * 60       // 1020
+  const LCR_E = 19 * 60       // 1140
+
+  if (utcMins >= PRE   && utcMins < LON_S) return { phase: 'pre',    label: 'Pre-Brief',      remaining: LON_S - utcMins, nextLabel: 'London', nextIn: LON_S - utcMins }
+  if (utcMins >= LON_S && utcMins < LON_E) return { phase: 'london', label: 'London Session',  remaining: LON_E - utcMins, nextLabel: 'LCR',    nextIn: LCR_S - utcMins }
+  if (utcMins >= LON_E && utcMins < POST)  return { phase: 'post',   label: 'Post-Brief',      remaining: POST  - utcMins, nextLabel: 'LCR',    nextIn: LCR_S - utcMins }
+  if (utcMins >= LCR_S && utcMins < LCR_E) return { phase: 'lcr',   label: 'LCR Window',      remaining: LCR_E - utcMins, nextLabel: 'London', nextIn: 24 * 60 - utcMins + PRE }
+
+  let nextLabel: string, nextIn: number
+  if (utcMins < PRE)        { nextLabel = 'London'; nextIn = LON_S - utcMins }
+  else if (utcMins < LCR_S) { nextLabel = 'LCR';    nextIn = LCR_S - utcMins }
+  else                      { nextLabel = 'London'; nextIn = 24 * 60 - utcMins + PRE }
+
+  return { phase: 'off', label: 'Markets Quiet', remaining: null, nextLabel, nextIn }
+}
+
+export function fmtMins(m: number): string {
+  const h   = Math.floor(m / 60)
+  const min = m % 60
+  return h > 0 ? `${h}h ${min}m` : `${min}m`
+}
+
+// ── Signal suppression text ──────────────────────────────────
 export const SUPPRESSION_TEXT: Record<string, string> = {
   WEEKEND_CLOSE:       'Markets closed — weekend',
   OUTSIDE_SESSION:     'Outside trading hours',

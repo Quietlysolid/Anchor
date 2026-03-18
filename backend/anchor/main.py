@@ -80,7 +80,7 @@ async def _reconcile_account(stream_client: OANDAStreamClient, redis_client=None
 
         except Exception as exc:
             logger.warning("reconcile_error", error=str(exc))
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
 
 
 @asynccontextmanager

@@ -180,3 +180,14 @@ export const useJournalAnalysis = () =>
     refetchInterval: 30 * 60_000,
     staleTime: 29 * 60_000,
   })
+
+export const useIntelligenceHistory = (limit = 20) =>
+  useQuery({
+    queryKey: ['intelligence-history', limit],
+    queryFn: async () => {
+      const res = await api.get<{ reports: IntelligenceReport[] }>(`/intelligence/history?limit=${limit}`)
+      return res.reports
+    },
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
+  })

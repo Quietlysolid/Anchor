@@ -1,8 +1,7 @@
 import { useMemo } from 'react'
 import { GlowCard } from '../components/ui/GlowCard'
 import { TradeTable } from '../components/trades/TradeTable'
-import { useTradeJournal } from '../api/hooks'
-import { MOCK_TRADES } from '../mock/data'
+import { useTradeJournal, useTradeExplanations } from '../api/hooks'
 import type { Trade } from '../types'
 
 interface StatProps { label: string; value: string; sub?: string; color?: string }
@@ -11,15 +10,24 @@ function Stat({ label, value, sub, color = 'text-anchor-text' }: StatProps) {
   return (
     <div className="space-y-1.5">
       <p className="text-xs text-anchor-muted tracking-wide">{label}</p>
-      <p className={`text-3xl font-mono font-semibold tabular-nums ${color}`}>{value}</p>
+      <p className={`text-2xl sm:text-3xl font-mono font-semibold tabular-nums ${color}`}>{value}</p>
       {sub && <p className="text-xs text-anchor-muted font-mono">{sub}</p>}
     </div>
   )
 }
 
 export default function Trades() {
-  const { data: apiTrades } = useTradeJournal()
-  const trades: Trade[] = apiTrades?.length ? apiTrades : MOCK_TRADES
+  const { data: apiTrades }     = useTradeJournal()
+  const { data: explanationData } = useTradeExplanations(50)
+  const trades: Trade[] = apiTrades ?? []
+
+  const explanations = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const ex of explanationData ?? []) {
+      if (ex.trade_id) map[ex.trade_id] = ex.content
+    }
+    return map
+  }, [explanationData])
 
   const stats = useMemo(() => {
     if (!trades.length) return { winRate: 0, avgRR: 0, totalPL: 0, avgHoldMins: 0, wins: 0, total: 0 }
@@ -49,7 +57,7 @@ export default function Trades() {
     <div className="min-h-screen bg-anchor-void p-5 space-y-4">
 
       <GlowCard padding={false} className="p-6">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-8">
           <Stat
             label="Win Rate"
             value={`${stats.winRate.toFixed(1)}%`}
@@ -77,7 +85,7 @@ export default function Trades() {
       </GlowCard>
 
       <GlowCard padding={false} className="p-5">
-        <TradeTable trades={trades} />
+        <TradeTable trades={trades} explanations={explanations} />
       </GlowCard>
     </div>
   )

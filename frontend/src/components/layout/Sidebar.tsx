@@ -18,7 +18,7 @@ function AnchorMark({ size = 20, className = '' }: { size?: number; className?: 
 }
 
 const NAV = [
-  { to: '/',             Icon: Activity,  label: 'Dashboard',    end: true  },
+  { to: '/',             Icon: Activity,  label: 'Console',      end: true  },
   { to: '/intelligence', Icon: Sparkles,  label: 'Intelligence', end: false },
   { to: '/trades',       Icon: BarChart2, label: 'Trades',       end: false },
 ]

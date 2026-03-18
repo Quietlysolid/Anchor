@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Sparkles } from 'lucide-react'
 import { Pill } from '../ui/Pill'
 import { TradeDetail } from './TradeDetail'
 import type { Trade } from '../../types'
 import { format } from 'date-fns'
 
-interface Props { trade: Trade }
+interface Props { trade: Trade; explanation?: string }
 
 function holdTime(opened: string, closed: string): string {
   const mins = Math.round((new Date(closed).getTime() - new Date(opened).getTime()) / 60_000)
@@ -15,7 +15,7 @@ function holdTime(opened: string, closed: string): string {
   return m ? `${h}h ${m}m` : `${h}h`
 }
 
-export function TradeRow({ trade }: Props) {
+export function TradeRow({ trade, explanation }: Props) {
   const [expanded, setExpanded] = useState(false)
   const won    = trade.net_pl >= 0
   const plSign = trade.net_pl >= 0 ? '+' : ''
@@ -35,10 +35,10 @@ export function TradeRow({ trade }: Props) {
         <td className="py-2.5 px-3">
           <Pill label={trade.direction} variant={trade.direction === 'LONG' ? 'buy' : 'sell'} />
         </td>
-        <td className="py-2.5 px-3 font-mono text-xs text-anchor-text/80 text-right">
+        <td className="py-2.5 px-3 font-mono text-xs text-anchor-text/80 text-right hidden sm:table-cell">
           {trade.entry_price.toFixed(trade.entry_price > 10 ? 3 : 5)}
         </td>
-        <td className="py-2.5 px-3 font-mono text-xs text-anchor-text/80 text-right">
+        <td className="py-2.5 px-3 font-mono text-xs text-anchor-text/80 text-right hidden sm:table-cell">
           {trade.exit_price.toFixed(trade.exit_price > 10 ? 3 : 5)}
         </td>
         <td className={`py-2.5 px-3 font-mono text-xs font-medium text-right ${won ? 'text-anchor-green' : 'text-anchor-red'}`}>
@@ -51,16 +51,19 @@ export function TradeRow({ trade }: Props) {
           {trade.regime_at_entry ?? '—'}
         </td>
         <td className="py-2.5 px-3 w-8">
-          <ChevronDown
-            size={14}
-            className={`text-anchor-muted transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
-          />
+          <div className="flex items-center gap-1 justify-end">
+            {explanation && <Sparkles size={10} className="text-anchor-green/50 shrink-0" />}
+            <ChevronDown
+              size={14}
+              className={`text-anchor-muted transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+            />
+          </div>
         </td>
       </tr>
       {expanded && (
         <tr>
           <td colSpan={9} className="p-0">
-            <TradeDetail trade={trade} />
+            <TradeDetail trade={trade} explanation={explanation} />
           </td>
         </tr>
       )}

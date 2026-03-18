@@ -1,6 +1,16 @@
 import { useRef, useState } from 'react'
 import { SignalCard } from './SignalCard'
+import { getPhaseInfo, fmtMins } from '../../utils/session'
 import type { Signal } from '../../types'
+
+function emptyStateText(): string {
+  const now     = new Date()
+  const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes()
+  const { phase, nextLabel, nextIn } = getPhaseInfo(utcMins)
+  if (phase === 'london') return 'London session active — signals will appear here.'
+  if (phase === 'lcr')    return 'LCR window active — signals will appear here.'
+  return `${nextLabel} opens in ${fmtMins(nextIn)}.`
+}
 
 interface Props { signals: Signal[] }
 
@@ -28,7 +38,7 @@ export function SignalFeed({ signals }: Props) {
       >
         {signals.length === 0 ? (
           <div className="text-center py-12 text-anchor-muted text-sm font-mono">
-            Waiting for signals...
+            {emptyStateText()}
           </div>
         ) : (
           signals.map((s, i) => <SignalCard key={s.id} signal={s} index={i} />)

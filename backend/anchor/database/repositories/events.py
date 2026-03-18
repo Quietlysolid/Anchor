@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anchor.database.models import SystemEvent, EconomicEvent, EventSeverity
@@ -67,9 +67,31 @@ class EconomicCalendarRepository:
         self.session = session
 
     async def insert_many(self, events: List[EconomicEvent]) -> int:
-        self.session.add_all(events)
-        await self.session.flush()
-        return len(events)
+        """Insert events, skipping duplicates on (event_time, currency, event_name)."""
+        if not events:
+            return 0
+
+        keys = [(e.event_time, e.currency, e.event_name) for e in events]
+        existing = await self.session.execute(
+            select(EconomicEvent.event_time, EconomicEvent.currency, EconomicEvent.event_name)
+            .where(
+                tuple_(
+                    EconomicEvent.event_time,
+                    EconomicEvent.currency,
+                    EconomicEvent.event_name,
+                ).in_(keys)
+            )
+        )
+        existing_keys = {(r.event_time, r.currency, r.event_name) for r in existing}
+
+        new_events = [
+            e for e in events
+            if (e.event_time, e.currency, e.event_name) not in existing_keys
+        ]
+        if new_events:
+            self.session.add_all(new_events)
+            await self.session.flush()
+        return len(new_events)
 
     async def get_upcoming(
         self, start: datetime, end: datetime, impact: Optional[str] = None

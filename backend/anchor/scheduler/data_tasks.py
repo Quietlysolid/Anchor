@@ -11,28 +11,67 @@ from anchor.scheduler._shared import _run_async
 logger = structlog.get_logger(__name__)
 
 
+# Minimum expected events for a normal trading week (Mon–Fri).
+# Weekends naturally have fewer but the scraper always fetches a full week.
+_CALENDAR_MIN_EVENTS = 5
+# Expected date window: events must fall within today ± this many days
+_CALENDAR_DATE_TOLERANCE_DAYS = 14
+
+
 @celery_app.task(name="anchor.scheduler.jobs.import_economic_calendar", bind=True, max_retries=2)
 def import_economic_calendar(self):
-    """Import ForexFactory calendar for next 7 days."""
+    """Import ForexFactory calendar for the next 7 days with defensive validation."""
     async def _inner():
         from anchor.data.forex_factory import ForexFactoryScraper
         from anchor.database.engine import init_db, get_session
         from anchor.database.repositories import EconomicCalendarRepository
-        from datetime import date
+        from datetime import date, datetime, timedelta, timezone
 
         await init_db()
 
         async with ForexFactoryScraper() as scraper:
             events = await scraper.fetch_week()
 
-        if not events:
-            return
+        # ── Defensive check 1: zero events → scraper is broken, fail safe ──
+        if len(events) == 0:
+            logger.critical(
+                "calendar_scraper_zero_events",
+                msg="ForexFactory returned 0 events — scraper may be broken. "
+                    "NewsFilter will suppress all signals until calendar recovers.",
+            )
+            # Raise so Celery retries (max_retries=2) and the failure is visible
+            raise RuntimeError("ForexFactory scraper returned 0 events")
+
+        # ── Defensive check 2: suspiciously low event count ─────────────────
+        if len(events) < _CALENDAR_MIN_EVENTS:
+            logger.warning(
+                "calendar_scraper_low_count",
+                count=len(events),
+                minimum=_CALENDAR_MIN_EVENTS,
+                msg="Possible partial scrape — HTML structure may have changed",
+            )
+
+        # ── Defensive check 3: timestamp sanity ─────────────────────────────
+        now = datetime.now(tz=timezone.utc)
+        earliest_allowed = now - timedelta(days=_CALENDAR_DATE_TOLERANCE_DAYS)
+        latest_allowed   = now + timedelta(days=_CALENDAR_DATE_TOLERANCE_DAYS)
+        out_of_range = [
+            e for e in events
+            if not (earliest_allowed <= e.event_time <= latest_allowed)
+        ]
+        if out_of_range:
+            logger.warning(
+                "calendar_events_out_of_range",
+                count=len(out_of_range),
+                sample=str(out_of_range[0].event_time),
+            )
+            events = [e for e in events if e not in out_of_range]
 
         async with get_session() as session:
             repo = EconomicCalendarRepository(session)
             count = await repo.insert_many(events)
             await session.commit()
-        logger.info("calendar_imported", events=count)
+        logger.info("calendar_imported", events=count, source="forex_factory")
 
     try:
         _run_async(_inner())

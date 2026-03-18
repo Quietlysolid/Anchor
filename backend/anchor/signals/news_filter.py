@@ -53,6 +53,21 @@ class NewsFilter:
         if not currencies:
             return True, None, 1.0
 
+        # ── Stale calendar guard ─────────────────────────────────────────────
+        # If there are zero events of any kind in the next 48h window, the
+        # calendar data is either missing or the scraper has silently broken.
+        # Fail safe: suppress until the calendar recovers.
+        all_upcoming = await self.calendar_repo.get_upcoming(
+            start=dt, end=dt + timedelta(hours=48)
+        )
+        if not all_upcoming:
+            logger.warning(
+                "news_filter_calendar_stale",
+                instrument=instrument,
+                msg="No calendar events in next 48h — failing safe, suppressing signal",
+            )
+            return False, "CALENDAR_STALE", 1.0
+
         # ── HIGH-impact: asymmetric pre/post window ────────────────────
         # Pre-event  (event in the future):  suppress full 2h  — unknown outcome
         # Post-event (event already released): suppress 45min only — let

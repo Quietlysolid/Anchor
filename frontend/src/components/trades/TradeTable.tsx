@@ -6,11 +6,11 @@ import type { Trade } from '../../types'
 type SortKey = 'opened_at' | 'instrument' | 'direction' | 'net_pl'
 type SortDir = 'asc' | 'desc'
 
-interface Props { trades: Trade[] }
+interface Props { trades: Trade[]; explanations?: Record<string, string> }
 
 const PAGE_SIZE = 25
 
-export function TradeTable({ trades }: Props) {
+export function TradeTable({ trades, explanations = {} }: Props) {
   const [sort,    setSort]    = useState<{ key: SortKey; dir: SortDir }>({ key: 'opened_at', dir: 'desc' })
   const [page,    setPage]    = useState(1)
   const [filterPair,    setFilterPair]    = useState('ALL')
@@ -97,8 +97,8 @@ export function TradeTable({ trades }: Props) {
                 ['opened_at',  'Date',   'px-3 text-left'],
                 ['instrument', 'Pair',   'px-3 text-left'],
                 ['direction',  'Dir',    'px-3 text-left'],
-                [null,         'Entry',  'px-3 text-right'],
-                [null,         'Exit',   'px-3 text-right'],
+                [null,         'Entry',  'px-3 text-right hidden sm:table-cell'],
+                [null,         'Exit',   'px-3 text-right hidden sm:table-cell'],
                 ['net_pl',     'P&L',    'px-3 text-right'],
                 [null,         'Hold',   'px-3 text-right hidden md:table-cell'],
                 [null,         'Regime', 'px-3 text-left  hidden lg:table-cell'],
@@ -118,7 +118,7 @@ export function TradeTable({ trades }: Props) {
             {paged.length === 0 ? (
               <tr><td colSpan={9} className="py-10 text-center text-anchor-muted font-mono text-sm italic">No trades match filters.</td></tr>
             ) : (
-              paged.map(t => <TradeRow key={t.id} trade={t} />)
+              paged.map(t => <TradeRow key={t.id} trade={t} explanation={explanations[t.id]} />)
             )}
           </tbody>
         </table>
