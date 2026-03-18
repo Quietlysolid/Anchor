@@ -44,4 +44,12 @@ jobs:
           VPS_HOST: ${{ secrets.DEPLOY_VPS_HOST }}
           VPS_USER: ${{ secrets.DEPLOY_VPS_USER }}
         run: |
-          ssh "$VPS_USER@$VPS_HOST" "curl -fsS http://localhost/api/v1/system/health"
+          ssh "$VPS_USER@$VPS_HOST" '
+            for i in 1 2 3 4 5 6; do
+              if curl -fsS http://127.0.0.1:8080/api/v1/system/health; then
+                exit 0
+              fi
+              sleep 5
+            done
+            exit 1
+          '
