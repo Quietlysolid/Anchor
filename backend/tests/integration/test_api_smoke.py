@@ -61,6 +61,7 @@ async def test_health_check_has_status_field(client):
     assert "status" in data
     assert "db" in data
     assert "timestamp" in data
+    assert "deployed_sha" in data
 
 
 @pytest.mark.asyncio

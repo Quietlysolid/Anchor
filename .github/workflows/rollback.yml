@@ -1,63 +1,27 @@
-name: Deploy Production
+name: Rollback Production
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref or commit SHA to redeploy
+        required: true
+        type: string
 
 concurrency:
   group: production-deploy
   cancel-in-progress: true
 
 jobs:
-  smoke-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Poetry
-        run: pip install poetry
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: poetry install --with dev
-
-      - name: Run backend smoke tests
-        working-directory: backend
-        run: poetry run pytest tests/integration/test_api_smoke.py -q
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-
-  deploy:
-    needs: smoke-test
+  rollback:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: Check out repository
+      - name: Check out repository at requested ref
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Start SSH agent
         uses: webfactory/ssh-agent@v0.9.0
@@ -73,11 +37,11 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Deploy to VPS
+      - name: Deploy selected ref to VPS
         env:
           VPS_HOST: ${{ secrets.DEPLOY_VPS_HOST }}
           VPS_USER: ${{ secrets.DEPLOY_VPS_USER }}
-          DEPLOY_SHA: ${{ github.sha }}
+          DEPLOY_SHA: ${{ inputs.ref }}
         run: bash infrastructure/scripts/deploy.sh
 
       - name: Health check

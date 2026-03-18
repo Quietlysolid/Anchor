@@ -236,6 +236,12 @@ Required repository secrets:
 The workflow reuses `infrastructure/scripts/deploy.sh` and verifies
 `/api/v1/system/health` after deployment.
 
+It now also:
+
+- runs backend/frontend smoke tests before deploy
+- exposes `deployed_sha` in `/api/v1/system/health`
+- includes `.github/workflows/rollback.yml` for manual rollback to a chosen ref
+
 ---
 
 ## Monitoring

@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from anchor.build_info import DEPLOYED_AT, DEPLOYED_SHA
 from anchor.config import get_settings
 from anchor.database.engine import get_db
 from anchor.api.schemas import RolloutConfigResponse
@@ -54,6 +55,8 @@ async def health_check(session: AsyncSession = Depends(get_db)):
         "status":              "ok" if db_ok else "degraded",
         "db":                  "ok" if db_ok else "error",
         "timestamp":           utcnow().isoformat(),
+        "deployed_sha":        DEPLOYED_SHA,
+        "deployed_at":         DEPLOYED_AT,
         "stream_connected":    _stream_connected,
         "account_balance":     _account_balance,
         "account_equity":      _account_equity,

@@ -4,6 +4,13 @@
 set -euo pipefail
 
 DEPLOY_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo local-sync)"
+DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+BUILD_INFO_FILE="backend/anchor/build_info.py"
+
+cat > "$BUILD_INFO_FILE" <<EOF
+DEPLOYED_SHA = "${DEPLOY_SHA}"
+DEPLOYED_AT = "${DEPLOYED_AT}"
+EOF
 
 echo "==> deploying current working tree (${DEPLOY_SHA})..."
 echo "==> building images..."
