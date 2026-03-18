@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import {
-  createChart, ColorType, AreaSeries,
-  type IChartApi, type ISeriesApi, type Time,
+  createChart, ColorType, AreaSeries, LineStyle,
+  type IChartApi, type ISeriesApi, type Time, type IPriceLine,
 } from 'lightweight-charts'
 import type { EquityPoint } from '../../types'
 
@@ -14,6 +14,7 @@ export function EquityCurve({ data, height = 220 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef     = useRef<IChartApi | null>(null)
   const seriesRef    = useRef<ISeriesApi<'Area'> | null>(null)
+  const athLineRef   = useRef<IPriceLine | null>(null)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -53,16 +54,16 @@ export function EquityCurve({ data, height = 220 }: Props) {
     })
 
     const series = chart.addSeries(AreaSeries, {
-      lineColor:       '#30D158',
-      topColor:        '#30D15828',
-      bottomColor:     '#30D15800',
-      lineWidth:       2,
+      lineColor:                      '#30D158',
+      topColor:                       '#30D15828',
+      bottomColor:                    '#30D15800',
+      lineWidth:                      2,
       crosshairMarkerVisible:         true,
       crosshairMarkerRadius:          4,
       crosshairMarkerBorderColor:     '#30D158',
       crosshairMarkerBackgroundColor: '#1C1C1E',
-      lastValueVisible: false,
-      priceLineVisible: false,
+      lastValueVisible:               false,
+      priceLineVisible:               false,
     })
 
     chartRef.current  = chart
@@ -78,13 +79,55 @@ export function EquityCurve({ data, height = 220 }: Props) {
 
   useEffect(() => {
     if (!seriesRef.current || !data.length) return
+
     const pts = data.map(d => ({
       time:  (new Date(d.time).getTime() / 1000) as Time,
       value: d.account_equity,
     }))
     seriesRef.current.setData(pts)
     chartRef.current?.timeScale().fitContent()
+
+    // All-time high dotted line
+    const ath     = Math.max(...pts.map(p => p.value))
+    const current = pts[pts.length - 1]?.value ?? 0
+    const atATH   = current >= ath * 0.9999   // floating-point tolerance
+
+    // Color: green at/above ATH, muted amber below
+    seriesRef.current.applyOptions({
+      lineColor:   atATH ? '#30D158' : '#FF9F0A',
+      topColor:    atATH ? '#30D15828' : '#FF9F0A18',
+      bottomColor: '#00000000',
+    })
+
+    // Remove old ATH line before drawing a new one
+    if (athLineRef.current) {
+      try { seriesRef.current.removePriceLine(athLineRef.current) } catch { /* ignore */ }
+      athLineRef.current = null
+    }
+
+    // Only draw the ATH line when there's meaningful room above current
+    if (!atATH) {
+      athLineRef.current = seriesRef.current.createPriceLine({
+        price:              ath,
+        color:              '#30D15840',
+        lineWidth:          1,
+        lineStyle:          LineStyle.Dashed,
+        axisLabelVisible:   false,
+        title:              'ATH',
+      })
+    }
   }, [data])
+
+  if (!data.length) {
+    return (
+      <div
+        style={{ height }}
+        className="w-full flex items-center justify-center"
+      >
+        <p className="text-xs text-anchor-muted font-mono">No equity data yet</p>
+      </div>
+    )
+  }
 
   return (
     <div

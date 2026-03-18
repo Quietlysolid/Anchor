@@ -26,6 +26,7 @@ def _regime_size_scale(regime_state: str | None, strategy: str) -> float:
     Returns 1.0 when regime is None / UNKNOWN so the gate fails open (no size change).
     """
     if not regime_state or regime_state == "UNKNOWN":
+        logger.warning("regime_size_scale_fallback", regime_state=regime_state, strategy=strategy)
         return 1.0
     if strategy == "trend":
         return {"TRENDING": 1.0, "RANGING": 0.80, "VOLATILE": 0.60}.get(regime_state, 1.0)
@@ -957,6 +958,24 @@ def run_signal_scan(self):
                         # EUR_JPY uses 0.75% risk — failed 2018+2019 in walk-forward (JPY cross weakness)
                         # USD_CAD: walk-forward confirmed 7/7 profitable, lowest DD (-15.2%) → full 1% risk
                         _lcr_risk_scale = 0.75 if instrument in {"EUR_JPY"} else 1.0
+                        # Correlation scaling: EUR/GBP/AUD/NZD vs USD move together on DXY reversals.
+                        # If 2+ of those pairs already have open positions, cap new signals at 0.5%
+                        # to avoid treating three 1% bets as independent when they're one 3% USD bet.
+                        # USD_CAD and EUR_JPY are excluded — they have different structural drivers.
+                        # Count drops when positions close (current open count, not session peak).
+                        _DOLLAR_PAIRS_CORR = {"EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD"}
+                        if instrument in _DOLLAR_PAIRS_CORR:
+                            _open_dollar_count = sum(
+                                1 for p in open_positions if p.instrument in _DOLLAR_PAIRS_CORR
+                            )
+                            if _open_dollar_count >= 2:
+                                _lcr_risk_scale = 0.5
+                                logger.info(
+                                    "lcr_correlation_scale_applied",
+                                    instrument=instrument,
+                                    open_dollar_positions=_open_dollar_count,
+                                    risk_scale=_lcr_risk_scale,
+                                )
                         # DXY scaling: strong USD momentum (|5d change| > 1.5%) reduces LCR size
                         # on USD pairs by 30% — mean reversion less reliable during macro trends
                         _USD_PAIRS = {"EUR_USD", "GBP_USD", "NZD_USD", "USD_CAD", "AUD_USD"}

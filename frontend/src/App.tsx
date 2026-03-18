@@ -4,9 +4,10 @@ import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-route
 import { useQueryClient } from '@tanstack/react-query'
 import { Sidebar } from './components/layout/Sidebar'
 import { DisconnectedBanner } from './components/layout/DisconnectedBanner'
-import Cockpit      from './pages/Cockpit'  // exports as Dashboard internally
+import Console      from './pages/Console'
 import Intelligence from './pages/Intelligence'
 import Trades       from './pages/Trades'
+import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { wsClient }  from './api/websocket'
 import { useLatestSignals, useRegime, usePositions } from './api/hooks'
 import { useMarketStore, useSystemStore, useSignalStore, usePositionStore, useWeightsStore } from './store'
@@ -132,9 +133,9 @@ function Layout() {
         </div>
 
         <Routes>
-          <Route path="/"             element={<Cockpit />} />
-          <Route path="/intelligence" element={<Intelligence />} />
-          <Route path="/trades"       element={<Trades />} />
+          <Route path="/"             element={<ErrorBoundary label="Console"><Console /></ErrorBoundary>} />
+          <Route path="/intelligence" element={<ErrorBoundary label="Intelligence"><Intelligence /></ErrorBoundary>} />
+          <Route path="/trades"       element={<ErrorBoundary label="Trades"><Trades /></ErrorBoundary>} />
           {/* Legacy redirects */}
           <Route path="/performance"  element={<Navigate to="/trades" replace />} />
           <Route path="/journal"      element={<Navigate to="/intelligence" replace />} />

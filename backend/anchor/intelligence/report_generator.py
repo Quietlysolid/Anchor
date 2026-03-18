@@ -8,6 +8,7 @@ Model strategy (cost vs quality):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -25,67 +26,54 @@ _MODEL_OPUS   = "claude-opus-4-6"    # journal analysis only
 _PRESESSION_SYSTEM = """\
 You are the intelligence layer for Anchor, an autonomous algorithmic FX trading system.
 
-Anchor trades 6 currency pairs (EUR_USD, GBP_USD, NZD_USD, USD_CAD, EUR_JPY, AUD_USD) using \
-two primary strategies:
-- London trend-following (07:00–12:00 UTC) with a 0.72 confluence score threshold
-- London Close Reversal (LCR, 17:00–19:00 UTC) betting on mean reversion at NY close
+Anchor trades 6 pairs (EUR_USD, GBP_USD, NZD_USD, USD_CAD, EUR_JPY, AUD_USD) using London \
+trend-following (07–12 UTC, threshold 0.72) and London Close Reversal (17–19 UTC).
 
-Your role is to synthesize live market context into a structured pre-session brief. \
-Be direct, specific, and quantitative. Reference actual numbers from the context. No hedging. \
-Do not use markdown bold (no ** anywhere). Plain text only.
+Write a concise pre-session brief. Total response: 150 words max. \
+Be direct and specific. No hedging. No markdown bold (no ** anywhere). Plain text only.
 
-Format your response exactly as:
+Format exactly as:
 
 MACRO ENVIRONMENT
-[2-3 sentences: what is driving FX today? Risk-on or risk-off? Dominant narrative?]
+[1-2 sentences: dominant driver, risk-on or risk-off]
 
 SESSION OUTLOOK
-[2-3 sentences: trending or choppy day likely? Why? What should Anchor watch for?]
+[1-2 sentences: trending or choppy, and why]
 
 KEY RISKS
-• [bullet: events/factors that could suppress signals today]
-• [repeat for each risk]
+• [one line per risk — 2 bullets max]
 
 PAIR FOCUS
-• [INSTRUMENT]: [one line on macro tailwinds/headwinds given rate diff, COT, cross-asset]
-• [repeat for each pair worth noting]
+• [INSTRUMENT]: [tailwind or headwind — one line; only pairs with a clear directional bias]
 
 CALENDAR GUIDANCE
-• [PAIR or currency]: [upcoming event + whether to favor, avoid, or stay neutral — one line each]
-• [repeat for each pair affected by events in the next 24h; skip pairs with no relevant events]
+• [currency/event]: [favor / avoid / neutral — one line; skip pairs with nothing relevant]
 
 CONVICTION
-Today's environment is [TRENDING / CHOPPY / MIXED] because [one-sentence reason].
+[TRENDING / CHOPPY / MIXED] — [one clause reason].
 """
 
 _POSTSESSION_SYSTEM = """\
 You are the intelligence layer for Anchor, an autonomous algorithmic FX trading system.
 
-The London session (07:00–12:00 UTC) has just closed. Your role is to generate a structured \
-post-session debrief that analytically connects what happened to why it happened.
+The London session just closed. Write a short, engaging debrief the system owner will enjoy reading. \
+Think sports recap energy — confident, clear, a little personality. \
+Total response: 120 words max. No jargon, no raw indicator values. \
+No markdown bold (no ** anywhere). Plain text only.
 
-Be honest about underperformance. If signals were suppressed or the session was choppy, \
-explain the macro cause, not just what the system did. \
-Do not use markdown bold (no ** anywhere). Plain text only.
-
-Format your response exactly as:
+Format exactly as:
 
 SESSION SUMMARY
-[2-3 sentences: what happened? trades taken, net P&L, signals fired vs suppressed]
+[1-2 sentences: what happened — punchy, plain English]
 
-WHY THE SESSION BEHAVED THIS WAY
-[2-3 sentences: connect the macro context — news releases, risk sentiment, rate moves — \
-to the actual session behavior]
+WHY IT HAPPENED
+[1-2 sentences: what drove the market, conversational tone]
 
-SIGNAL PERFORMANCE
-[Bullet breakdown: which pairs fired, what confluence scores, any suppression patterns worth noting]
+PAIRS TO WATCH TOMORROW
+• [pair or event]: [one line — 2 bullets max]
 
-WATCH FOR TOMORROW
-• [bullet: key macro theme or event in next 24h]
-• [repeat]
-
-ONE-LINE VERDICT
-[One direct sentence: was today's session quality good/bad/neutral and why]
+VERDICT
+[One sentence: honest, direct — expected behavior or a concern]
 """
 
 _WEEKLY_SYSTEM = """\
@@ -196,16 +184,26 @@ async def _generate_fast(report_type: str, system_prompt: str, context: dict[str
 
     logger.info("intelligence_generating", report_type=report_type, model=_MODEL_SONNET, context_chars=len(context_str))
 
-    response = await client.messages.create(
-        model=_MODEL_SONNET,
-        max_tokens=1200,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    content = next((b.text for b in response.content if b.type == "text"), "")
-    tokens  = response.usage.input_tokens + response.usage.output_tokens
-    logger.info("intelligence_generated", report_type=report_type, tokens=tokens, chars=len(content))
-    return content, tokens
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = await client.messages.create(
+                model=_MODEL_SONNET,
+                max_tokens=600,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            content = next((b.text for b in response.content if b.type == "text"), "")
+            tokens  = response.usage.input_tokens + response.usage.output_tokens
+            logger.info("intelligence_generated", report_type=report_type, tokens=tokens, chars=len(content))
+            return content, tokens
+        except Exception as exc:
+            last_exc = exc
+            wait = 2 ** attempt
+            logger.warning("intelligence_api_retry", report_type=report_type, attempt=attempt + 1, wait=wait, error=str(exc))
+            await asyncio.sleep(wait)
+
+    raise RuntimeError(f"Claude API failed after 3 attempts: {last_exc}") from last_exc
 
 
 async def _generate_deep(
@@ -224,16 +222,26 @@ async def _generate_deep(
 
     logger.info("intelligence_generating", report_type=report_type, model=model, context_chars=len(context_str))
 
-    async with client.messages.stream(
-        model=model,
-        max_tokens=1200,
-        thinking={"type": "adaptive"},
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        final = await stream.get_final_message()
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            async with client.messages.stream(
+                model=model,
+                max_tokens=1200,
+                thinking={"type": "adaptive"},
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            ) as stream:
+                final = await stream.get_final_message()
 
-    content = next((b.text for b in final.content if b.type == "text"), "")
-    tokens  = final.usage.input_tokens + final.usage.output_tokens
-    logger.info("intelligence_generated", report_type=report_type, tokens=tokens, chars=len(content))
-    return content, tokens
+            content = next((b.text for b in final.content if b.type == "text"), "")
+            tokens  = final.usage.input_tokens + final.usage.output_tokens
+            logger.info("intelligence_generated", report_type=report_type, tokens=tokens, chars=len(content))
+            return content, tokens
+        except Exception as exc:
+            last_exc = exc
+            wait = 2 ** attempt
+            logger.warning("intelligence_api_retry", report_type=report_type, attempt=attempt + 1, wait=wait, error=str(exc))
+            await asyncio.sleep(wait)
+
+    raise RuntimeError(f"Claude API failed after 3 attempts: {last_exc}") from last_exc

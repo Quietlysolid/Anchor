@@ -4,6 +4,7 @@ Suppresses signals during low-quality trading periods.
 """
 from datetime import datetime
 
+from anchor.config import get_settings as _get_settings
 from anchor.utils.time_utils import (
     is_monday_open_risk,
     is_friday_thin_liquidity,
@@ -24,7 +25,8 @@ ALLOWED_SESSIONS = {"LONDON"}
 # JPY pairs trade well in Asian session (00:00-09:00 UTC) — Tokyo is their
 # primary market. OOS data on USD_JPY shows Asian session has comparable
 # WR to London (~48%) with lower spread and cleaner ranging structure.
-JPY_INSTRUMENTS = {"USD_JPY", "GBP_JPY", "EUR_JPY", "AUD_JPY", "NZD_JPY"}
+# Derived from active instruments in config so this stays in sync automatically.
+JPY_INSTRUMENTS = {i for i in _get_settings().instruments if "JPY" in i}
 ASIAN_SESSION_START = 0   # UTC hour
 ASIAN_SESSION_END   = 3   # UTC hour — use 00:00-03:00, the cleanest Tokyo window
 

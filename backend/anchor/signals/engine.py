@@ -295,8 +295,8 @@ class ConfluenceEngine:
                     _sq_threshold_adj = float(_sq.get("threshold_adjustment", 0.0))
                     _sq_pair_rankings = _sq.get("pair_rankings", [])
                     _sq_size_scale = float(_sq.get("size_scale", 1.0))
-            except Exception:
-                pass  # fail-open — defaults already set above
+            except Exception as _sq_exc:
+                logger.warning("session_quality_redis_read_failed", error=str(_sq_exc))
 
         # Tier 2a: CHOPPY + high confidence → only evaluate the top 3 pairs by macro tailwind
         if _sq_env == "CHOPPY" and _sq_conf >= 0.7 and _sq_pair_rankings:

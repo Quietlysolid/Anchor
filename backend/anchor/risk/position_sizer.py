@@ -126,6 +126,12 @@ class PositionSizer:
         stop_distance = abs(entry_price - stop_loss)
 
         if stop_distance < 1e-10:
+            logger.warning(
+                "position_sizer_zero_stop_fallback",
+                instrument=instrument,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+            )
             return MICRO_LOT
 
         stop_pips = stop_distance / pip_size
