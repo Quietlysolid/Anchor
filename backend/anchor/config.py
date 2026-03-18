@@ -1,9 +1,23 @@
 from functools import lru_cache
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @field_validator("instruments", "confirmation_timeframes", "expected_pilot_instruments", mode="before")
+    @classmethod
+    def _split_csv_list(cls, value):
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                return value
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return value
 
     # ── App ───────────────────────────────────────────────────
     app_env: str = "development"
@@ -73,6 +87,31 @@ class Settings(BaseSettings):
     max_position_pct: float = 0.05         # 5% hard cap per position notional
     correlation_block_threshold: float = 0.70
     spread_spike_multiplier: float = 3.0   # suppress if spread > 3x session median
+    enable_trend_engine: bool = True
+    trend_paper_only: bool = False
+    trend_risk_pct: float = 0.01
+    enable_mr_engine: bool = True
+    mr_paper_only: bool = False
+    mr_risk_pct: float = 0.01
+    enable_lcr_engine: bool = True
+    lcr_paper_only: bool = False
+    lcr_risk_pct: float = 0.01
+    enable_m15_engine: bool = False
+    m15_paper_only: bool = True
+    m15_risk_pct: float = 0.005
+    expected_pilot_instruments: list[str] = ["EUR_USD", "GBP_USD", "USD_CAD"]
+    expected_pilot_trend_enabled: bool = True
+    expected_pilot_trend_paper_only: bool = True
+    expected_pilot_trend_risk_pct: float = 0.001
+    expected_pilot_mr_enabled: bool = True
+    expected_pilot_mr_paper_only: bool = False
+    expected_pilot_mr_risk_pct: float = 0.0015
+    expected_pilot_lcr_enabled: bool = True
+    expected_pilot_lcr_paper_only: bool = False
+    expected_pilot_lcr_risk_pct: float = 0.0035
+    expected_pilot_m15_enabled: bool = False
+    expected_pilot_m15_paper_only: bool = True
+    expected_pilot_m15_risk_pct: float = 0.0005
 
     # ── Anthropic ─────────────────────────────────────────────
     anthropic_api_key: str = ""

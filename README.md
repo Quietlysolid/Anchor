@@ -127,6 +127,23 @@ USD_JPY uses 0.5% risk due to higher drawdown profile.
 
 ---
 
+## Rollout Controls
+
+Anchor now supports env-driven rollout controls so you can freeze the live pilot without editing code:
+
+- `INSTRUMENTS=EUR_USD,GBP_USD,USD_CAD`
+- `ENABLE_TREND_ENGINE=true` + `TREND_PAPER_ONLY=true`
+- `ENABLE_MR_ENGINE=true`
+- `ENABLE_LCR_ENGINE=true`
+- `ENABLE_M15_ENGINE=false`
+- `TREND_RISK_PCT=0.001`
+- `MR_RISK_PCT=0.0015`
+- `LCR_RISK_PCT=0.0035`
+
+This lets the scheduler keep evaluating all configured sleeves while only submitting live orders for the sleeves and risk budgets you explicitly enable in `.env`.
+
+---
+
 ## Weight Optimization
 
 L1 logistic regression optimizer using actual trade outcomes as labels.

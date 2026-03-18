@@ -1,12 +1,20 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../client'
 import type {
-  SystemHealth,
+  SystemHealth, RolloutConfig,
   PerformanceSummary, EquityPoint, MonteCarloResult, Trade, EconomicEvent
 } from '../../types'
 
 export const useSystemHealth = () =>
   useQuery({ queryKey: ['system-health'], queryFn: () => api.get<SystemHealth>('/system/health'), refetchInterval: 60_000 })
+
+export const useRolloutConfig = () =>
+  useQuery({
+    queryKey: ['system-config'],
+    queryFn: () => api.get<RolloutConfig>('/system/config'),
+    refetchInterval: 60_000,
+    staleTime: 55_000,
+  })
 
 export const usePerformance = () =>
   useQuery({ queryKey: ['performance'], queryFn: () => api.get<PerformanceSummary>('/performance/summary'), refetchInterval: 60_000 })

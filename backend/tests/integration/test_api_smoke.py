@@ -85,6 +85,23 @@ async def test_system_events_returns_list(client):
     assert isinstance(data, list)
 
 
+@pytest.mark.asyncio
+async def test_system_config_returns_200(client):
+    response = await client.get("/api/v1/system/config")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_system_config_has_rollout_fields(client):
+    response = await client.get("/api/v1/system/config")
+    data = response.json()
+    assert "instruments" in data
+    assert "trend" in data
+    assert "mean_reversion" in data
+    assert "lcr" in data
+    assert "m15" in data
+
+
 # ── Positions endpoint ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

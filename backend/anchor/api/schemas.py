@@ -25,6 +25,32 @@ class SystemEventResponse(BaseModel):
     metadata: Optional[Dict] = None
 
 
+class EngineConfigResponse(BaseModel):
+    enabled: bool
+    paper_only: bool
+    risk_pct: float
+
+
+class PilotConfigResponse(BaseModel):
+    instruments: List[str]
+    trend: EngineConfigResponse
+    mean_reversion: EngineConfigResponse
+    lcr: EngineConfigResponse
+    m15: EngineConfigResponse
+
+
+class RolloutConfigResponse(BaseModel):
+    instruments: List[str]
+    trend: EngineConfigResponse
+    mean_reversion: EngineConfigResponse
+    lcr: EngineConfigResponse
+    m15: EngineConfigResponse
+    expected_pilot: PilotConfigResponse
+    max_risk_per_trade_fallback: float
+    min_confluence_score: float
+    min_ml_confidence: float
+
+
 # ── Market Data ───────────────────────────────────────────────────────────────
 class CandleResponse(BaseModel):
     time: datetime

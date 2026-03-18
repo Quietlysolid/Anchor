@@ -2,10 +2,13 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from anchor.config import get_settings
 from anchor.database.engine import get_db
+from anchor.api.schemas import RolloutConfigResponse
 from anchor.utils.time_utils import utcnow
 
 router = APIRouter()
+settings = get_settings()
 
 # Set by main.py lifespan after stream starts
 _stream_connected: bool = False
@@ -56,6 +59,60 @@ async def health_check(session: AsyncSession = Depends(get_db)):
         "account_equity":      _account_equity,
         "open_positions":      open_positions,
         "last_reconciliation": _last_reconciliation,
+    }
+
+
+@router.get("/system/config", response_model=RolloutConfigResponse)
+async def get_system_config():
+    """Return the active trading rollout configuration."""
+    return {
+        "instruments": settings.instruments,
+        "trend": {
+            "enabled": settings.enable_trend_engine,
+            "paper_only": settings.trend_paper_only,
+            "risk_pct": settings.trend_risk_pct,
+        },
+        "mean_reversion": {
+            "enabled": settings.enable_mr_engine,
+            "paper_only": settings.mr_paper_only,
+            "risk_pct": settings.mr_risk_pct,
+        },
+        "lcr": {
+            "enabled": settings.enable_lcr_engine,
+            "paper_only": settings.lcr_paper_only,
+            "risk_pct": settings.lcr_risk_pct,
+        },
+        "m15": {
+            "enabled": settings.enable_m15_engine,
+            "paper_only": settings.m15_paper_only,
+            "risk_pct": settings.m15_risk_pct,
+        },
+        "expected_pilot": {
+            "instruments": settings.expected_pilot_instruments,
+            "trend": {
+                "enabled": settings.expected_pilot_trend_enabled,
+                "paper_only": settings.expected_pilot_trend_paper_only,
+                "risk_pct": settings.expected_pilot_trend_risk_pct,
+            },
+            "mean_reversion": {
+                "enabled": settings.expected_pilot_mr_enabled,
+                "paper_only": settings.expected_pilot_mr_paper_only,
+                "risk_pct": settings.expected_pilot_mr_risk_pct,
+            },
+            "lcr": {
+                "enabled": settings.expected_pilot_lcr_enabled,
+                "paper_only": settings.expected_pilot_lcr_paper_only,
+                "risk_pct": settings.expected_pilot_lcr_risk_pct,
+            },
+            "m15": {
+                "enabled": settings.expected_pilot_m15_enabled,
+                "paper_only": settings.expected_pilot_m15_paper_only,
+                "risk_pct": settings.expected_pilot_m15_risk_pct,
+            },
+        },
+        "max_risk_per_trade_fallback": settings.max_risk_per_trade,
+        "min_confluence_score": settings.min_confluence_score,
+        "min_ml_confidence": settings.min_ml_confidence,
     }
 
 

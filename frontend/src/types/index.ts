@@ -147,6 +147,32 @@ export interface SystemHealth {
   account_equity: number
 }
 
+export interface EngineRolloutConfig {
+  enabled: boolean
+  paper_only: boolean
+  risk_pct: number
+}
+
+export interface PilotRolloutConfig {
+  instruments: string[]
+  trend: EngineRolloutConfig
+  mean_reversion: EngineRolloutConfig
+  lcr: EngineRolloutConfig
+  m15: EngineRolloutConfig
+}
+
+export interface RolloutConfig {
+  instruments: string[]
+  trend: EngineRolloutConfig
+  mean_reversion: EngineRolloutConfig
+  lcr: EngineRolloutConfig
+  m15: EngineRolloutConfig
+  expected_pilot: PilotRolloutConfig
+  max_risk_per_trade_fallback: number
+  min_confluence_score: number
+  min_ml_confidence: number
+}
+
 // ── Edge confidence ───────────────────────────────────────────
 export interface EdgeConfidenceSignal {
   flagged: boolean

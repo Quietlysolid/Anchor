@@ -73,6 +73,7 @@ def run_signal_scan(self):
 
         # Sync Redis client for FeatureEngineer (called in executor thread, not async)
         sync_redis = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        active_instruments = settings.instruments
 
         broker = BrokerClient()
         sizer = PositionSizer()
@@ -145,7 +146,7 @@ def run_signal_scan(self):
         feature_engineer = FeatureEngineer(redis_client=sync_redis)
         _classifiers: dict = {}
         _ood_detectors: dict = {}
-        for _inst in settings.instruments:
+        for _inst in active_instruments:
             _clf = XGBDirectionClassifier()
             _model_path = _Path("/app/models") / f"{_inst}_xgb.pkl"
             if _clf.load(_model_path):
@@ -166,7 +167,7 @@ def run_signal_scan(self):
             order_repo_pre = OrderRepository(session)
 
             daily_closes = {}
-            for inst in settings.instruments:
+            for inst in active_instruments:
                 rows = await market_repo.get_latest_n_candles(inst, "D", 250)
                 if len(rows) >= 2:
                     daily_closes[inst] = pd.Series(
@@ -189,7 +190,7 @@ def run_signal_scan(self):
         # Falls back to the shared "hmm_latest.pkl" if the per-instrument file is missing,
         # and to no HMM at all (engine skips the gate) if neither file exists.
         _hmm_detectors: dict = {}
-        for _inst in settings.instruments:
+        for _inst in active_instruments:
             _per_inst_path  = _HMMPath("/app/models") / f"hmm_{_inst}.pkl"
             _fallback_path  = _HMMPath("/app/models/hmm_latest.pkl")
             _det = HMMRegimeDetector()
@@ -236,7 +237,7 @@ def run_signal_scan(self):
 
         # Evaluate + persist each instrument in its own isolated session
         # so one DB error doesn't poison the others
-        for instrument in settings.instruments:
+        for instrument in active_instruments:
             try:
                 async with _db_engine.AsyncSessionFactory() as session:
                     market_repo   = MarketDataRepository(session)
@@ -353,6 +354,16 @@ def run_signal_scan(self):
                         logger.warning("signal_ws_publish_failed", error=str(_ws_exc))
 
                     if result.suppressed:
+                        await session.commit()
+                        continue
+
+                    if not settings.enable_trend_engine:
+                        logger.info("trend_engine_disabled", instrument=instrument)
+                        await session.commit()
+                        continue
+
+                    if settings.trend_paper_only:
+                        logger.info("trend_signal_paper_only", instrument=instrument, direction=result.direction)
                         await session.commit()
                         continue
 
@@ -499,6 +510,7 @@ def run_signal_scan(self):
                         instrument=instrument,
                         entry_price=entry,
                         stop_loss=stop_loss,
+                        risk_pct_override=settings.trend_risk_pct,
                         kelly_fraction=float(result.ml_confidence) if result.ml_confidence else None,
                         drawdown_scale=drawdown_monitor.scale_factor,
                         vix_scale=result.vix_multiplier,
@@ -569,6 +581,16 @@ def run_signal_scan(self):
                     if mr_result.suppressed:
                         continue
 
+                    if not settings.enable_mr_engine:
+                        logger.info("mr_engine_disabled", instrument=instrument)
+                        await mr_session.commit()
+                        continue
+
+                    if settings.mr_paper_only:
+                        logger.info("mr_signal_paper_only", instrument=instrument, direction=mr_result.direction)
+                        await mr_session.commit()
+                        continue
+
                     # Execution gates (same as trend engine)
                     if not drawdown_monitor.check()[0]:
                         continue
@@ -589,6 +611,7 @@ def run_signal_scan(self):
                         instrument=instrument,
                         entry_price=mr_result.entry_price,
                         stop_loss=mr_result.stop_loss,
+                        risk_pct_override=settings.mr_risk_pct,
                         drawdown_scale=drawdown_monitor.scale_factor,
                         session_scale=_session_size_scale,
                         rolling_score_scale=_rolling_score_scale,
@@ -636,6 +659,9 @@ def run_signal_scan(self):
             # SL/TP use M15 ATR — smaller in $ terms but same 1% risk sizing.
             # GTD 1 hour (M15 setups go stale much faster than H1).
             try:
+                if not settings.enable_m15_engine:
+                    continue
+
                 async with _db_engine.AsyncSessionFactory() as m15_session:
                     m15_market_repo  = MarketDataRepository(m15_session)
                     m15_order_repo   = OrderRepository(m15_session)
@@ -677,6 +703,11 @@ def run_signal_scan(self):
                     if m15_result.suppressed:
                         continue
 
+                    if settings.m15_paper_only:
+                        logger.info("m15_signal_paper_only", instrument=instrument, direction=m15_result.direction)
+                        await m15_session.commit()
+                        continue
+
                     # Execution gates
                     if not drawdown_monitor.check()[0]:
                         continue
@@ -716,6 +747,7 @@ def run_signal_scan(self):
                         instrument=instrument,
                         entry_price=m15_entry,
                         stop_loss=m15_sl,
+                        risk_pct_override=settings.m15_risk_pct,
                         drawdown_scale=drawdown_monitor.scale_factor,
                         vix_scale=m15_result.vix_multiplier,
                         news_scale=m15_result.news_multiplier,
@@ -764,7 +796,7 @@ def run_signal_scan(self):
         #    which would skip the LCR block entirely if it lived inside that loop.
         if now.hour in {17, 18, 19}:
             for instrument in LCR_INSTRUMENTS:
-                if instrument not in settings.instruments:
+                if instrument not in active_instruments:
                     continue
 
                 # ── EUR/JPY rolling 60-day PF circuit breaker ─────────────────
@@ -899,6 +931,16 @@ def run_signal_scan(self):
                             await lcr_session.commit()
                             continue
 
+                        if not settings.enable_lcr_engine:
+                            logger.info("lcr_engine_disabled", instrument=instrument)
+                            await lcr_session.commit()
+                            continue
+
+                        if settings.lcr_paper_only:
+                            logger.info("lcr_signal_paper_only", instrument=instrument, direction=lcr_result.direction)
+                            await lcr_session.commit()
+                            continue
+
                         # Execution gates
                         if not drawdown_monitor.check()[0]:
                             await lcr_session.commit()
@@ -995,6 +1037,7 @@ def run_signal_scan(self):
                             instrument=instrument,
                             entry_price=lcr_result.entry_price,
                             stop_loss=lcr_result.stop_loss,
+                            risk_pct_override=settings.lcr_risk_pct,
                             drawdown_scale=drawdown_monitor.scale_factor * _lcr_risk_scale,
                             session_scale=_session_size_scale,
                             rolling_score_scale=_rolling_score_scale,

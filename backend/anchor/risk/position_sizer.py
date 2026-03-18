@@ -80,6 +80,7 @@ class PositionSizer:
         instrument:        str,
         entry_price:       float,
         stop_loss:         float,
+        risk_pct_override: float | None = None,
         kelly_fraction:    float | None = None,
         correlation_scale: float = 1.0,
         drawdown_scale:    float = 1.0,
@@ -137,7 +138,8 @@ class PositionSizer:
         stop_pips = stop_distance / pip_size
         pv_per_unit = _pip_value_per_unit(instrument, entry_price, pip_size)
 
-        risk_amount = account_balance * settings.max_risk_per_trade
+        risk_pct = risk_pct_override if risk_pct_override is not None else settings.max_risk_per_trade
+        risk_amount = account_balance * risk_pct
         units_raw   = risk_amount / (stop_pips * pv_per_unit)
 
         # Kelly overlay (half-Kelly cap) — only reduces, never increases
@@ -175,7 +177,7 @@ class PositionSizer:
             "position_sized",
             instrument=instrument,
             units=final,
-            risk_pct=round(settings.max_risk_per_trade * 100, 2),
+            risk_pct=round(risk_pct * 100, 2),
             stop_pips=round(stop_pips, 1),
             vol_scale=round(vol_scale, 3),
             vix_scale=round(vix_scale, 3),

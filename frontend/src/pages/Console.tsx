@@ -4,8 +4,9 @@ import { AnimatedNumber } from '../components/ui/AnimatedNumber'
 import { EquityCurve } from '../components/charts/EquityCurve'
 import { AIBriefPanel } from '../components/panels/AIBriefPanel'
 import { PositionsTable } from '../components/panels/PositionsTable'
+import { RolloutCard } from '../components/panels/RolloutCard'
 import { SessionTimeline } from '../components/ui/SessionTimeline'
-import { useEquityCurve, useIntelligenceBrief } from '../api/hooks'
+import { useEquityCurve, useIntelligenceBrief, useRolloutConfig } from '../api/hooks'
 import { usePositionStore, useSystemStore } from '../store'
 import { getPhaseInfo } from '../utils/session'
 
@@ -23,6 +24,7 @@ function Stat({ label, value, color = 'text-anchor-text' }: StatProps) {
 export default function Console() {
   const { data: equityData }   = useEquityCurve()
   const { data: brief }        = useIntelligenceBrief()
+  const { data: rolloutConfig } = useRolloutConfig()
   const { equity }             = useSystemStore()
   const positions              = usePositionStore(s => s.positions)
 
@@ -121,7 +123,7 @@ export default function Console() {
         <EquityCurve data={equityPts} height={260} />
       </GlowCard>
 
-      {/* Bottom grid: positions + AI brief, equal weight */}
+      {/* Bottom grid */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
         {/* Open positions */}
@@ -138,16 +140,20 @@ export default function Console() {
           <PositionsTable positions={positions} />
         </GlowCard>
 
-        {/* Intelligence brief */}
-        <GlowCard padding={false} className="p-5">
-          <h2 className="text-sm font-semibold text-anchor-text mb-4">Intelligence Brief</h2>
-          <AIBriefPanel
-            content={brief?.content ?? null}
-            sessionType={brief?.type ?? 'PRE'}
-            timestamp={brief?.created_at}
-            typewrite={false}
-          />
-        </GlowCard>
+        <div className="space-y-4">
+          <RolloutCard config={rolloutConfig} />
+
+          {/* Intelligence brief */}
+          <GlowCard padding={false} className="p-5">
+            <h2 className="text-sm font-semibold text-anchor-text mb-4">Intelligence Brief</h2>
+            <AIBriefPanel
+              content={brief?.content ?? null}
+              sessionType={brief?.type ?? 'PRE'}
+              timestamp={brief?.created_at}
+              typewrite={false}
+            />
+          </GlowCard>
+        </div>
       </div>
     </div>
   )
