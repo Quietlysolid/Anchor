@@ -16,8 +16,7 @@ from typing import List, Tuple
 
 import structlog
 
-from anchor.config import settings
-from anchor.database.models import Position, Direction, PositionStatus
+from anchor.database.models import Position, PositionStatus
 from anchor.risk.correlation import CorrelationManager
 
 logger = structlog.get_logger(__name__)

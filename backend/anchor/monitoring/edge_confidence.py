@@ -348,8 +348,8 @@ async def _assess_macro_stress(redis) -> SignalResult:
                 # Score is [0,1] — centre is 0.5, extreme = |score - 0.5| > threshold
                 if abs(score - 0.5) > (_SURPRISE_EXTREME - 0.5):
                     extreme_currencies.append(currency)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("edge_confidence_econ_surprise_read_failed", error=str(exc))
 
     detail["econ_surprise"] = surprise_scores
     detail["extreme_currencies"] = extreme_currencies

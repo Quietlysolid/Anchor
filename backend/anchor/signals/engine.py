@@ -32,7 +32,7 @@ from anchor.signals.bb_kc_squeeze     import detect_squeeze
 from anchor.signals.adx_filter        import compute_adx_score
 from anchor.signals.support_resistance import compute_sr_score
 from anchor.signals.multi_timeframe   import check_mtf_alignment
-from anchor.signals.currency_strength import compute_csi, csi_signal_score
+from anchor.signals.currency_strength import compute_csi
 from anchor.signals.oanda_sentiment   import sentiment_signal_score, get_cached_score as get_sentiment_score
 from anchor.signals.cot_signal        import get_cot_score
 from anchor.signals.order_book_signal import get_cached_score as get_order_book_score
@@ -275,15 +275,13 @@ class ConfluenceEngine:
                 return result
 
         # ── Step 1c: Session quality gate (Tier 1 + Tier 2a) ─────────────
-        # Read from Redis key 'session_quality' (written by presession brief task at 06:30 UTC).
-        # On CHOPPY days with high confidence, skip non-top-3 pairs to concentrate edge.
-        # Threshold adjustment is applied at the final confluence check below.
-        # Fails open: if key is missing, sq_env=MIXED, no pair filtering, no threshold change.
+        # Read session quality for logging/metadata only — NOT used in execution.
+        # AI environment assessment is unvalidated. Once 200 live trades are recorded,
+        # run a backtest: compare PF on AI-CHOPPY days vs AI-TRENDING days.
+        # If the signal has information content, restore threshold_adjustment and size_scale.
         _sq_env = "MIXED"
         _sq_conf = 0.5
-        _sq_threshold_adj = 0.0
         _sq_pair_rankings: list[str] = []
-        _sq_size_scale = 1.0
         if self.redis_client is not None:
             try:
                 import json as _json_sq
@@ -292,22 +290,12 @@ class ConfluenceEngine:
                     _sq = _json_sq.loads(_sq_raw)
                     _sq_env = _sq.get("environment", "MIXED")
                     _sq_conf = float(_sq.get("confidence", 0.5))
-                    _sq_threshold_adj = float(_sq.get("threshold_adjustment", 0.0))
                     _sq_pair_rankings = _sq.get("pair_rankings", [])
-                    _sq_size_scale = float(_sq.get("size_scale", 1.0))
             except Exception as _sq_exc:
                 logger.warning("session_quality_redis_read_failed", error=str(_sq_exc))
 
-        # Tier 2a: CHOPPY + high confidence → only evaluate the top 3 pairs by macro tailwind
-        if _sq_env == "CHOPPY" and _sq_conf >= 0.7 and _sq_pair_rankings:
-            top3 = _sq_pair_rankings[:3]
-            if instrument not in top3:
-                result.suppression_reason = f"CHOPPY_PAIR_FILTER:not_in_top3"
-                result.metadata["session_quality_top3"] = top3
-                return result
-
         result.metadata["session_quality_env"] = _sq_env
-        result.metadata["session_quality_size_scale"] = _sq_size_scale
+        result.metadata["session_quality_conf"] = _sq_conf
 
         # ── Step 1b: HMM regime gate ──────────────────────────────────────
         # London trend strategy requires a TRENDING regime.
@@ -340,7 +328,8 @@ class ConfluenceEngine:
             closes = df_1h["close"].values
             highs  = df_1h["high"].values
             lows   = df_1h["low"].values
-            prev_c = np.roll(closes, 1); prev_c[0] = closes[0]
+            prev_c = np.roll(closes, 1)
+            prev_c[0] = closes[0]
             tr_vals = np.maximum(highs - lows, np.maximum(
                 np.abs(highs - prev_c), np.abs(lows - prev_c)
             ))
@@ -611,36 +600,67 @@ class ConfluenceEngine:
             "vix_multiplier":        vix_mult,
         })
 
-        # ── Step 6: ML confidence overlay ────────────────────────────────
+        # ── Step 6: ML confidence overlay (advisory only) ────────────────
+        # ML never blocks execution. Missing or stale → log and skip.
+        # Disagreement or low confidence → log warning + metadata, continue.
         if self._abl_ml and self.ml_classifier and self.feature_engineer:
-            try:
-                features = self.feature_engineer.build(instrument, df_1h, df_4h)
-                ml_conf, ml_dir = await asyncio.get_running_loop().run_in_executor(
-                    None, self.ml_classifier.predict, features
-                )
-                result.ml_confidence = round(ml_conf, 4)
-
-                is_ood = False
-                if self.ood_detector:
-                    is_ood = self.ood_detector.check(features)
-                    result.metadata["ood"] = is_ood
-
-                if not is_ood and ml_dir != direction:
-                    result.suppression_reason = "ML_DISAGREES"
-                    return result
-
-                if not is_ood and ml_conf < settings.min_ml_confidence:
-                    result.suppression_reason = "ML_LOW_CONFIDENCE"
-                    return result
-
-            except Exception as exc:
+            if getattr(self.ml_classifier, "is_stale", True):
                 logger.warning(
-                    "ml_unavailable_fallback",
-                    error=str(exc),
+                    "ml_classifier_stale_skipping",
                     instrument=instrument,
+                    mtime=str(getattr(self.ml_classifier, "_model_mtime", None)),
                 )
-                result.metadata["ml_fallback"] = True
-                # ML unavailable — continue with base confluence threshold only
+                result.metadata["ml_skipped"] = "stale"
+            else:
+                try:
+                    features = self.feature_engineer.build(instrument, df_1h, df_4h)
+                    ml_conf, ml_dir = await asyncio.get_running_loop().run_in_executor(
+                        None, self.ml_classifier.predict, features
+                    )
+                    result.ml_confidence = round(ml_conf, 4)
+
+                    is_ood = False
+                    if self.ood_detector:
+                        is_ood = self.ood_detector.check(features)
+                        result.metadata["ood"] = is_ood
+
+                    if not is_ood:
+                        if ml_dir != direction:
+                            logger.warning(
+                                "ml_advisory_disagrees",
+                                instrument=instrument,
+                                ml_direction=ml_dir,
+                                signal_direction=direction,
+                                ml_confidence=result.ml_confidence,
+                            )
+                            result.metadata["ml_advisory_disagrees"] = True
+                        elif ml_conf < settings.min_ml_confidence:
+                            logger.warning(
+                                "ml_advisory_low_confidence",
+                                instrument=instrument,
+                                ml_confidence=result.ml_confidence,
+                                threshold=settings.min_ml_confidence,
+                            )
+                            result.metadata["ml_advisory_low_confidence"] = True
+                        else:
+                            logger.info(
+                                "ml_advisory_applied",
+                                instrument=instrument,
+                                ml_direction=ml_dir,
+                                ml_confidence=result.ml_confidence,
+                            )
+                            result.metadata["ml_advisory_applied"] = True
+
+                except Exception as exc:
+                    logger.warning(
+                        "ml_unavailable_fallback",
+                        error=str(exc),
+                        instrument=instrument,
+                    )
+                    result.metadata["ml_fallback"] = True
+        elif self._abl_ml and not self.ml_classifier:
+            logger.warning("ml_classifier_missing", instrument=instrument)
+            result.metadata["ml_skipped"] = "missing"
 
         # ── Step 6b: Macro dissonance penalty (Tier 2c) ──────────────────
         # Redis key macro_dissonance:{pair} is written by the postsession anomaly
@@ -662,13 +682,9 @@ class ConfluenceEngine:
                 pass  # fail-open
 
         # ── Step 7: Final threshold ───────────────────────────────────────
-        # Tier 1: apply session quality threshold adjustment.
-        # TRENDING → lowers threshold (e.g. 0.72 - 0.02 = 0.70) to capture more signals.
-        # CHOPPY   → raises threshold (e.g. 0.72 + 0.06 = 0.78) to demand higher conviction.
-        # MIXED    → no change (adjustment = 0.0).
-        # Falls back to base threshold when session_quality key is missing.
-        _base = self._confluence_threshold if self._confluence_threshold is not None else settings.min_confluence_score
-        _effective_threshold = _base + _sq_threshold_adj
+        # Base threshold only — AI threshold_adjustment removed until validated.
+        # session_quality env is logged in metadata for future backtesting.
+        _effective_threshold = self._confluence_threshold if self._confluence_threshold is not None else settings.min_confluence_score
         result.metadata["effective_threshold"] = round(_effective_threshold, 4)
         if confluence < _effective_threshold:
             result.suppression_reason = f"LOW_CONFLUENCE:{confluence:.3f}"

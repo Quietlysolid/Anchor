@@ -90,7 +90,6 @@ async def seed_calendar():
     from anchor.database.engine import AsyncSessionFactory
     from anchor.data.forex_factory import ForexFactoryScraper
     from anchor.database.repositories import EconomicCalendarRepository
-    from datetime import date
 
     today = date.today()
     next_week = today + timedelta(days=7)

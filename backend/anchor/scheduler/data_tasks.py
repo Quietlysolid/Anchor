@@ -25,7 +25,7 @@ def import_economic_calendar(self):
         from anchor.data.forex_factory import ForexFactoryScraper
         from anchor.database.engine import init_db, get_session
         from anchor.database.repositories import EconomicCalendarRepository
-        from datetime import date, datetime, timedelta, timezone
+        from datetime import datetime, timedelta, timezone
 
         await init_db()
 

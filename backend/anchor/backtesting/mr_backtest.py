@@ -24,8 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import timezone
 
 import numpy as np
 import pandas as pd
@@ -238,7 +237,6 @@ class MRBacktestEngine:
 
         wins   = [t for t in trades if t["pl_pips"] > 0]
         losses = [t for t in trades if t["pl_pips"] <= 0]
-        pls    = np.array([t["pl_pips"] for t in trades])
 
         gross_profit = sum(t["pl_pips"] for t in wins)
         gross_loss   = abs(sum(t["pl_pips"] for t in losses))

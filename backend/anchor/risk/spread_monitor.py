@@ -60,8 +60,8 @@ class SpreadMonitor:
                     self._current[instrument] = spread
                     self._history[instrument].append(spread)
                     return spread
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("spread_monitor_redis_read_failed", error=str(exc))
         return None
 
     async def check(self, instrument: str, atr: float | None = None) -> tuple[bool, str | None]:

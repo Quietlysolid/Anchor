@@ -6,7 +6,6 @@ If older than STALE_THRESHOLD_SECONDS → fires alert.
 Run as: python -m anchor.monitoring.watchdog
 """
 import asyncio
-from datetime import timedelta
 
 import structlog
 

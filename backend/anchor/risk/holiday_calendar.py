@@ -5,7 +5,7 @@ We suppress all signals on these days.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Set
 
 # Hard-coded list of known low-liquidity days (extend as needed)

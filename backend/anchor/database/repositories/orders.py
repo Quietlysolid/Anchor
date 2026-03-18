@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
@@ -9,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import select, and_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from anchor.database.models import Order, OrderEvent, Fill, OrderState
+from anchor.database.models import Order, OrderEvent, Fill
 from anchor.utils.time_utils import utcnow
 
 

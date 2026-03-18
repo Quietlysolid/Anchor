@@ -9,14 +9,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import io
 import struct
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import httpx
 import lzma
-import numpy as np
 import pandas as pd
 import structlog
 

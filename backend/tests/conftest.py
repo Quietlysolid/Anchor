@@ -6,7 +6,6 @@ All integration tests that need a live DB/broker should be marked `live`
 and excluded from CI with: pytest -m "not live"
 """
 import os
-import pytest
 
 # Provide defaults so Settings doesn't fail validation during import
 os.environ.setdefault("DB_PASSWORD", "test")

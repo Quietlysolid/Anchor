@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
-import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, and_
@@ -25,7 +24,9 @@ _CORR_DAYS   = 30     # rolling window for correlation
 
 def _compute_atr(df: pd.DataFrame, period: int = _ATR_PERIOD) -> pd.Series:
     """True Range ATR using high/low/close."""
-    hi = df["high"]; lo = df["low"]; pc = df["close"].shift(1)
+    hi = df["high"]
+    lo = df["low"]
+    pc = df["close"].shift(1)
     tr = pd.concat([hi - lo, (hi - pc).abs(), (lo - pc).abs()], axis=1).max(axis=1)
     return tr.rolling(period).mean()
 
@@ -48,7 +49,6 @@ async def get_market_context(session: AsyncSession = Depends(get_db)):
     instruments = settings.instruments
     now         = utcnow()
     since_atr   = now - timedelta(days=_ATR_H1_DAYS)
-    since_corr  = now - timedelta(days=_CORR_DAYS + 5)
 
     # ── Fetch H1 data for ATR profile ─────────────────────────────
     atr_profile: dict = {}

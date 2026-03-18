@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 import numpy as np
 import pandas as pd
+import structlog
 import ta as ta_lib
+
+logger = structlog.get_logger(__name__)
 
 
 # COT currency codes per instrument (base currency drives positioning)
@@ -169,8 +172,8 @@ class FeatureEngineer:
                         cot_net_noncomm = float(cot.get("net_noncommercial", 0)) / _COT_SCALE
                         cot_net_comm    = float(cot.get("net_commercial", 0))    / _COT_SCALE
                         cot_available   = 1.0
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("feature_engineer_cot_redis_failed", error=str(exc))
         features["cot_net_noncomm"] = cot_net_noncomm
         features["cot_net_comm"]    = cot_net_comm
         features["cot_available"]   = cot_available
@@ -191,8 +194,8 @@ class FeatureEngineer:
                     if inst_data.get("available"):
                         rate_diff      = float(inst_data["rate_diff"]) / 10.0
                         rate_available = 1.0
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("feature_engineer_rate_diff_redis_failed", error=str(exc))
         features["rate_diff"]      = rate_diff
         features["rate_available"] = rate_available
 

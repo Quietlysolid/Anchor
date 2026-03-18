@@ -26,12 +26,9 @@ ATR source: uses the stored stop-loss distance as a proxy for ATR
 """
 from __future__ import annotations
 
-import math
-from datetime import datetime
 
 import structlog
 
-from anchor.utils.time_utils import utcnow
 
 logger = structlog.get_logger(__name__)
 
@@ -87,7 +84,6 @@ class PartialTPManager:
 
         entry      = float(pos.avg_entry_price)
         stop_loss  = float(pos.stop_loss)
-        take_profit = float(pos.take_profit)
         current    = float(pos.current_price) if pos.current_price else None
 
         if current is None:

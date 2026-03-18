@@ -60,13 +60,12 @@ class ModelRegistry:
     def get_production_run_id(self, instrument: str) -> Optional[str]:
         name = self.model_name(instrument)
         try:
-            versions = self._client.search_model_versions(
-                f"name='{name}' and tag.stage='Production'"
-            )
-            if versions:
-                return versions[0].run_id
-        except Exception:
-            pass
+            versions = self._client.search_model_versions(f"name='{name}'")
+            for version in versions:
+                if getattr(version, "current_stage", None) == "Production":
+                    return version.run_id
+        except Exception as exc:
+            logger.warning("model_registry_lookup_failed", instrument=name, error=str(exc))
         return None
 
     def get_all_production(self) -> Dict[str, Optional[str]]:

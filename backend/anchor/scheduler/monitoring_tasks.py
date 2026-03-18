@@ -114,13 +114,9 @@ def check_fit_weights_trigger(self):
         _logging.disable(_logging.CRITICAL)
         warnings.filterwarnings("ignore")
 
-        import pandas as pd
-        import numpy as np
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.preprocessing import StandardScaler
 
         from anchor.backtesting.fit_weights import (
-            _collect_live_trades, _fit, _compute_time_weights, CURRENT_WEIGHTS, COMPONENT_MAP,
+            _collect_live_trades, _fit, _compute_time_weights, CURRENT_WEIGHTS,
         )
 
         df = _collect_live_trades()

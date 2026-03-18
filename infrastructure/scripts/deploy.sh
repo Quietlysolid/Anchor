@@ -26,15 +26,22 @@ ssh "$VPS_USER@$VPS_HOST" bash << EOF
   echo "==> Building images..."
   # --no-cache on Python services ensures the COPY . . layer is never stale
   # after a code sync. Frontend/nginx are cache-friendly (rarely change).
-  docker compose build --parallel --no-cache engine celery_worker celery_beat watchdog
-  docker compose build --parallel frontend
+  docker compose build --parallel --no-cache engine celery_worker celery_beat watchdog mlflow
+  docker compose build --parallel frontend nginx
+
+  echo "==> Starting database..."
+  docker compose up -d db
+
+  echo "==> Ensuring MLflow database exists..."
+  docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '\${MLFLOW_DB_NAME:-anchor_mlflow}'" | grep -q 1 \
+    || docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d postgres -c "CREATE DATABASE \${MLFLOW_DB_NAME:-anchor_mlflow};"
 
   echo "==> Running DB migrations..."
   # Attempt upgrade; if the DB has a stale revision stamp (e.g. after a
   # volume wipe on a redeploy), clear alembic_version and re-stamp to head.
   if ! docker compose run --rm engine alembic upgrade head; then
     echo "==> Stale revision — clearing alembic_version and re-stamping..."
-    docker compose exec -T db psql -U anchor -d anchor -c "DELETE FROM alembic_version;"
+    docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d "\${DB_NAME:-anchor}" -c "DELETE FROM alembic_version;"
     docker compose run --rm engine alembic stamp head
   fi
 

@@ -209,8 +209,8 @@ See [DEPLOY.md](DEPLOY.md) for full Hetzner VPS setup.
 
 ## Monitoring
 
-- **Dashboard**: `http://VPS_IP/` — live prices, signals, session clock, equity curve
-- **Grafana**: `http://VPS_IP:3001/` — system metrics, equity, drawdown
+- **Dashboard**: private over Tailscale, served from the VPS's tailnet IP or MagicDNS name
+- **Grafana**: keep private; use SSH tunnel unless you explicitly publish it to your tailnet
 - **Telegram**: order execution, circuit breaker triggers, errors
 - **system_events table**: audit trail for weight changes, regime transitions
 

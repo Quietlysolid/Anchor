@@ -135,9 +135,7 @@ async def bootstrap_from_oanda(
         python -m anchor.data.oanda_history
         python -m anchor.data.oanda_history --start 2024-01-01 --no-retrain
     """
-    from anchor.database.engine import init_db, get_session
-    from anchor.database.models import MarketData
-    from anchor.database.repositories.market_data import MarketDataRepository
+    from anchor.database.engine import init_db
 
     await init_db()
 
@@ -161,7 +159,9 @@ async def bootstrap_from_oanda(
                 dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
                 return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
 
-            import csv, io, asyncpg
+            import csv
+            import io
+            import asyncpg
 
             buf = io.StringIO()
             writer = csv.writer(buf)

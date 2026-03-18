@@ -89,6 +89,7 @@ class OrderManager:
 
         # Market orders fill immediately — create Position row and mark FILLED
         if trade_id and fill_price:
+            await self.transition(order_id, OrderState.ACKNOWLEDGED, {"oanda_order_id": oanda_id})
             await self._create_position(request, trade_id, fill_price)
             await self.transition(order_id, OrderState.FILLED, {"fill_price": fill_price})
 

@@ -30,7 +30,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -118,16 +117,16 @@ def run_walkforward(instrument: str, df_h1: pd.DataFrame) -> None:
         passing = sum(1 for pf in fold_pfs if pf >= 1.0)
         print(f"  {'Average':<8} {'':24} {'':>7} {avg_wr:>6.1f}% {avg_pf:>7.3f}  ({passing}/{len(fold_pfs)} folds profitable)")
 
-        print(f"\n  Verdict:")
+        print("\n  Verdict:")
         if avg_pf >= 1.3 and passing == len(fold_pfs):
             print(f"  ✓ STRONG EDGE — PF ≥ 1.3 across all {len(fold_pfs)} folds. Edge is consistent.")
         elif avg_pf >= 1.0 and passing >= 3:
             print(f"  ~ MODERATE EDGE — Positive in {passing}/{len(fold_pfs)} folds. Monitor PF monthly.")
         elif passing >= 2:
             print(f"  ! WEAK / REGIME-SPECIFIC — Only profitable in {passing}/{len(fold_pfs)} folds.")
-            print(f"    Consider restricting to RANGING regime only (HMM gate).")
+            print("    Consider restricting to RANGING regime only (HMM gate).")
         else:
-            print(f"  ✗ NO CONSISTENT EDGE — Profitable in <50% of OOS folds. Do not trade live.")
+            print("  ✗ NO CONSISTENT EDGE — Profitable in <50% of OOS folds. Do not trade live.")
 
     print(f"{'='*65}\n")
 

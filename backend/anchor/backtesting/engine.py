@@ -8,26 +8,24 @@ Usage: python -m anchor.backtesting.engine --instrument EUR_USD --start 2020-01-
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime
 
-import numpy as np
 import pandas as pd
 import structlog
-
 from pathlib import Path
 
 from anchor.backtesting.data_feed import HistoricalDataFeed
-from anchor.backtesting.simulated_broker import SimulatedBroker
 from anchor.backtesting.results import compute_results, BacktestResults
-from anchor.config import settings
-from anchor.risk.position_sizer import PositionSizer
-from anchor.risk.weekend_guard import WeekendGuard as _WG
-from anchor.risk.holiday_calendar import is_holiday
+from anchor.backtesting.simulated_broker import SimulatedBroker
+from anchor.data.historical_cot import HistoricalCotDatabase
 from anchor.ml.xgb_classifier import XGBDirectionClassifier
 from anchor.ml.feature_engineer import FeatureEngineer
-from anchor.utils.math_utils import wilder_atr_scalar
 from anchor.regime.atr_classifier import AtrRegimeClassifier
-from anchor.data.historical_cot import HistoricalCotDatabase
+from anchor.risk.holiday_calendar import is_holiday
+from anchor.risk.position_sizer import PositionSizer
+from anchor.risk.weekend_guard import WeekendGuard as _WG
+from anchor.signals.engine import ConfluenceEngine, SignalResult
+from anchor.utils.math_utils import wilder_atr_scalar
 
 MODEL_DIR = Path("/app/models")
 
@@ -69,7 +67,6 @@ class CotRedisMock:
 
 def is_weekend_close_time(dt) -> bool:
     return _wg._is_close_time(dt)
-from anchor.signals.engine import ConfluenceEngine, SignalResult
 
 logger = structlog.get_logger(__name__)
 

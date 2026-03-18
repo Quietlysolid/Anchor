@@ -61,7 +61,6 @@ def run_signal_scan(self):
         from anchor.risk.position_sizer import PositionSizer
         from anchor.risk.correlation import CorrelationManager
         from anchor.utils.time_utils import utcnow
-        from anchor.utils.math_utils import get_pip_size
         from anchor.ml.xgb_classifier import XGBDirectionClassifier
         from anchor.ml.feature_engineer import FeatureEngineer
         from anchor.ml.ood_detector import OODDetector
@@ -100,35 +99,34 @@ def run_signal_scan(self):
         # (stream runs in the FastAPI process; worker has a separate in-memory instance)
         _spread_monitor.set_redis(redis_client)
 
-        # Tier 1: read session quality once per scan cycle (written at 06:30 UTC presession brief)
-        # Defaults to MIXED/1.0 if key is absent — fail-open, no behavioural impact
-        _session_size_scale = 1.0
+        # Read session quality and rolling score for logging only — NOT applied to sizing.
+        # AI size_scale and rolling_score_scale are unvalidated signals removed from execution.
+        # Values are logged so they can be correlated against trade outcomes at 200 trades.
         try:
             import json as _json_sq
             from anchor.intelligence.session_quality import _REDIS_KEY as _SQ_KEY
             _sq_raw = await redis_client.get(_SQ_KEY)
             if _sq_raw:
                 _sq_data = _json_sq.loads(_sq_raw)
-                _session_size_scale = max(0.5, min(1.0, float(_sq_data.get("size_scale", 1.0))))
                 logger.debug(
-                    "scan_session_quality_loaded",
+                    "scan_session_quality_logged_only",
                     environment=_sq_data.get("environment"),
-                    size_scale=_session_size_scale,
+                    size_scale=_sq_data.get("size_scale"),
+                    threshold_adj=_sq_data.get("threshold_adjustment"),
                 )
         except Exception as _sq_err:
             logger.warning("scan_session_quality_read_failed", error=str(_sq_err))
 
-        # Tier 2b: rolling session score scale (0.75 if 5-session avg < 5.0, else 1.0)
-        _rolling_score_scale = 1.0
         try:
             _raw_avg = await redis_client.get("rolling_score_avg")
             if _raw_avg is not None:
-                _avg = float(_raw_avg)
-                if _avg < 5.0:
-                    _rolling_score_scale = 0.75
-                logger.debug("scan_rolling_score_loaded", avg=round(_avg, 2), scale=_rolling_score_scale)
+                logger.debug("scan_rolling_score_logged_only", avg=round(float(_raw_avg), 2))
         except Exception as _rs_err:
             logger.warning("scan_rolling_score_read_failed", error=str(_rs_err))
+
+        # Fixed at 1.0 — no AI size scaling until validated against live trade data
+        _session_size_scale = 1.0
+        _rolling_score_scale = 1.0
 
         def to_df(rows):
             if not rows:
@@ -391,8 +389,8 @@ def run_signal_scan(self):
                                                 ORDER BY closed_at DESC LIMIT 20
                                             """))).fetchall()
                                             _recent_trades = [dict(r._mapping) for r in _rows]
-                                    except Exception:
-                                        pass
+                                    except Exception as _exc:
+                                        logger.debug("dd_narration_trades_query_failed", error=str(_exc))
 
                                     # Macro snapshot from Redis
                                     import json as _j
@@ -402,8 +400,8 @@ def run_signal_scan(self):
                                             _rv = await redis_client.get(_rk)
                                             if _rv:
                                                 _macro[_rl] = _j.loads(_rv)
-                                        except Exception:
-                                            pass
+                                        except Exception as _exc:
+                                            logger.debug("dd_narration_redis_read_failed", key=_rk, error=str(_exc))
 
                                     from anchor.intelligence.trade_intelligence import narrate_drawdown as _narrate_dd
                                     _narration, _ = await _narrate_dd(
@@ -990,8 +988,8 @@ def run_signal_scan(self):
                                         logger.info("lcr_dxy_scale_applied",
                                                     instrument=instrument,
                                                     dxy_change=_dxy.get("change_5d_pct"))
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                logger.debug("lcr_dxy_redis_read_failed", instrument=instrument, error=str(_exc))
                         lcr_units = sizer.compute(
                             account_balance=balance,
                             instrument=instrument,

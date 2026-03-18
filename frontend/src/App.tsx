@@ -24,25 +24,25 @@ function WsBootstrap() {
   const { data: seedRegime    } = useRegime()
   const { data: seedPositions } = usePositions()
 
-  useEffect(() => { fetchWeights() }, [])
+  useEffect(() => { fetchWeights() }, [fetchWeights])
 
   useEffect(() => {
     if (seedSignals?.length && useSignalStore.getState().signals.length === 0) {
       seedSignals.forEach(s => pushSignal(s))
     }
-  }, [seedSignals])
+  }, [pushSignal, seedSignals])
 
   useEffect(() => {
     if (seedRegime && Object.keys(seedRegime).length > 0) {
       if (Object.keys(useSystemStore.getState().currentRegime).length === 0) setRegime(seedRegime)
     }
-  }, [seedRegime])
+  }, [seedRegime, setRegime])
 
   useEffect(() => {
     if (seedPositions && usePositionStore.getState().positions.length === 0) {
       setPositions(seedPositions)
     }
-  }, [seedPositions])
+  }, [seedPositions, setPositions])
 
   useEffect(() => {
     wsClient.connect()
@@ -73,7 +73,7 @@ function WsBootstrap() {
       wsClient.disconnect()
       setWsConnected(false)
     }
-  }, [])
+  }, [pushSignal, queryClient, setAccount, setHeartbeat, setPositions, setPrice, setRegime, setWsConnected])
 
   return null
 }

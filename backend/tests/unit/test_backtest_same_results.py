@@ -205,16 +205,16 @@ class TestBacktestDiffersAcrossPairs:
 
 class TestRunInExecutor:
     """
-    Verify that BacktestEngine.run() works correctly when called from a thread
-    executor, which is how the API invokes it (run_in_executor).
+    Verify that BacktestEngine.run() works correctly when called from a worker
+    thread, which matches the production async-job pattern more closely than
+    running inline on the request loop.
 
-    The engine reuses a single event loop (new_event_loop + run_until_complete)
-    for all bar evaluations — creating a new loop per bar (asyncio.run()) was
-    50–100x slower and caused 504 timeouts on multi-year datasets.
+    The API now submits backtests to Celery, but the engine still needs to run
+    correctly inside a non-main worker thread where no event loop is pre-set.
     """
 
-    def test_run_in_executor_produces_trades(self, eur_usd_df):
-        """BacktestEngine via run_in_executor must produce trades."""
+    def test_run_in_worker_thread_produces_trades(self, eur_usd_df):
+        """BacktestEngine inside a thread-pool worker must produce trades."""
         import concurrent.futures
 
         eng = BacktestEngine(initial_balance=10_000.0)
@@ -228,17 +228,11 @@ class TestRunInExecutor:
             ):
                 return eng.run("EUR_USD", "H1")
 
-        outer_loop = asyncio.new_event_loop()
-        try:
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = outer_loop.run_in_executor(pool, _run)
-                results = outer_loop.run_until_complete(future)
-        finally:
-            outer_loop.close()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            results = pool.submit(_run).result(timeout=30)
 
         assert results.total_trades > 0, (
-            "BacktestEngine inside run_in_executor produced 0 trades — "
-            "the single-loop run_until_complete approach is broken."
+            "BacktestEngine inside a worker thread produced 0 trades."
         )
 
 
@@ -261,8 +255,6 @@ class TestSignalErrorsNotSilentlySwallowed:
 
         warned_bars: list[str] = []
 
-        original_warning = eng.run.__func__  # not needed; capture via logger patch
-
         with patch(
             "anchor.backtesting.engine.ConfluenceEngine.evaluate",
             new_callable=AsyncMock,
@@ -271,7 +263,11 @@ class TestSignalErrorsNotSilentlySwallowed:
             "anchor.backtesting.engine.logger.warning",
         ) as mock_warn:
             eng.run("EUR_USD", "H1")
-            warned_bars = [call.kwargs.get("bar", "") for call in mock_warn.call_args_list]
+            warned_bars = [
+                call.kwargs.get("bar", "")
+                for call in mock_warn.call_args_list
+                if call.args and call.args[0] == "signal_error"
+            ]
 
         assert len(warned_bars) == 0, (
             f"signal_error logged for {len(warned_bars)} bars — evaluate() is "

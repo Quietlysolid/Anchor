@@ -62,16 +62,15 @@ def price_to_pips(instrument: str, price_diff: float) -> float:
 def sharpe_ratio(returns: np.ndarray, risk_free: float = 0.0, periods: int = 252) -> float:
     excess = returns - risk_free / periods
     std = np.std(excess, ddof=1)
-    if std == 0:
-        return 0.0
-    return float(np.mean(excess) / std * np.sqrt(periods))
+    effective_std = max(float(std), 1e-12)
+    return float(np.mean(excess) / effective_std * np.sqrt(periods))
 
 
 def sortino_ratio(returns: np.ndarray, risk_free: float = 0.0, periods: int = 252) -> float:
     excess = returns - risk_free / periods
     downside = excess[excess < 0]
     downside_std = np.std(downside, ddof=1) if len(downside) > 1 else 0.0
-    if downside_std == 0:
+    if np.isclose(downside_std, 0.0, atol=1e-12):
         return 0.0
     return float(np.mean(excess) / downside_std * np.sqrt(periods))
 

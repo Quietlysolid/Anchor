@@ -32,6 +32,8 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 
 # ── LCR sweep ─────────────────────────────────────────────────────────────────
 
@@ -181,7 +183,7 @@ def _print_table(rows: list[dict], instrument: str, strategy: str) -> None:
         if pf_range < 0.15:
             print(f"  {G}ROBUST{N}: PF spread < 0.15 — edge doesn't depend heavily on exact threshold")
         elif pf_range < 0.30:
-            print(f"  MODERATE: PF spread 0.15-0.30 — threshold matters, stay near optimal")
+            print("  MODERATE: PF spread 0.15-0.30 — threshold matters, stay near optimal")
         else:
             print(f"  {R}FRAGILE{N}: PF spread > 0.30 — edge is threshold-sensitive, verify OOS carefully")
 
@@ -226,7 +228,6 @@ def main() -> None:
         thresholds = [0.65, 0.68, 0.70, 0.72, 0.74, 0.76, 0.78]
 
     if args.strategy == "lcr":
-        import pandas as pd
         df_raw = _load_df(args.h1_csv)
         # LCR engine expects time as index
         df_h1 = df_raw.set_index("time") if "time" in df_raw.columns else df_raw

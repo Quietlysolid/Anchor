@@ -243,7 +243,7 @@ def _print_results(result: dict[str, Any]) -> None:
     print(f"  Diversification ratio:    {dr_col}{dr:.2f}x{N}")
     print(f"  Portfolio monthly Sharpe: {sh:.3f}")
 
-    print(f"\n  Diversification ratio = avg_individual_DD / portfolio_DD")
+    print("\n  Diversification ratio = avg_individual_DD / portfolio_DD")
     if dr >= 1.0:
         print(f"  {G}GOOD{N}: Portfolio DD ({abs(dd):.1f}%) LESS than avg individual DD ({avg_dd:.1f}%) — pairs diversify each other")
     else:

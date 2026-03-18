@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 import httpx

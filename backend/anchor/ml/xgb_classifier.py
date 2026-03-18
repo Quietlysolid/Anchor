@@ -6,7 +6,9 @@ Returns: (confidence, direction)
 """
 from __future__ import annotations
 
+import os
 import pickle
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -20,10 +22,13 @@ DEFAULT_MODEL_DIR = Path("/app/models")
 
 
 class XGBDirectionClassifier:
+    _STALE_DAYS = 30
+
     def __init__(self, model_path: Optional[Path] = None) -> None:
         self.model_path = model_path
         self._model: Optional[xgb.XGBClassifier] = None
         self._feature_names: list = []
+        self._model_mtime: Optional[datetime] = None
 
     def fit(
         self,
@@ -103,8 +108,16 @@ class XGBDirectionClassifier:
             data = pickle.load(f)
         self._model = data["model"]
         self._feature_names = data.get("feature_names", [])
-        logger.info("xgb_loaded", path=str(path))
+        self._model_mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+        logger.info("xgb_loaded", path=str(path), mtime=self._model_mtime.isoformat())
         return True
+
+    @property
+    def is_stale(self) -> bool:
+        """True if model file is older than _STALE_DAYS or mtime is unknown."""
+        if self._model_mtime is None:
+            return True
+        return (datetime.now(timezone.utc) - self._model_mtime).days > self._STALE_DAYS
 
     @property
     def is_ready(self) -> bool:

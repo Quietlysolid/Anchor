@@ -52,14 +52,13 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import StandardScaler
+from anchor.backtesting.engine import BacktestEngine
 
 # Suppress sklearn 1.8 FutureWarning about deprecated 'penalty' parameter
 warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
 
 # Silence structlog / engine noise during runs
 logging.disable(logging.CRITICAL)
-
-from anchor.backtesting.engine import BacktestEngine
 
 DATA_DIR = Path("/app/data")
 
@@ -478,7 +477,7 @@ def main() -> None:
     print(f"  Losses: {vc.get(0, 0)} ({vc.get(0, 0)/n_trades*100:.1f}%)")
 
     if args.live_trades and "instrument" in df.columns:
-        print(f"\n  Breakdown by instrument:")
+        print("\n  Breakdown by instrument:")
         for inst, grp in df.groupby("instrument"):
             wins = int((grp["outcome"] == 1).sum())
             print(f"    {inst:<12}  {len(grp):>4} trades  WR {wins/len(grp)*100:.1f}%")

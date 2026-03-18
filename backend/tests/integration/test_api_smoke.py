@@ -8,7 +8,7 @@ the app boots without crashing.
 Run with: pytest tests/integration/ -v -m "not live"
 """
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from httpx import AsyncClient, ASGITransport
 
 from anchor.main import create_app
@@ -24,7 +24,7 @@ def app():
 @pytest.fixture
 async def client(app):
     """Async test client with mocked DB session."""
-    from anchor.database.engine import get_session
+    from anchor.database.engine import get_db
     from sqlalchemy.ext.asyncio import AsyncSession
 
     mock_session = AsyncMock(spec=AsyncSession)
@@ -34,10 +34,10 @@ async def client(app):
     mock_result.scalar.return_value = 1  # SELECT 1 → 1 (health check)
     mock_session.execute = AsyncMock(return_value=mock_result)
 
-    async def override_get_session():
+    async def override_get_db():
         yield mock_session
 
-    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_db] = override_get_db
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -89,17 +89,16 @@ async def test_system_events_returns_list(client):
 
 @pytest.mark.asyncio
 async def test_positions_endpoint_exists(client):
-    response = await client.get("/api/v1/positions/")
-    # 200 (empty list) or 422 (validation) — must not be 404/500
-    assert response.status_code in (200, 422)
+    response = await client.get("/api/v1/positions")
+    assert response.status_code == 200
 
 
 # ── Signals endpoint ──────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_signals_endpoint_exists(client):
-    response = await client.get("/api/v1/signals/")
-    assert response.status_code in (200, 422)
+    response = await client.get("/api/v1/signals/latest")
+    assert response.status_code == 200
 
 
 # ── OpenAPI schema ────────────────────────────────────────────────────────────

@@ -93,22 +93,16 @@ import argparse
 import logging
 import math
 from collections import defaultdict
-from datetime import date as date_type
-from datetime import timezone
 
 import numpy as np
 import pandas as pd
-
-# Silence structlog startup noise during backtest runs
-logging.disable(logging.CRITICAL)
-
 from anchor.utils.math_utils import (
     get_pip_size,
     wilder_atr_scalar,
-    sharpe_ratio,
-    profit_factor as calc_pf,
-    max_drawdown as calc_mdd,
 )
+
+# Silence structlog startup noise during backtest runs
+logging.disable(logging.CRITICAL)
 
 # ── Strategy constants (all sourced from published research) ──────────────────
 
@@ -610,7 +604,8 @@ class ACEBBacktestEngine:
         for ym, pips in sorted(monthly.items()):
             w  = [p for p in pips if p > 0]
             lo = [p for p in pips if p <= 0]
-            gp = sum(w); gl = abs(sum(lo))
+            gp = sum(w)
+            gl = abs(sum(lo))
             mpf = f"{gp/gl:.2f}" if gl > 0 else "∞"
             monthly_lines.append(
                 f"{ym}: {len(pips):>2} trades  "
@@ -697,7 +692,7 @@ def _print_results(
     print(f"  Long WR / Short WR:          {stats.get('long_win_rate_pct',0):.1f}%  /  {stats.get('short_win_rate_pct',0):.1f}%")
 
     if rej:
-        print(f"\n  Rejection breakdown:")
+        print("\n  Rejection breakdown:")
         total_rej = sum(rej.values())
         for reason, count in sorted(rej.items(), key=lambda x: -x[1]):
             print(f"    {reason:<30} {count:>4}  ({count/max(1,total_rej)*100:.0f}%)")
@@ -706,12 +701,12 @@ def _print_results(
         pl_pct = [t["pl_pct"] for t in trades]
         mean_pct, p_val = _permutation_test(pl_pct)
         sig_p = "✓" if p_val < 0.05 else "✗"
-        print(f"\n  Permutation test (10 000 shuffles):")
+        print("\n  Permutation test (10 000 shuffles):")
         print(f"    Mean trade return:         {mean_pct:+.4f}%")
         print(f"    Empirical p-value:         {p_val:.4f}  {sig_p}")
 
     if monthly:
-        print(f"\n  Monthly breakdown:")
+        print("\n  Monthly breakdown:")
         for line in monthly:
             print(f"    {line}")
 

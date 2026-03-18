@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Generator, List, Optional
+from typing import Dict, Generator, Optional
 
 import pandas as pd
 

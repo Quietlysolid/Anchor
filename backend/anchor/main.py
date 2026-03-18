@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from anchor.config import get_settings
-from anchor.database.engine import init_db, close_db, AsyncSessionFactory
+from anchor.database.engine import init_db, close_db
 from anchor.utils.logging import configure_logging
 from anchor.api.routers import (
     market_data,
@@ -102,7 +102,6 @@ async def lifespan(app: FastAPI):
         # Start OANDA price stream
         if settings.oanda_api_key and settings.oanda_api_key != "your_oanda_api_key_here":
             import redis.asyncio as aioredis
-            from anchor.database.repositories.market_data import MarketDataRepository
 
             redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
 
@@ -152,7 +151,6 @@ async def lifespan(app: FastAPI):
 
             # Start weekend gap guard — closes all positions by Friday 20:30 UTC
             from anchor.execution.broker_client import BrokerClient as _BC
-            from anchor.database.repositories.positions import PositionRepository as _PR
             _wg_broker = _BC()
 
             class _WGPositionRepo:

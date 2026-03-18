@@ -26,7 +26,7 @@ export default function Console() {
   const { equity }             = useSystemStore()
   const positions              = usePositionStore(s => s.positions)
 
-  const equityPts = equityData ?? []
+  const equityPts = useMemo(() => equityData ?? [], [equityData])
 
   // Session-aware border
   const [sessionNow, setSessionNow] = useState(new Date())

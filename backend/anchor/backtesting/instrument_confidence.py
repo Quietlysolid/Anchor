@@ -37,10 +37,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
+from anchor.backtesting.engine import BacktestEngine
 
 logging.disable(logging.CRITICAL)
-
-from anchor.backtesting.engine import BacktestEngine
 
 DATA_DIR = Path("/app/data")
 
@@ -265,22 +264,22 @@ def main() -> None:
     if keep:
         pairs = [r["instrument"] for r in keep]
         print(f"\n  {W}KEEP{N}   ({len(keep)} pairs): {', '.join(pairs)}")
-        print(f"  → These show consistent IC > 0.05 and IR > 0.2")
+        print("  → These show consistent IC > 0.05 and IR > 0.2")
 
     if remove:
         pairs = [r["instrument"] for r in remove]
         print(f"\n  {R}REMOVE{N} ({len(remove)} pairs): {', '.join(pairs)}")
-        print(f"  → IC < 0 or PF < 1.0 with sufficient sample — the signal has no edge here")
+        print("  → IC < 0 or PF < 1.0 with sufficient sample — the signal has no edge here")
 
     if review:
         pairs = [r["instrument"] for r in review]
         print(f"\n  {Y}REVIEW{N} ({len(review)} pairs): {', '.join(pairs)}")
-        print(f"  → Too few trades or marginal IC — collect 3+ months live data before deciding")
+        print("  → Too few trades or marginal IC — collect 3+ months live data before deciding")
 
     # Target pair config
     optimal = [r["instrument"] for r in results if r.get("verdict") == "KEEP"]
     if optimal:
-        print(f"\n  Optimal instruments config for config.py:")
+        print("\n  Optimal instruments config for config.py:")
         print(f'  instruments: list[str] = {optimal!r}')
 
     print(f"\n{'='*70}\n")

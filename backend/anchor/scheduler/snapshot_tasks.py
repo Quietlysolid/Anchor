@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import structlog
 
 from anchor.scheduler.celery_app import celery_app
-from anchor.scheduler._shared import _run_async, _alerts
+from anchor.scheduler._shared import _run_async
 
 logger = structlog.get_logger(__name__)
 
@@ -15,7 +15,6 @@ logger = structlog.get_logger(__name__)
 def snapshot_equity(self):
     """Write an equity curve point every 15 minutes."""
     async def _inner():
-        from anchor.config import settings
         from anchor.database.engine import init_db, get_session
         from anchor.database.repositories import EquityRepository
         from anchor.database.models import EquityCurvePoint
@@ -71,7 +70,7 @@ def run_regime_detection(self):
     async def _inner():
         import json
         from anchor.config import settings
-        from anchor.database.engine import init_db, AsyncSessionFactory
+        from anchor.database.engine import init_db
         from anchor.database.repositories.market_data import MarketDataRepository
         from anchor.regime.hmm_detector import HMMRegimeDetector
 

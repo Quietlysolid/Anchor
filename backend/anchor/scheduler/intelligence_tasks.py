@@ -269,8 +269,7 @@ def generate_trade_explanations(self):
     import redis.asyncio as _redis_async
     from datetime import datetime, timedelta, timezone as _tz
     from anchor.config import get_settings as _get_settings
-    from anchor.database.engine import get_session as _get_session_te
-    from anchor.database.models import IntelligenceReport, Signal, Trade
+    from anchor.database.models import IntelligenceReport, Signal
     from anchor.intelligence.trade_intelligence import explain_trade as _explain
     from sqlalchemy import select as _sel, text as _sqlt
 
@@ -293,8 +292,8 @@ def generate_trade_explanations(self):
                     _rv = await redis_client.get(_rk)
                     if _rv:
                         macro[_rl] = _json.loads(_rv)
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("intel_tasks_macro_redis_read_failed", key=_rk, error=str(_exc))
 
             # Look back 30 days — catches historical trades without explanations
             cutoff = datetime.now(_tz.utc) - timedelta(days=30)
@@ -369,8 +368,8 @@ def generate_trade_explanations(self):
                                     "session":     sig.session,
                                     "metadata":    sig.signal_metadata or {},
                                 }
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("intel_tasks_signal_read_failed", error=str(_exc))
 
                     explanation, tokens = await _explain(trade_data, signal_data, macro)
                     if not explanation:

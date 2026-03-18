@@ -42,7 +42,7 @@ Requires: yfinance (pip install yfinance)
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -100,8 +100,8 @@ def _compute_risk_reversal(etf_sym: str, inverted: bool) -> Optional[dict]:
         highs  = hist["High"].values
         lows   = hist["Low"].values
         closes = hist["Close"].values
-        trs    = [max(h - l, abs(h - c), abs(l - c))
-                  for h, l, c in zip(highs[1:], lows[1:], closes[:-1])]
+        trs    = [max(high - low, abs(high - close), abs(low - close))
+                  for high, low, close in zip(highs[1:], lows[1:], closes[:-1])]
         atr    = sum(trs[-14:]) / min(14, len(trs)) if trs else spot * 0.005
         atr    = max(atr, spot * 0.003)  # floor at 0.3% to avoid degenerate strikes
 

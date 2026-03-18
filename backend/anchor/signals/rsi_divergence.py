@@ -72,7 +72,6 @@ def detect_rsi_divergence(
 
     # Find price pivot highs and lows
     price_series = pd.Series(price)
-    rsi_series   = pd.Series(rsi_vals)
 
     high_pivots = _find_pivot_highs(price_series, pivot_window)
     low_pivots  = _find_pivot_lows(price_series, pivot_window)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -144,19 +144,19 @@ def main():
     for instrument in INSTRUMENTS:
         print(f"── {instrument} ────────────────────────────────────────────────")
 
-        print(f"  Fetching H1...", end="", flush=True)
+        print("  Fetching H1...", end="", flush=True)
         df_h1 = fetch_candles(client, instrument, "H1", START_DATE, end)
         print(f" {len(df_h1)} candles")
 
-        print(f"  Fetching H4...", end="", flush=True)
+        print("  Fetching H4...", end="", flush=True)
         df_h4 = fetch_candles(client, instrument, "H4", START_DATE, end)
         print(f" {len(df_h4)} candles")
 
         if df_h1.empty or len(df_h1) < 500:
-            print(f"  [skip] Insufficient data\n")
+            print("  [skip] Insufficient data\n")
             continue
 
-        print(f"  Building features...", end="", flush=True)
+        print("  Building features...", end="", flush=True)
         X, timestamps = build_features(df_h1, df_h4, instrument, engineer)
         closes = df_h1["close"].values[60: 60 + len(X)]
         labels = make_labels(closes)
@@ -167,11 +167,11 @@ def main():
         print(f" {len(X)} samples, {X.shape[1]} features")
 
         if len(X) < 500:
-            print(f"  [skip] Too few feature rows\n")
+            print("  [skip] Too few feature rows\n")
             continue
 
         # Walk-forward validation
-        print(f"  Walk-forward validation...")
+        print("  Walk-forward validation...")
         wf = walk_forward_validate(X, y, ts, "xgb", feature_names)
         oos_acc = wf.oos_accuracy
         print(f"  OOS Accuracy: {oos_acc*100:.1f}% over {wf.oos_samples} samples ({len(wf.folds)} folds)")
@@ -189,7 +189,7 @@ def main():
         print(f"  {verdict}\n")
 
     print(f"\n{'='*70}")
-    print(f"  TRAINING SUMMARY")
+    print("  TRAINING SUMMARY")
     print(f"{'='*70}")
     print(f"{'Pair':<12} {'OOS Acc':>8} {'Samples':>9}  Verdict")
     print("-" * 45)
@@ -197,7 +197,7 @@ def main():
         print(f"{instr:<12} {r['oos_accuracy']*100:>7.1f}% {r['samples']:>9}  {r['verdict']}")
     print(f"{'='*70}\n")
     print(f"Models saved to {MODEL_DIR}")
-    print(f"Now run: docker exec anchor_engine python /app/run_backtest.py --with-ml\n")
+    print("Now run: docker exec anchor_engine python /app/run_backtest.py --with-ml\n")
 
 
 if __name__ == "__main__":

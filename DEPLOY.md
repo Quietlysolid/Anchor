@@ -1,5 +1,7 @@
 # Anchor — Hetzner VPS Deployment Guide
 
+This guide now assumes a private deployment over Tailscale, not a public internet-facing site.
+
 ## Step 1: Provision Hetzner Server
 
 1. Go to https://console.hetzner.com
@@ -10,7 +12,7 @@
    - **Type**: CX22 (2 vCPU, 4GB RAM, ~€4.15/mo)
    - **SSH Key**: paste your `~/.ssh/id_ed25519.pub`
    - **Name**: `anchor-vps`
-4. Note the public IP (e.g. `5.161.x.x`)
+4. Note the public IP (e.g. `5.161.x.x`) for SSH bootstrap only
 
 ---
 
@@ -95,16 +97,49 @@ The deploy script will:
 
 ---
 
-## Step 5: Verify
+## Step 5: Install Tailscale On The VPS
+
+SSH into the server and install Tailscale:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up
+```
+
+Then install Tailscale on your laptop/phone and sign into the same tailnet.
+
+Find the VPS Tailscale IP:
+
+```bash
+tailscale ip -4
+```
+
+## Step 6: Publish Anchor Privately Over Tailscale
+
+Anchor's nginx service is bound to `127.0.0.1:8080` on the VPS, so it is not reachable from the public internet.
+
+Expose it only to your tailnet:
+
+```bash
+tailscale serve --bg --http=80 http://127.0.0.1:8080
+```
+
+If you prefer a stable MagicDNS name, inspect the current Serve config:
+
+```bash
+tailscale serve status
+```
+
+## Step 7: Verify
 
 ```bash
 ssh root@$VPS_IP "cd /opt/anchor && docker compose ps"
 ```
 
-All services should show `running`. Then open:
-- Dashboard: `http://YOUR_VPS_IP/`
-- API health: `http://YOUR_VPS_IP/api/v1/system/health`
-- Grafana: `http://YOUR_VPS_IP:3001/` (internally exposed — use SSH tunnel)
+All services should show `running`. Then open the app through the VPS Tailscale IP or MagicDNS name:
+- Dashboard: `http://100.x.x.x/`
+- API health: `http://100.x.x.x/api/v1/system/health`
+- Grafana: `http://100.x.x.x:3001/` only if you explicitly expose it, otherwise keep using SSH tunnel
 
 For Grafana via SSH tunnel:
 ```bash
@@ -114,9 +149,9 @@ ssh -L 3001:localhost:3001 root@$VPS_IP
 
 ---
 
-## Step 6: (Optional) Add SSL with Let's Encrypt
+## Step 8: (Optional) Add SSL/TLS Later
 
-Only worth doing if you have a domain. If using IP only, skip this.
+Only worth doing if you later decide to expose the app publicly with a domain. For a private Tailscale deployment, you can skip this.
 
 ```bash
 ssh root@$VPS_IP
@@ -135,6 +170,7 @@ uncomment the letsencrypt volume in `docker-compose.yml`, then redeploy.
 2. **Import historical data**: `docker compose exec engine python -m anchor.data.importer`
 3. **Run backtest**: Use the dashboard or `POST /api/v1/backtest`
 4. **Monitor logs**: `docker compose logs -f engine`
+5. **Share access intentionally**: invite specific users to your Tailscale tailnet instead of opening ports publicly
 
 ---
 

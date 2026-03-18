@@ -39,10 +39,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from anchor.backtesting.engine import BacktestEngine
 
 logging.disable(logging.CRITICAL)
-
-from anchor.backtesting.engine import BacktestEngine
 
 DATA_DIR  = Path("/app/data")
 N_BOOT    = 1000    # bootstrap resamples
@@ -244,7 +243,7 @@ def main() -> None:
 
     actual = _metrics(pnls)
 
-    print(f"\n  In-sample actual metrics:")
+    print("\n  In-sample actual metrics:")
     print(f"    WR:       {actual['wr']*100:.1f}%")
     print(f"    PF:       {actual['pf']:.2f}")
     print(f"    Sharpe:   {actual['sharpe']:.2f}")

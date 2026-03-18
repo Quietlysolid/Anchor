@@ -8,13 +8,12 @@ Returns per-fold accuracy, final out-of-sample (OOS) accuracy.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List
 
 import numpy as np
 import structlog
 from sklearn.metrics import accuracy_score, classification_report
 
-from anchor.ml.feature_engineer import FeatureEngineer
 from anchor.ml.xgb_classifier import XGBDirectionClassifier
 from anchor.ml.lgbm_classifier import LGBMDirectionClassifier
 

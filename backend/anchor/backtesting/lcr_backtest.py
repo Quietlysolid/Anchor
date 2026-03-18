@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
+from datetime import timezone
 from collections import defaultdict
 
 import numpy as np
@@ -282,10 +282,11 @@ class LCRBacktestEngine:
 
         monthly_pf_list = []
         for ym, pips in sorted(monthly.items()):
-            w = [p for p in pips if p > 0]
-            l = [p for p in pips if p <= 0]
-            gp = sum(w); gl = abs(sum(l))
-            monthly_pf_list.append(f"{ym}: {len(pips)} trades  WR={len(w)/len(pips)*100:.0f}%  PF={gp/gl:.2f}" if gl > 0 else f"{ym}: {len(pips)} trades  WR=100%  PF=∞")
+            winners = [p for p in pips if p > 0]
+            losers = [p for p in pips if p <= 0]
+            gp = sum(winners)
+            gl = abs(sum(losers))
+            monthly_pf_list.append(f"{ym}: {len(pips)} trades  WR={len(winners)/len(pips)*100:.0f}%  PF={gp/gl:.2f}" if gl > 0 else f"{ym}: {len(pips)} trades  WR=100%  PF=∞")
 
         stats = {
             "n_trades":          len(trades),
@@ -337,7 +338,7 @@ def main():
     for k, v in stats.items():
         print(f"  {k:<28} {v}")
     if monthly:
-        print(f"\n  Monthly breakdown:")
+        print("\n  Monthly breakdown:")
         for line in monthly:
             print(f"    {line}")
     print(f"{'='*55}\n")

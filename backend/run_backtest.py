@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import oandapyV20
 import oandapyV20.endpoints.instruments as instruments_ep
@@ -59,7 +59,6 @@ def fetch_candles(client, instrument: str, granularity: str, start: datetime, en
             last_time_str = candles[-1]["time"]
             for c in candles:
                 # Parse candle time; skip anything beyond our end date
-                c_time = datetime.fromisoformat(last_time_str.replace("Z", "+00:00"))
                 c_this = datetime.fromisoformat(c["time"].replace("Z", "+00:00"))
                 if c_this > end:
                     break
@@ -120,7 +119,7 @@ def main():
             data[tf] = df
 
         if data["H1"].empty or len(data["H1"]) < 200:
-            print(f"  [skip] Insufficient H1 data\n")
+            print("  [skip] Insufficient H1 data\n")
             continue
 
         # Load into engine
@@ -131,7 +130,7 @@ def main():
         if not data["D"].empty:
             eng.load_df(instrument, "D", data["D"])
 
-        print(f"  Running backtest...", end="", flush=True)
+        print("  Running backtest...", end="", flush=True)
         try:
             r = eng.run(instrument, "H1")
         except Exception as exc:
@@ -147,7 +146,7 @@ def main():
         return
 
     print(f"\n{'='*70}")
-    print(f"  RESULTS SUMMARY")
+    print("  RESULTS SUMMARY")
     print(f"{'='*70}")
     hdr = f"{'Pair':<12} {'Trades':>7} {'WinRate':>8} {'PF':>6} {'NetP&L':>10} {'MaxDD':>8} {'Sharpe':>8} {'Sortino':>8}"
     print(hdr)

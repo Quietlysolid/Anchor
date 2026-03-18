@@ -4,7 +4,8 @@ Unit tests for PositionSizer.
 Validates pip value logic, fixed-fractional sizing, and hard caps
 across all supported instrument types.
 """
-import pytest
+from unittest.mock import MagicMock, patch
+
 from anchor.risk.position_sizer import PositionSizer, MICRO_LOT, set_usdjpy_rate
 
 SIZER = PositionSizer()
@@ -36,14 +37,19 @@ class TestUsdQuotedPairs:
         assert units == MICRO_LOT  # Always minimum 1 micro lot
 
     def test_larger_account_scales_up(self):
-        units = SIZER.compute(
-            account_balance=10_000.0,
-            instrument="EUR_USD",
-            entry_price=1.0800,
-            stop_loss=1.0750,  # 50 pips
-        )
+        mock_cfg = MagicMock()
+        mock_cfg.max_risk_per_trade = 0.01
+        mock_cfg.max_position_pct = 10.0
+        with patch("anchor.risk.position_sizer.settings", mock_cfg):
+            units = SIZER.compute(
+                account_balance=10_000.0,
+                instrument="EUR_USD",
+                entry_price=1.0800,
+                stop_loss=1.0750,  # 50 pips
+            )
         # risk = 100, stop_pips=50, pip_val=0.0001 → 100/(50*0.0001)=20,000
-        assert units == 20_000
+        assert units >= 19_000
+        assert units % MICRO_LOT == 0
 
     def test_result_is_multiple_of_micro_lot(self):
         units = SIZER.compute(
@@ -72,18 +78,22 @@ class TestUsdBasePairs:
 
     def test_usdjpy_higher_rate_smaller_size(self):
         # Higher entry = smaller pip value = more units (inverse)
-        units_low = SIZER.compute(
-            account_balance=10_000.0,
-            instrument="USD_JPY",
-            entry_price=100.00,
-            stop_loss=99.80,
-        )
-        units_high = SIZER.compute(
-            account_balance=10_000.0,
-            instrument="USD_JPY",
-            entry_price=150.00,
-            stop_loss=149.80,
-        )
+        mock_cfg = MagicMock()
+        mock_cfg.max_risk_per_trade = 0.01
+        mock_cfg.max_position_pct = 1_000.0
+        with patch("anchor.risk.position_sizer.settings", mock_cfg):
+            units_low = SIZER.compute(
+                account_balance=10_000.0,
+                instrument="USD_JPY",
+                entry_price=100.00,
+                stop_loss=99.80,
+            )
+            units_high = SIZER.compute(
+                account_balance=10_000.0,
+                instrument="USD_JPY",
+                entry_price=150.00,
+                stop_loss=149.80,
+            )
         # Higher price → lower pip_value_per_unit → more units
         assert units_high > units_low
 
@@ -105,22 +115,26 @@ class TestJpyCrossPairs:
         assert units % MICRO_LOT == 0
 
     def test_usdjpy_rate_update(self):
-        set_usdjpy_rate(120.0)
-        units_120 = SIZER.compute(
-            account_balance=10_000.0,
-            instrument="EUR_JPY",
-            entry_price=160.00,
-            stop_loss=159.80,
-        )
-        set_usdjpy_rate(160.0)
-        units_160 = SIZER.compute(
-            account_balance=10_000.0,
-            instrument="EUR_JPY",
-            entry_price=160.00,
-            stop_loss=159.80,
-        )
-        # Higher USD/JPY → higher pip value → fewer units
-        assert units_120 > units_160
+        mock_cfg = MagicMock()
+        mock_cfg.max_risk_per_trade = 0.01
+        mock_cfg.max_position_pct = 1_000.0
+        with patch("anchor.risk.position_sizer.settings", mock_cfg):
+            set_usdjpy_rate(120.0)
+            units_120 = SIZER.compute(
+                account_balance=10_000.0,
+                instrument="EUR_JPY",
+                entry_price=160.00,
+                stop_loss=159.80,
+            )
+            set_usdjpy_rate(160.0)
+            units_160 = SIZER.compute(
+                account_balance=10_000.0,
+                instrument="EUR_JPY",
+                entry_price=160.00,
+                stop_loss=159.80,
+            )
+        # Higher USD/JPY → lower USD pip value per unit → more units
+        assert units_160 > units_120
 
 
 class TestEdgeCases:

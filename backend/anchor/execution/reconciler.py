@@ -3,7 +3,7 @@ Position reconciler.
 Every 15 minutes: compare DB open positions vs OANDA ground truth.
 On VPS restart: full state reconstruction from broker.
 """
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import structlog
 
@@ -58,8 +58,8 @@ class Reconciler:
                         realized_pl  = float(closed.get("realizedPL", 0.0))
                         exit_price   = float(closed.get("averageClosePrice", 0)) or None
                         close_reason = "SL_TP_OR_MANUAL" if closed.get("closingTransactionIDs") else "MANUAL"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("reconciler_get_closed_trade_failed", trade_id=pos.oanda_trade_id, error=str(exc))
 
                 await self.pos_repo.mark_closed(
                     position_id=pos.id,

@@ -1,9 +1,7 @@
 """
 Unit tests for risk gates: DrawdownMonitor and DailyLimiter.
 """
-import pytest
-from unittest.mock import patch
-from datetime import datetime, timezone, date
+from unittest.mock import MagicMock, patch
 
 from anchor.risk.drawdown_monitor import DrawdownMonitor
 from anchor.risk.daily_limiter import DailyLimiter
@@ -11,7 +9,16 @@ from anchor.risk.daily_limiter import DailyLimiter
 
 class TestDrawdownMonitor:
     def setup_method(self):
+        mock_cfg = MagicMock()
+        mock_cfg.drawdown_reduce_pct = 0.08
+        mock_cfg.drawdown_halt_pct = 0.15
+        mock_cfg.monthly_halt_pct = 1.0
+        self._settings_patcher = patch("anchor.risk.drawdown_monitor.settings", mock_cfg)
+        self._settings_patcher.start()
         self.monitor = DrawdownMonitor()
+
+    def teardown_method(self):
+        self._settings_patcher.stop()
 
     def test_no_drawdown_at_start(self):
         self.monitor.update(1000.0)

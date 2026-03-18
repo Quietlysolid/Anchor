@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List, Optional
 
-import numpy as np
 
 from anchor.backtesting.data_feed import CandleBar
 

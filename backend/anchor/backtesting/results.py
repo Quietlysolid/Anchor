@@ -6,7 +6,7 @@ from typing import List
 
 import numpy as np
 
-from anchor.backtesting.simulated_broker import SimulatedBroker, SimulatedPosition
+from anchor.backtesting.simulated_broker import SimulatedBroker
 
 
 @dataclass

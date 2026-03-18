@@ -2,7 +2,6 @@
 Unit tests for math utilities: pip sizes, Sharpe, Sortino, max drawdown, profit factor.
 """
 import numpy as np
-import pytest
 
 from anchor.utils.math_utils import (
     get_pip_size,

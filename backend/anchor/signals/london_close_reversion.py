@@ -268,7 +268,8 @@ class LondonCloseReversionEngine:
         closes = df["close"].values
         highs  = df["high"].values
         lows   = df["low"].values
-        prev_c = np.roll(closes, 1); prev_c[0] = closes[0]
+        prev_c = np.roll(closes, 1)
+        prev_c[0] = closes[0]
         tr = np.maximum(highs - lows, np.maximum(np.abs(highs - prev_c), np.abs(lows - prev_c)))
 
         _p = 14

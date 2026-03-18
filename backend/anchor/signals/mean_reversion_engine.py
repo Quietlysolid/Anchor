@@ -34,7 +34,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
 import structlog
 import ta as ta_lib
@@ -227,7 +226,6 @@ class MeanReversionEngine:
         # ── Score 1: BB touch depth ────────────────────────────────────────
         # How far beyond the band has price reached?
         # Deeper penetration → stronger reversion signal.
-        band_width = max(upper - lower, atr * 0.1)  # avoid zero division
         if direction == "SHORT":
             penetration = max(0.0, close - upper)
         else:

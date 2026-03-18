@@ -19,7 +19,7 @@ function Stat({ label, value, sub, color = 'text-anchor-text' }: StatProps) {
 export default function Trades() {
   const { data: apiTrades }     = useTradeJournal()
   const { data: explanationData } = useTradeExplanations(50)
-  const trades: Trade[] = apiTrades ?? []
+  const trades: Trade[] = useMemo(() => apiTrades ?? [], [apiTrades])
 
   const explanations = useMemo(() => {
     const map: Record<string, string> = {}

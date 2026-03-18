@@ -10,9 +10,8 @@ Called by Celery task on the 1st of each month at 06:00 UTC.
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import mlflow
 import numpy as np
@@ -26,7 +25,6 @@ from anchor.database.models import Position, Signal as SignalModel
 from anchor.ml.feature_engineer import FeatureEngineer
 from anchor.ml.walk_forward import walk_forward_validate, WalkForwardResult
 from anchor.ml.xgb_classifier import XGBDirectionClassifier, DEFAULT_MODEL_DIR
-from anchor.ml.lgbm_classifier import LGBMDirectionClassifier
 from anchor.ml.model_registry import ModelRegistry
 from anchor.ml.ood_detector import OODDetector
 
@@ -84,18 +82,18 @@ def _make_labels(
         short_result = -1
 
         for j in range(k + 1, min(k + _MAX_FORWARD_BARS + 1, n)):
-            h, l = highs[j], lows[j]
+            high, low = highs[j], lows[j]
 
             if long_result == -1:
-                if l <= long_sl:
+                if low <= long_sl:
                     long_result = 0   # long stopped out
-                elif h >= long_tp:
+                elif high >= long_tp:
                     long_result = 1   # long TP hit
 
             if short_result == -1:
-                if h >= short_sl:
+                if high >= short_sl:
                     short_result = 0  # short stopped out
-                elif l <= short_tp:
+                elif low <= short_tp:
                     short_result = 1  # short TP hit
 
             if long_result != -1 and short_result != -1:
@@ -135,7 +133,6 @@ async def _fetch_trade_outcome_labels(
     which is what the ML model should actually be predicting.
     """
     from sqlalchemy import select, and_
-    from decimal import Decimal
 
     result = await session.execute(
         select(Position, SignalModel)

@@ -53,14 +53,13 @@ import logging
 from dataclasses import dataclass, field
 
 import pandas as pd
-
-# Suppress all logging output during backtests — structlog uses stdlib under the hood
-logging.disable(logging.CRITICAL)
-
 from anchor.backtesting.engine import BacktestEngine
 from anchor.backtesting.results import BacktestResults
 from anchor.signals.engine import ConfluenceEngine
 from anchor.utils.math_utils import wilder_atr_scalar
+
+# Suppress all logging output during backtests — structlog uses stdlib under the hood
+logging.disable(logging.CRITICAL)
 
 
 # ── Ablation test definitions ─────────────────────────────────────────────────
@@ -180,7 +179,6 @@ class _AblatedBacktestEngine(BacktestEngine):
     def run(self, instrument: str, timeframe: str = "H1") -> BacktestResults:
         """Override run() to inject ablation flags into ConfluenceEngine."""
         import asyncio as _asyncio
-        import numpy as np
         from anchor.ml.xgb_classifier import XGBDirectionClassifier
         from anchor.ml.feature_engineer import FeatureEngineer
         from pathlib import Path

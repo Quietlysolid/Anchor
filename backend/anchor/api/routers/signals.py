@@ -64,7 +64,7 @@ async def get_active_signals(session: AsyncSession = Depends(get_db)):
     cutoff = utcnow() - timedelta(hours=4)
     q = (
         select(Signal)
-        .where(Signal.suppressed == False, Signal.created_at >= cutoff)
+        .where(~Signal.suppressed, Signal.created_at >= cutoff)
         .order_by(desc(Signal.created_at))
     )
     result = await session.execute(q)

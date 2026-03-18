@@ -39,6 +39,9 @@ def check_session(dt: datetime, instrument: str = "") -> tuple[bool, str]:
     instrument: optional — when provided, JPY pairs are additionally allowed
                 during the Asian session (00:00-03:00 UTC).
     """
+    if dt.weekday() >= 5:
+        return False, "WEEKEND"
+
     if is_weekend_close_window(dt):
         return False, "WEEKEND_CLOSE"
 

@@ -5,13 +5,16 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, desc
+import structlog
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anchor.config import get_settings
 from anchor.database.engine import get_db
 from anchor.database.models import IntelligenceReport
 from anchor.intelligence.session_quality import DEFAULT as _SQ_DEFAULT
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/intelligence", tags=["intelligence"])
 settings = get_settings()
@@ -134,8 +137,8 @@ async def get_session_quality():
             data = json.loads(raw)
             if "environment" in data and "size_scale" in data:
                 return data
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("session_quality_redis_read_failed", error=str(exc))
     finally:
         await redis_client.aclose()
     return dict(_SQ_DEFAULT)
