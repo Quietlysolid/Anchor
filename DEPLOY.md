@@ -164,6 +164,32 @@ uncomment the letsencrypt volume in `docker-compose.yml`, then redeploy.
 
 ---
 
+## Step 9: (Optional) Enable GitHub Actions Auto-Deploy
+
+This repo includes `.github/workflows/deploy.yml` so pushes to `main` can deploy automatically.
+
+Set these GitHub repository secrets:
+
+- `DEPLOY_SSH_PRIVATE_KEY`
+- `DEPLOY_KNOWN_HOSTS`
+- `DEPLOY_VPS_HOST`
+- `DEPLOY_VPS_USER`
+
+Generate `DEPLOY_KNOWN_HOSTS` locally with:
+
+```bash
+ssh-keyscan -H <your-vps-host>
+```
+
+The workflow checks out the repo, opens an SSH session to the VPS, runs
+`infrastructure/scripts/deploy.sh`, and then verifies:
+
+```bash
+curl http://localhost/api/v1/system/health
+```
+
+---
+
 ## After Deployment
 
 1. **Verify OANDA connection**: `GET /api/v1/system/health` should show broker connected

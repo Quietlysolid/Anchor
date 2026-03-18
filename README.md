@@ -216,11 +216,25 @@ make instrument-confidence         # IC analysis per pair
 VPS: `89.167.82.233` (`/opt/anchor`)
 
 ```bash
-git push origin main               # code deploys via git pull on VPS
-docker compose up -d --build       # rebuild if Dockerfile changed
+git push origin main               # triggers GitHub Actions deploy when configured
+docker compose up -d --build       # manual fallback on the VPS
 ```
 
 See [DEPLOY.md](DEPLOY.md) for full Hetzner VPS setup.
+
+### GitHub Actions Deploy
+
+This repo includes `.github/workflows/deploy.yml` for auto-deploy on push to `main`.
+
+Required repository secrets:
+
+- `DEPLOY_SSH_PRIVATE_KEY`
+- `DEPLOY_KNOWN_HOSTS`
+- `DEPLOY_VPS_HOST`
+- `DEPLOY_VPS_USER`
+
+The workflow reuses `infrastructure/scripts/deploy.sh` and verifies
+`/api/v1/system/health` after deployment.
 
 ---
 

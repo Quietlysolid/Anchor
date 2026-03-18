@@ -1,0 +1,47 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+
+      - name: Add VPS host key
+        env:
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy to VPS
+        env:
+          VPS_HOST: ${{ secrets.DEPLOY_VPS_HOST }}
+          VPS_USER: ${{ secrets.DEPLOY_VPS_USER }}
+        run: bash infrastructure/scripts/deploy.sh
+
+      - name: Health check
+        env:
+          VPS_HOST: ${{ secrets.DEPLOY_VPS_HOST }}
+          VPS_USER: ${{ secrets.DEPLOY_VPS_USER }}
+        run: |
+          ssh "$VPS_USER@$VPS_HOST" "curl -fsS http://localhost/api/v1/system/health"
