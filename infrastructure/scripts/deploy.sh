@@ -33,8 +33,10 @@ ssh "$VPS_USER@$VPS_HOST" bash << EOF
   docker compose up -d db
 
   echo "==> Ensuring MLflow database exists..."
-  docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '\${MLFLOW_DB_NAME:-anchor_mlflow}'" | grep -q 1 \
-    || docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d postgres -c "CREATE DATABASE \${MLFLOW_DB_NAME:-anchor_mlflow};"
+  _mlflow_db_exists=\$(docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '\${MLFLOW_DB_NAME:-anchor_mlflow}'" | tr -d '[:space:]')
+  if [ "\$_mlflow_db_exists" != "1" ]; then
+    docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d postgres -c "CREATE DATABASE \${MLFLOW_DB_NAME:-anchor_mlflow};"
+  fi
 
   echo "==> Running DB migrations..."
   # Attempt upgrade; if the DB has a stale revision stamp (e.g. after a

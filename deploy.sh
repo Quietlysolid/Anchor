@@ -14,11 +14,13 @@ echo "==> starting database..."
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d db
 
 echo "==> ensuring MLflow database exists..."
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T db \
+mlflow_db_exists=$(docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T db \
   psql -U "${DB_USER:-anchor}" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '${MLFLOW_DB_NAME:-anchor_mlflow}'" \
-  | grep -q 1 || \
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T db \
-  psql -U "${DB_USER:-anchor}" -d postgres -c "CREATE DATABASE ${MLFLOW_DB_NAME:-anchor_mlflow};"
+  | tr -d '[:space:]')
+if [ "$mlflow_db_exists" != "1" ]; then
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T db \
+    psql -U "${DB_USER:-anchor}" -d postgres -c "CREATE DATABASE ${MLFLOW_DB_NAME:-anchor_mlflow};"
+fi
 
 echo "==> restarting services..."
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d \
