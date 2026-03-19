@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
 from anchor.database.engine import get_db
-from anchor.database.models import Trade, EquityCurvePoint
+from anchor.database.models import EquityCurvePoint, Fill, Order, Trade
 from anchor.analytics.performance import compute_performance
 from anchor.analytics.monte_carlo import run_monte_carlo
 
@@ -67,6 +67,34 @@ async def get_trade_journal(
         q = q.where(Trade.instrument == instrument)
     result = await session.execute(q)
     trades = result.scalars().all()
+    signal_ids = [t.signal_id for t in trades if t.signal_id is not None]
+    entry_fill_by_signal = {}
+
+    if signal_ids:
+        fill_query = (
+            select(
+                Order.signal_id,
+                Fill.fill_at,
+                Fill.fill_price,
+                Fill.expected_price,
+                Fill.slippage_pips,
+                Fill.spread_at_fill,
+            )
+            .join(Fill, Fill.order_id == Order.id)
+            .where(Order.signal_id.in_(signal_ids))
+            .order_by(Order.signal_id, Fill.fill_at)
+        )
+        fill_rows = (await session.execute(fill_query)).all()
+        for signal_id, fill_at, fill_price, expected_price, slippage_pips, spread_at_fill in fill_rows:
+            if signal_id not in entry_fill_by_signal:
+                entry_fill_by_signal[signal_id] = {
+                    "fill_at": fill_at,
+                    "fill_price": fill_price,
+                    "expected_price": expected_price,
+                    "slippage_pips": slippage_pips,
+                    "spread_at_fill": spread_at_fill,
+                }
+
     return [
         {
             "id":            str(t.id),
@@ -83,6 +111,31 @@ async def get_trade_journal(
             "close_reason":     t.close_reason,
             "regime_at_entry":  t.regime_at_entry,
             "session_at_entry": t.session_at_entry,
+            "expected_entry_price": (
+                float(entry_fill_by_signal[t.signal_id]["expected_price"])
+                if t.signal_id in entry_fill_by_signal and entry_fill_by_signal[t.signal_id]["expected_price"] is not None
+                else None
+            ),
+            "fill_price": (
+                float(entry_fill_by_signal[t.signal_id]["fill_price"])
+                if t.signal_id in entry_fill_by_signal and entry_fill_by_signal[t.signal_id]["fill_price"] is not None
+                else None
+            ),
+            "entry_slippage_pips": (
+                float(entry_fill_by_signal[t.signal_id]["slippage_pips"])
+                if t.signal_id in entry_fill_by_signal and entry_fill_by_signal[t.signal_id]["slippage_pips"] is not None
+                else None
+            ),
+            "spread_at_fill": (
+                float(entry_fill_by_signal[t.signal_id]["spread_at_fill"])
+                if t.signal_id in entry_fill_by_signal and entry_fill_by_signal[t.signal_id]["spread_at_fill"] is not None
+                else None
+            ),
+            "fill_at": (
+                entry_fill_by_signal[t.signal_id]["fill_at"].isoformat()
+                if t.signal_id in entry_fill_by_signal and entry_fill_by_signal[t.signal_id]["fill_at"] is not None
+                else None
+            ),
         }
         for t in trades
     ]

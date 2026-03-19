@@ -99,6 +99,13 @@ export interface Trade {
   close_reason: string
   regime_at_entry: Regime | null
   session_at_entry: Session | null
+  gross_pl?: number
+  commission?: number
+  expected_entry_price?: number | null
+  fill_price?: number | null
+  entry_slippage_pips?: number | null
+  spread_at_fill?: number | null
+  fill_at?: string | null
 }
 
 // ── Performance ──────────────────────────────────────────────

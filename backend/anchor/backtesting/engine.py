@@ -8,7 +8,7 @@ Usage: python -m anchor.backtesting.engine --instrument EUR_USD --start 2020-01-
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import structlog
@@ -72,6 +72,85 @@ logger = structlog.get_logger(__name__)
 
 ATR_MULTIPLIER_SL = 1.5   # stop loss = 1.5x ATR
 ATR_MULTIPLIER_TP = 2.0   # take profit = 2.0x ATR (1.33:1 R/R) — OOS LONDON: 50% WR → PF 1.33
+
+
+def _set_time_index(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Match live cache shape: time-indexed frames for .index.date / .index.hour access."""
+    if df is None:
+        return None
+    return df.set_index("time") if "time" in df.columns else df
+
+
+def _limit_order_fill_price(direction: str, limit_price: float, bar) -> float | None:
+    """Return the realized fill price for a pending limit order on this bar, if touched."""
+    if direction == "LONG":
+        if bar.low > limit_price:
+            return None
+        return min(limit_price, bar.open)
+
+    if bar.high < limit_price:
+        return None
+    return max(limit_price, bar.open)
+
+
+def _build_trend_limit_order(
+    h1_window: pd.DataFrame,
+    direction: str,
+    account_balance: float,
+    instrument: str,
+    sizer: PositionSizer,
+    submitted_at: datetime,
+    signal_context: dict,
+) -> dict | None:
+    """Replicate the live pullback-limit trend order construction."""
+    closes = h1_window["close"].values
+    highs = h1_window["high"].values
+    lows = h1_window["low"].values
+    atr = wilder_atr_scalar(highs, lows, closes)
+    if atr <= 0:
+        return None
+
+    last_candle = h1_window.iloc[-1]
+    candle_body = abs(float(last_candle["close"]) - float(last_candle["open"]))
+    if candle_body < atr * 0.2:
+        pullback = max(candle_body * 0.5, atr * 0.3)
+    else:
+        pullback = candle_body * 0.5
+
+    close_price = float(last_candle["close"])
+    if direction == "LONG":
+        entry_price = round(close_price - pullback, 5)
+        stop_loss = round(entry_price - ATR_MULTIPLIER_SL * atr, 5)
+        take_profit = round(entry_price + ATR_MULTIPLIER_TP * atr, 5)
+    else:
+        entry_price = round(close_price + pullback, 5)
+        stop_loss = round(entry_price + ATR_MULTIPLIER_SL * atr, 5)
+        take_profit = round(entry_price - ATR_MULTIPLIER_TP * atr, 5)
+
+    stop_distance = abs(entry_price - stop_loss)
+    if stop_distance < 1e-8:
+        return None
+
+    units = sizer.compute_units(
+        account_balance=account_balance,
+        stop_distance=stop_distance,
+        instrument=instrument,
+    )
+    if units <= 0:
+        return None
+
+    signal_context = dict(signal_context)
+    signal_context["atr"] = atr
+
+    return {
+        "direction": direction,
+        "limit_price": entry_price,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "expires_at": submitted_at + timedelta(hours=4),
+        "units": units,
+        "signal_context": signal_context,
+    }
 
 
 def _load_ml_classifier(instrument: str) -> XGBDirectionClassifier | None:
@@ -185,47 +264,35 @@ class BacktestEngine:
         eval_count = 0
         first_result_logged = False
 
-        # Pending fill: signal fired on the previous bar; fill at this bar's open.
-        # Structure: dict with keys direction, sl_atr_offset, tp_atr_offset,
-        # signal_context, units_basis (account_balance and stop_distance at signal time).
-        pending_fill: dict | None = None
-
-        def _set_index(df):
-            return df.set_index("time") if "time" in df.columns else df
+        # Pending limit order mirrors live trend execution: submit on signal,
+        # wait for a pullback fill, and cancel if it goes stale after 4 hours.
+        pending_order: dict | None = None
 
         for bar in self.feed.stream(instrument, timeframe):
             bar_count += 1
 
-            # ── Fill pending signal at this bar's open (no lookahead) ────────
-            if pending_fill is not None:
-                if not (is_weekend_close_time(bar.time) or is_holiday(bar.time)):
-                    fill_price = bar.open
-                    direction = pending_fill["direction"]
-                    atr = pending_fill["atr"]
-                    if direction == "LONG":
-                        sl = fill_price - ATR_MULTIPLIER_SL * atr
-                        tp = fill_price + ATR_MULTIPLIER_TP * atr
-                    else:
-                        sl = fill_price + ATR_MULTIPLIER_SL * atr
-                        tp = fill_price - ATR_MULTIPLIER_TP * atr
-                    sl_distance = abs(fill_price - sl)
-                    if sl_distance >= 1e-8:
-                        units = self.sizer.compute_units(
-                            account_balance=pending_fill["account_balance"],
-                            stop_distance=sl_distance,
-                            instrument=instrument,
-                        )
+            # ── Try to fill / expire pending pullback limit order ─────────────
+            if pending_order is not None:
+                if bar.time > pending_order["expires_at"] or is_weekend_close_time(bar.time) or is_holiday(bar.time):
+                    pending_order = None
+                else:
+                    fill_price = _limit_order_fill_price(
+                        pending_order["direction"],
+                        pending_order["limit_price"],
+                        bar,
+                    )
+                    if fill_price is not None:
                         self.broker.open_position(
                             instrument=instrument,
-                            direction=direction,
-                            units=units,
+                            direction=pending_order["direction"],
+                            units=pending_order["units"],
                             fill_price=fill_price,
-                            stop_loss=sl,
-                            take_profit=tp,
+                            stop_loss=pending_order["stop_loss"],
+                            take_profit=pending_order["take_profit"],
                             fill_time=bar.time,
-                            signal_context=pending_fill["signal_context"],
+                            signal_context=pending_order["signal_context"],
                         )
-                pending_fill = None
+                        pending_order = None
 
             # Skip weekends and holidays
             if is_weekend_close_time(bar.time) or is_holiday(bar.time):
@@ -245,11 +312,11 @@ class BacktestEngine:
                 continue
 
             # Update the engine's cache (same interface as live)
-            engine.update_cache(instrument, "H1", _set_index(h1_window))
+            engine.update_cache(instrument, "H1", _set_time_index(h1_window))
             if h4_window is not None:
-                engine.update_cache(instrument, "H4", _set_index(h4_window))
+                engine.update_cache(instrument, "H4", _set_time_index(h4_window))
             if d1_window is not None:
-                engine.update_cache(instrument, "D", _set_index(d1_window))
+                engine.update_cache(instrument, "D", _set_time_index(d1_window))
 
             # Update broker on this bar (SL/TP checks)
             self.broker.update(bar)
@@ -292,21 +359,14 @@ class BacktestEngine:
 
             signal_count += 1
 
-            # Compute ATR on this bar's window (no lookahead).
-            # Uses Wilder's smoothing (EMA α=1/14) to match the `ta` library
-            # used in live signal generation — preventing SL/TP divergence
-            # between backtest and live execution in volatile periods.
-            closes = h1_window["close"].values
-            highs = h1_window["high"].values
-            lows = h1_window["low"].values
-            atr = wilder_atr_scalar(highs, lows, closes)
-
-            # Queue fill for next bar's open — no lookahead on price.
-            pending_fill = {
-                "direction": result.direction,
-                "atr": atr,
-                "account_balance": self.broker.account_balance,
-                "signal_context": {
+            pending_order = _build_trend_limit_order(
+                h1_window=h1_window,
+                direction=result.direction,
+                account_balance=self.broker.account_balance,
+                instrument=instrument,
+                sizer=self.sizer,
+                submitted_at=bar.time,
+                signal_context={
                     "regime": result.regime_state,
                     "session": result.session,
                     "confluence_score": result.confluence_score,
@@ -317,9 +377,8 @@ class BacktestEngine:
                     "mtf_score": result.mtf_score,
                     "csi_score": result.csi_score,
                     "ml_confidence": result.ml_confidence,
-                    "atr": atr,
                 },
-            }
+            )
 
         _loop.close()
 

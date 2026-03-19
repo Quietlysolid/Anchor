@@ -113,16 +113,24 @@ class TradeResponse(BaseModel):
     id: UUID
     instrument: str
     direction: str
+    units: float
     entry_price: float
     exit_price: Optional[float]
     opened_at: datetime
     closed_at: Optional[datetime]
     net_pl: float
+    gross_pl: float
+    commission: float
     max_adverse_excursion: Optional[float]
     max_favorable_excursion: Optional[float]
     close_reason: Optional[str]
     regime_at_entry: Optional[str]
     session_at_entry: Optional[str]
+    expected_entry_price: Optional[float]
+    fill_price: Optional[float]
+    entry_slippage_pips: Optional[float]
+    spread_at_fill: Optional[float]
+    fill_at: Optional[datetime]
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────

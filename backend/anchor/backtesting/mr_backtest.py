@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import timezone
+from datetime import timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -73,6 +73,18 @@ def _load_csv(path: str) -> pd.DataFrame:
     return df.dropna(subset=["open", "high", "low", "close"])
 
 
+def _limit_order_fill_price(direction: str, limit_price: float, bar: pd.Series) -> float | None:
+    """Fill a pending MR limit order when price revisits the signal level."""
+    if direction == "LONG":
+        if float(bar["low"]) > limit_price:
+            return None
+        return min(limit_price, float(bar["open"]))
+
+    if float(bar["high"]) < limit_price:
+        return None
+    return max(limit_price, float(bar["open"]))
+
+
 class MRBacktestEngine:
     def __init__(self, initial_balance: float = 10_000.0):
         self.initial_balance = initial_balance
@@ -117,6 +129,7 @@ class MRBacktestEngine:
 
         # Simulate open position state
         position: dict | None = None
+        pending_order: dict | None = None
 
         engine = MeanReversionEngine()
 
@@ -125,6 +138,24 @@ class MRBacktestEngine:
             dt      = bar.name
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
+
+            if pending_order is not None:
+                if dt > pending_order["expires_at"]:
+                    pending_order = None
+                else:
+                    fill_price = _limit_order_fill_price(pending_order["direction"], pending_order["entry"], bar)
+                    if fill_price is not None:
+                        position = {
+                            "direction":     pending_order["direction"],
+                            "entry":         fill_price,
+                            "sl":            pending_order["sl"],
+                            "tp":            pending_order["tp"],
+                            "entry_time":    dt,
+                            "risk_fraction": pending_order["risk_fraction"],
+                            "confluence":    pending_order["confluence"],
+                            "swap_pips":     0.0,
+                        }
+                        pending_order = None
 
             # ── Check if open position hit SL or TP ───────────────────────
             if position is not None:
@@ -191,7 +222,7 @@ class MRBacktestEngine:
                     pair_swap = _SWAP_PIPS.get(instrument, {})
                     position["swap_pips"] += pair_swap.get(direction, 0.0)
 
-            if position is not None:
+            if position is not None or pending_order is not None:
                 continue  # one position at a time
 
             # ── Build data slice and run engine ───────────────────────────
@@ -207,7 +238,6 @@ class MRBacktestEngine:
             if result.suppressed or result.direction is None:
                 continue
 
-            # Compute position size: 1% risk
             entry = result.entry_price or float(bar["close"])
             sl    = result.stop_loss
             tp    = result.take_profit
@@ -220,15 +250,14 @@ class MRBacktestEngine:
                 continue
 
             risk_fraction = 0.01  # 1% per trade
-            position = {
+            pending_order = {
                 "direction":     result.direction,
                 "entry":         entry,
                 "sl":            sl,
                 "tp":            tp,
-                "entry_time":    dt,
+                "expires_at":    dt + timedelta(hours=2),
                 "risk_fraction": risk_fraction,
                 "confluence":    result.confluence_score,
-                "swap_pips":     0.0,  # accrued at each 22:00 UTC rollover
             }
 
         # ── Summary statistics ─────────────────────────────────────────────

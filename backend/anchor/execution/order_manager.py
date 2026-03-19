@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import structlog
@@ -24,6 +25,7 @@ from anchor.execution.order_types import (
     TERMINAL_STATES,
     InvalidTransitionError,
 )
+from anchor.utils.math_utils import get_pip_size
 from anchor.utils.time_utils import utcnow
 
 if TYPE_CHECKING:
@@ -59,6 +61,35 @@ class OrderManager:
         except Exception as exc:
             logger.error("order_cache_load_failed", error=str(exc))
 
+    @staticmethod
+    def _compute_fill_metrics(
+        instrument: str,
+        direction: str,
+        fill_price: float,
+        expected_price: float | None,
+    ) -> tuple[Decimal | None, Decimal | None]:
+        """Return expected fill price and signed slippage in pips.
+
+        Positive slippage means an adverse fill.
+        Negative slippage means price improvement.
+        """
+        if expected_price is None:
+            return None, None
+
+        pip_size = get_pip_size(instrument)
+        if pip_size <= 0:
+            return Decimal(str(expected_price)), None
+
+        if direction == "LONG":
+            slippage_pips = (fill_price - expected_price) / pip_size
+        else:
+            slippage_pips = (expected_price - fill_price) / pip_size
+
+        return (
+            Decimal(str(expected_price)),
+            Decimal(str(round(slippage_pips, 4))),
+        )
+
     async def submit(self, request: OrderRequest) -> uuid.UUID:
         """Create and submit a new order. Returns order_id."""
         order_id = uuid.uuid4()
@@ -89,9 +120,35 @@ class OrderManager:
 
         # Market orders fill immediately — create Position row and mark FILLED
         if trade_id and fill_price:
+            expected_price, slippage_pips = self._compute_fill_metrics(
+                instrument=request.instrument,
+                direction=request.direction.value,
+                fill_price=fill_price,
+                expected_price=request.limit_price or fill_price,
+            )
             await self.transition(order_id, OrderState.ACKNOWLEDGED, {"oanda_order_id": oanda_id})
             await self._create_position(request, trade_id, fill_price)
-            await self.transition(order_id, OrderState.FILLED, {"fill_price": fill_price})
+            from anchor.database.models import Fill
+
+            fill = Fill(
+                order_id=order_id,
+                instrument=request.instrument,
+                units_filled=Decimal(str(request.units)),
+                fill_price=Decimal(str(fill_price)),
+                fill_at=utcnow(),
+                expected_price=expected_price,
+                slippage_pips=slippage_pips,
+            )
+            await self.order_repo.insert_fill(fill)
+            await self.transition(
+                order_id,
+                OrderState.FILLED,
+                {
+                    "fill_price": fill_price,
+                    "expected_price": float(expected_price) if expected_price is not None else None,
+                    "slippage_pips": float(slippage_pips) if slippage_pips is not None else None,
+                },
+            )
 
         return order_id
 
@@ -103,7 +160,6 @@ class OrderManager:
     ) -> None:
         """Write a Position row after a market order fills."""
         from anchor.database.models import Position, PositionStatus
-        from decimal import Decimal
 
         position = Position(
             instrument=request.instrument,
@@ -185,12 +241,24 @@ class OrderManager:
         fill_at: datetime,
         oanda_fill_id: str | None = None,
         spread_at_fill: float | None = None,
+        expected_price: float | None = None,
     ) -> None:
         """Handle a fill event from OANDA (full or partial)."""
         order = await self.order_repo.get(order_id)
         if order is None:
             logger.warning("fill_for_unknown_order", order_id=str(order_id))
             return
+
+        benchmark_price = expected_price
+        if benchmark_price is None and order.limit_price is not None:
+            benchmark_price = float(order.limit_price)
+
+        expected_price_dec, slippage_pips_dec = self._compute_fill_metrics(
+            instrument=order.instrument,
+            direction=order.direction,
+            fill_price=fill_price,
+            expected_price=benchmark_price,
+        )
 
         # Track partial fills for VWAP entry
         if order_id not in self._partial_fills:
@@ -210,6 +278,8 @@ class OrderManager:
             fill_price=fill_price,
             fill_at=fill_at,
             oanda_fill_id=oanda_fill_id,
+            expected_price=expected_price_dec,
+            slippage_pips=slippage_pips_dec,
             spread_at_fill=spread_at_fill,
         )
         await self.order_repo.insert_fill(fill)
@@ -220,14 +290,24 @@ class OrderManager:
             await self.transition(
                 order_id,
                 OrderState.FILLED,
-                {"fill_price": fill_price, "vwap_entry": vwap_entry},
+                {
+                    "fill_price": fill_price,
+                    "vwap_entry": vwap_entry,
+                    "expected_price": benchmark_price,
+                    "slippage_pips": float(slippage_pips_dec) if slippage_pips_dec is not None else None,
+                },
             )
             del self._partial_fills[order_id]
         else:
             await self.transition(
                 order_id,
                 OrderState.PARTIAL,
-                {"filled_so_far": total_filled, "vwap_entry": vwap_entry},
+                {
+                    "filled_so_far": total_filled,
+                    "vwap_entry": vwap_entry,
+                    "expected_price": benchmark_price,
+                    "slippage_pips": float(slippage_pips_dec) if slippage_pips_dec is not None else None,
+                },
             )
 
     async def cancel(self, order_id: uuid.UUID, reason: str = "") -> None:

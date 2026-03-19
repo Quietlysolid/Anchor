@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 from anchor.backtesting.engine import BacktestEngine
+from anchor.backtesting.engine import _build_trend_limit_order, _limit_order_fill_price, _set_time_index
 from anchor.backtesting.results import BacktestResults
 from anchor.signals.engine import ConfluenceEngine
 from anchor.utils.math_utils import wilder_atr_scalar
@@ -184,7 +185,6 @@ class _AblatedBacktestEngine(BacktestEngine):
         from pathlib import Path
         from anchor.risk.weekend_guard import WeekendGuard as _WG
         from anchor.risk.holiday_calendar import is_holiday
-        from anchor.backtesting.engine import ATR_MULTIPLIER_SL, ATR_MULTIPLIER_TP
         from anchor.backtesting.results import compute_results
         from anchor.signals.engine import SignalResult
         import structlog
@@ -213,40 +213,31 @@ class _AblatedBacktestEngine(BacktestEngine):
         )
 
         loop = _asyncio.new_event_loop()
-        pending_fill: dict | None = None
+        pending_order: dict | None = None
 
         try:
             for bar in self.feed.stream(instrument, timeframe):
-                # Fill pending signal at next bar open
-                if pending_fill is not None:
-                    if not (_is_weekend(bar.time) or is_holiday(bar.time)):
-                        fill_price = bar.open
-                        direction  = pending_fill["direction"]
-                        atr        = pending_fill["atr"]
-                        if direction == "LONG":
-                            sl = fill_price - ATR_MULTIPLIER_SL * atr
-                            tp = fill_price + ATR_MULTIPLIER_TP * atr
-                        else:
-                            sl = fill_price + ATR_MULTIPLIER_SL * atr
-                            tp = fill_price - ATR_MULTIPLIER_TP * atr
-                        sl_distance = abs(fill_price - sl)
-                        if sl_distance >= 1e-8:
-                            units = self.sizer.compute_units(
-                                account_balance=pending_fill["account_balance"],
-                                stop_distance=sl_distance,
-                                instrument=instrument,
-                            )
+                if pending_order is not None:
+                    if bar.time > pending_order["expires_at"] or _is_weekend(bar.time) or is_holiday(bar.time):
+                        pending_order = None
+                    else:
+                        fill_price = _limit_order_fill_price(
+                            pending_order["direction"],
+                            pending_order["limit_price"],
+                            bar,
+                        )
+                        if fill_price is not None:
                             self.broker.open_position(
                                 instrument=instrument,
-                                direction=direction,
-                                units=units,
+                                direction=pending_order["direction"],
+                                units=pending_order["units"],
                                 fill_price=fill_price,
-                                stop_loss=sl,
-                                take_profit=tp,
+                                stop_loss=pending_order["stop_loss"],
+                                take_profit=pending_order["take_profit"],
                                 fill_time=bar.time,
-                                signal_context=pending_fill["signal_context"],
+                                signal_context=pending_order["signal_context"],
                             )
-                    pending_fill = None
+                            pending_order = None
 
                 if _is_weekend(bar.time) or is_holiday(bar.time):
                     continue
@@ -258,11 +249,11 @@ class _AblatedBacktestEngine(BacktestEngine):
                 if h1_window is None or len(h1_window) < 60:
                     continue
 
-                engine.update_cache(instrument, "H1", h1_window)
+                engine.update_cache(instrument, "H1", _set_time_index(h1_window))
                 if h4_window is not None:
-                    engine.update_cache(instrument, "H4", h4_window)
+                    engine.update_cache(instrument, "H4", _set_time_index(h4_window))
                 if d1_window is not None:
-                    engine.update_cache(instrument, "D", d1_window)
+                    engine.update_cache(instrument, "D", _set_time_index(d1_window))
 
                 self.broker.update(bar)
 
@@ -284,29 +275,26 @@ class _AblatedBacktestEngine(BacktestEngine):
                 if result.suppressed or result.direction is None:
                     continue
 
-                closes = h1_window["close"].values
-                highs  = h1_window["high"].values
-                lows   = h1_window["low"].values
-                atr    = wilder_atr_scalar(highs, lows, closes)
-
-                pending_fill = {
-                    "direction":       result.direction,
-                    "atr":             atr,
-                    "account_balance": self.broker.account_balance,
-                    "signal_context": {
-                        "regime":           result.regime_state,
-                        "session":          result.session,
+                pending_order = _build_trend_limit_order(
+                    h1_window=h1_window,
+                    direction=result.direction,
+                    account_balance=self.broker.account_balance,
+                    instrument=instrument,
+                    sizer=self.sizer,
+                    submitted_at=bar.time,
+                    signal_context={
+                        "regime": result.regime_state,
+                        "session": result.session,
                         "confluence_score": result.confluence_score,
-                        "rsi_score":        result.rsi_score,
-                        "bb_kc_score":      result.bb_kc_score,
-                        "adx_score":        result.adx_score,
-                        "sr_score":         result.sr_score,
-                        "mtf_score":        result.mtf_score,
-                        "csi_score":        result.csi_score,
-                        "ml_confidence":    result.ml_confidence,
-                        "atr":              atr,
+                        "rsi_score": result.rsi_score,
+                        "bb_kc_score": result.bb_kc_score,
+                        "adx_score": result.adx_score,
+                        "sr_score": result.sr_score,
+                        "mtf_score": result.mtf_score,
+                        "csi_score": result.csi_score,
+                        "ml_confidence": result.ml_confidence,
                     },
-                }
+                )
         finally:
             loop.close()
 
