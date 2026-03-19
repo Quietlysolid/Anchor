@@ -45,7 +45,7 @@ export function PositionsTable({ positions }: Props) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full min-w-[420px] text-sm">
         <thead>
           <tr className="text-[11px] font-mono text-anchor-muted uppercase tracking-wide border-b border-anchor-border">
             <th className="pb-2 text-left font-medium">Instrument</th>

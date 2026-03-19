@@ -74,7 +74,7 @@ export default function Console() {
   const todayPrefix = todayPL == null ? '' : todayPL >= 0 ? '+$' : '−$'
 
   return (
-    <div className="min-h-screen bg-anchor-void p-5 space-y-4">
+    <div className="min-h-screen bg-anchor-void p-3 sm:p-5 space-y-4">
 
       {/* Session strip */}
       <SessionTimeline />
@@ -93,15 +93,15 @@ export default function Console() {
                 value={Math.abs(todayPL)}
                 prefix={todayPrefix}
                 decimals={2}
-                className={`text-5xl font-semibold font-mono tabular-nums leading-none ${todayColor}`}
+                className={`text-4xl sm:text-5xl font-semibold font-mono tabular-nums leading-none ${todayColor}`}
               />
             ) : (
-              <span className="text-5xl font-semibold font-mono tabular-nums leading-none text-anchor-muted">—</span>
+              <span className="text-4xl sm:text-5xl font-semibold font-mono tabular-nums leading-none text-anchor-muted">—</span>
             )}
           </div>
 
           {/* Secondary stats */}
-          <div className="grid grid-cols-3 gap-x-8 gap-y-3 md:ml-auto md:pt-1.5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-3 md:ml-auto md:pt-1.5">
             <Stat
               label="Portfolio"
               value={equityVal > 0 ? `$${equityVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
@@ -127,8 +127,8 @@ export default function Console() {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
         {/* Open positions */}
-        <GlowCard padding={false} className="p-5">
-          <div className="flex items-center justify-between mb-5">
+        <GlowCard padding={false} className="p-4 sm:p-5">
+          <div className="flex items-center justify-between gap-3 mb-5">
             <h2 className="text-sm font-semibold text-anchor-text">Open Positions</h2>
             {positions.length > 0 && (
               <div className="flex items-center gap-1.5">
@@ -144,7 +144,7 @@ export default function Console() {
           <RolloutCard config={rolloutConfig} />
 
           {/* Intelligence brief */}
-          <GlowCard padding={false} className="p-5">
+          <GlowCard padding={false} className="p-4 sm:p-5">
             <h2 className="text-sm font-semibold text-anchor-text mb-4">Intelligence Brief</h2>
             <AIBriefPanel
               content={brief?.content ?? null}

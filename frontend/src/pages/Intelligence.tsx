@@ -43,11 +43,11 @@ export default function Intelligence() {
   }
 
   return (
-    <div className="min-h-screen bg-anchor-void p-5">
+    <div className="min-h-screen bg-anchor-void p-3 sm:p-5">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:min-h-[calc(100vh-40px)]">
 
         {/* Left: Signal Feed */}
-        <GlowCard padding={false} className="p-5 flex flex-col min-h-[360px] lg:overflow-hidden lg:max-h-[calc(100vh-60px)]">
+        <GlowCard padding={false} className="p-4 sm:p-5 flex flex-col min-h-[360px] lg:overflow-hidden lg:max-h-[calc(100vh-60px)]">
           <SignalFeed signals={signals} />
         </GlowCard>
 
@@ -55,14 +55,14 @@ export default function Intelligence() {
         <div className="flex flex-col gap-4 min-h-[360px] lg:overflow-hidden lg:max-h-[calc(100vh-60px)]">
 
           {/* AI Journal — takes available space */}
-          <GlowCard padding={false} className="p-5 flex flex-col flex-1 min-h-0 overflow-hidden">
-            <div className="flex items-center justify-between mb-4 gap-3 shrink-0">
+          <GlowCard padding={false} className="p-4 sm:p-5 flex flex-col flex-1 min-h-0 overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3 shrink-0">
               <h2 className="text-sm font-semibold text-anchor-text">AI Journal</h2>
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Search..."
-                className="text-xs bg-anchor-void border border-anchor-border text-anchor-text placeholder-anchor-muted rounded-lg px-3 py-1.5 font-mono w-32 focus:outline-none focus:border-anchor-green/50 transition-colors"
+                className="text-xs bg-anchor-void border border-anchor-border text-anchor-text placeholder-anchor-muted rounded-lg px-3 py-1.5 font-mono w-full sm:w-32 focus:outline-none focus:border-anchor-green/50 transition-colors"
               />
             </div>
 
@@ -117,7 +117,7 @@ export default function Intelligence() {
           </GlowCard>
 
           {/* Upcoming Events */}
-          <GlowCard padding={false} className="p-5 shrink-0">
+          <GlowCard padding={false} className="p-4 sm:p-5 shrink-0">
             <h2 className="text-sm font-semibold text-anchor-text mb-4">Upcoming Events</h2>
             <EconomicCalendar events={calEvents} />
           </GlowCard>

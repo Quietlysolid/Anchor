@@ -54,9 +54,9 @@ export default function Trades() {
   const plSign = stats.totalPL >= 0 ? '+' : ''
 
   return (
-    <div className="min-h-screen bg-anchor-void p-5 space-y-4">
+    <div className="min-h-screen bg-anchor-void p-3 sm:p-5 space-y-4">
 
-      <GlowCard padding={false} className="p-6">
+      <GlowCard padding={false} className="p-4 sm:p-6">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-8">
           <Stat
             label="Win Rate"
@@ -84,7 +84,7 @@ export default function Trades() {
         </div>
       </GlowCard>
 
-      <GlowCard padding={false} className="p-5">
+      <GlowCard padding={false} className="p-4 sm:p-5">
         <TradeTable trades={trades} explanations={explanations} />
       </GlowCard>
     </div>

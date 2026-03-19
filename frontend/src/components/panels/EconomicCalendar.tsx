@@ -91,7 +91,7 @@ export function EconomicCalendar({ events }: Props) {
             </div>
 
             {relevant.length > 0 && (
-              <div className="flex flex-col gap-0.5">
+              <div className="hidden sm:flex flex-col gap-0.5">
                 {relevant.map(p => (
                   <span key={p} className="text-[9px] font-mono text-anchor-muted/60 bg-anchor-border/40 px-1 py-0.5 rounded">{p}</span>
                 ))}

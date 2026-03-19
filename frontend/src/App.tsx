@@ -90,7 +90,7 @@ function Layout() {
   const showBanner = !wsConnected && !bannerDismissed
 
   return (
-    <div className="flex h-screen overflow-hidden bg-anchor-void">
+    <div className="flex min-h-screen md:h-screen overflow-hidden bg-anchor-void">
       <DisconnectedBanner
         visible={showBanner}
         onDismiss={() => setBannerDismissed(true)}
@@ -113,7 +113,7 @@ function Layout() {
       {/* Main */}
       <main className={`flex-1 overflow-y-auto min-w-0 transition-all ${showBanner ? 'pt-9' : ''}`}>
         {/* Mobile top bar */}
-        <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-3 bg-anchor-void border-b border-anchor-border md:hidden">
+        <div className="sticky top-0 z-10 flex items-center gap-3 px-3 py-3 bg-anchor-void border-b border-anchor-border md:hidden">
           <button
             type="button"
             onClick={() => setSidebarOpen(true)}

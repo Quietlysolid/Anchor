@@ -55,11 +55,11 @@ export function TradeTable({ trades, explanations = {} }: Props) {
   return (
     <div className="space-y-3">
       {/* Filters */}
-      <div className="flex flex-wrap gap-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
         <select
           value={filterPair}
           onChange={e => { setFilterPair(e.target.value); setPage(1) }}
-          className="bg-anchor-surface border border-anchor-border text-anchor-text rounded px-2 py-1 font-mono"
+          className="bg-anchor-surface border border-anchor-border text-anchor-text rounded px-2 py-1 font-mono min-w-[9rem] flex-1 sm:flex-none"
         >
           {pairs.map(p => <option key={p} value={p}>{p === 'ALL' ? 'All pairs' : p.replace('_', '/')}</option>)}
         </select>
@@ -67,7 +67,7 @@ export function TradeTable({ trades, explanations = {} }: Props) {
         <select
           value={filterDir}
           onChange={e => { setFilterDir(e.target.value); setPage(1) }}
-          className="bg-anchor-surface border border-anchor-border text-anchor-text rounded px-2 py-1 font-mono"
+          className="bg-anchor-surface border border-anchor-border text-anchor-text rounded px-2 py-1 font-mono min-w-[9rem] flex-1 sm:flex-none"
         >
           <option value="ALL">All directions</option>
           <option value="LONG">Long</option>
@@ -77,7 +77,7 @@ export function TradeTable({ trades, explanations = {} }: Props) {
         <select
           value={filterRegime}
           onChange={e => { setFilterRegime(e.target.value); setPage(1) }}
-          className="bg-anchor-surface border border-anchor-border text-anchor-text rounded px-2 py-1 font-mono"
+          className="bg-anchor-surface border border-anchor-border text-anchor-text rounded px-2 py-1 font-mono min-w-[9rem] flex-1 sm:flex-none"
         >
           <option value="ALL">All regimes</option>
           <option value="TRENDING">Trending</option>
@@ -85,12 +85,12 @@ export function TradeTable({ trades, explanations = {} }: Props) {
           <option value="VOLATILE">Volatile</option>
         </select>
 
-        <span className="ml-auto text-anchor-muted font-mono">{filtered.length} trades</span>
+        <span className="w-full sm:w-auto sm:ml-auto text-anchor-muted font-mono text-right">{filtered.length} trades</span>
       </div>
 
       {/* Table */}
       <div className="overflow-x-auto rounded-lg border border-anchor-border">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[720px] text-sm">
           <thead className="bg-anchor-surface border-b border-anchor-border">
             <tr className="text-[11px] font-mono text-anchor-muted uppercase tracking-wide">
               {([
@@ -126,7 +126,7 @@ export function TradeTable({ trades, explanations = {} }: Props) {
 
       {/* Pagination */}
       {pages > 1 && (
-        <div className="flex items-center justify-center gap-1">
+        <div className="flex flex-wrap items-center justify-center gap-1">
           {Array.from({ length: pages }, (_, i) => i + 1).map(p => (
             <button
               key={p}
