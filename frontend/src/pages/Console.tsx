@@ -1,52 +1,65 @@
-import { useMemo, useState, useEffect } from 'react'
-import { GlowCard } from '../components/ui/GlowCard'
-import { AnimatedNumber } from '../components/ui/AnimatedNumber'
+import { useMemo } from 'react'
 import { EquityCurve } from '../components/charts/EquityCurve'
-import { AIBriefPanel } from '../components/panels/AIBriefPanel'
-import { PositionsTable } from '../components/panels/PositionsTable'
-import { RolloutCard } from '../components/panels/RolloutCard'
-import { SessionTimeline } from '../components/ui/SessionTimeline'
-import { useEquityCurve, useIntelligenceBrief, useRolloutConfig } from '../api/hooks'
+import { AnimatedNumber } from '../components/ui/AnimatedNumber'
+import { useEquityCurve, useTradeJournal } from '../api/hooks'
 import { usePositionStore, useSystemStore } from '../store'
-import { getPhaseInfo } from '../utils/session'
+import type { Position } from '../types'
 
-interface StatProps { label: string; value: string; color?: string }
+function holdsFor(openedAt: string): string {
+  const secs = Math.floor((Date.now() - new Date(openedAt).getTime()) / 1000)
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
+}
 
-function Stat({ label, value, color = 'text-anchor-text' }: StatProps) {
+function OpenTradeCard({ pos }: { pos: Position }) {
+  const isLong = pos.direction === 'LONG'
+  const pl     = pos.unrealized_pl
+  const winning = pl >= 0
+
   return (
-    <div>
-      <p className="text-[10px] text-anchor-muted tracking-[0.15em] uppercase mb-1">{label}</p>
-      <p className={`text-lg font-mono font-semibold tabular-nums ${color}`}>{value}</p>
+    <div className={`rounded-2xl p-4 border ${
+      winning
+        ? 'bg-anchor-green/5 border-anchor-green/20'
+        : 'bg-anchor-red/5  border-anchor-red/20'
+    }`}>
+      <div className="flex justify-between items-center gap-4">
+        <div className="min-w-0">
+          <p className="text-anchor-text font-semibold text-base">
+            {pos.instrument.replace('_', '/')}
+          </p>
+          <p className="text-anchor-muted text-sm mt-0.5">
+            {isLong ? 'Expecting it to rise ↑' : 'Expecting it to drop ↓'}
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <AnimatedNumber
+            value={Math.abs(pl)}
+            prefix={pl >= 0 ? '+$' : '-$'}
+            decimals={2}
+            className={`font-mono font-semibold text-lg ${winning ? 'text-anchor-green' : 'text-anchor-red'}`}
+          />
+          <p className="text-anchor-muted text-xs mt-0.5">{holdsFor(pos.opened_at)}</p>
+        </div>
+      </div>
     </div>
   )
 }
 
-export default function Console() {
-  const { data: equityData }   = useEquityCurve()
-  const { data: brief }        = useIntelligenceBrief()
-  const { data: rolloutConfig } = useRolloutConfig()
-  const { equity }             = useSystemStore()
-  const positions              = usePositionStore(s => s.positions)
+export default function Home() {
+  const { data: equityData } = useEquityCurve()
+  const { data: apiTrades }  = useTradeJournal()
+  const { equity }           = useSystemStore()
+  const positions            = usePositionStore(s => s.positions)
 
   const equityPts = useMemo(() => equityData ?? [], [equityData])
+  const trades    = useMemo(() => apiTrades  ?? [], [apiTrades])
 
-  // Session-aware border
-  const [sessionNow, setSessionNow] = useState(new Date())
-  useEffect(() => {
-    const t = setInterval(() => setSessionNow(new Date()), 60_000)
-    return () => clearInterval(t)
-  }, [])
-  const utcMins = sessionNow.getUTCHours() * 60 + sessionNow.getUTCMinutes()
-  const { phase } = getPhaseInfo(utcMins)
-  const sessionBorder =
-    phase === 'london' ? 'border-t-2 border-t-amber-500/30' :
-    phase === 'lcr'    ? 'border-t-2 border-t-sky-500/30'   : ''
-
-  const latestPt = equityPts[equityPts.length - 1]
-  const firstPt  = equityPts[0]
+  const latestPt  = equityPts[equityPts.length - 1]
   const equityVal = equity > 0 ? equity : (latestPt?.account_equity ?? 0)
 
-  // Today's P&L: equity now vs last snapshot from a previous ET calendar day
+  // Today's P&L — equity now vs last close from a previous ET calendar day
   const todayPL = useMemo(() => {
     if (!equityVal || !equityPts.length) return null
     const etToday = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' })
@@ -56,105 +69,97 @@ export default function Console() {
     return prevPt != null ? equityVal - prevPt.account_equity : null
   }, [equityPts, equityVal])
 
-  const totalGainPct = firstPt && equityVal
-    ? ((equityVal - firstPt.account_equity) / firstPt.account_equity) * 100
-    : 0
+  // This month's stats from closed trades
+  const monthStats = useMemo(() => {
+    const etNow    = new Date()
+    const nowMonth = etNow.toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit' })
+    const monthTrades = trades.filter(t => {
+      const tKey = new Date(t.closed_at).toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit' })
+      return tKey === nowMonth
+    })
+    const wins = monthTrades.filter(t => t.net_pl > 0).length
+    const pl   = monthTrades.reduce((s, t) => s + t.net_pl, 0)
+    return { wins, losses: monthTrades.length - wins, pl, count: monthTrades.length }
+  }, [trades])
 
-  const maxDD = useMemo(() => {
-    let peak = -Infinity, maxDd = 0
-    for (const pt of equityPts) {
-      if (pt.account_equity > peak) peak = pt.account_equity
-      const dd = (peak - pt.account_equity) / peak
-      if (dd > maxDd) maxDd = dd
-    }
-    return maxDd
-  }, [equityPts])
+  const dateLabel = new Date().toLocaleDateString('en-US', {
+    weekday: 'long', month: 'short', day: 'numeric',
+    timeZone: 'America/New_York',
+  })
 
-  const todayColor = todayPL == null ? 'text-anchor-muted' : todayPL >= 0 ? 'text-anchor-green' : 'text-anchor-red'
-  const todayPrefix = todayPL == null ? '' : todayPL >= 0 ? '+$' : '−$'
+  const todayColor = todayPL == null ? 'text-anchor-muted'
+    : todayPL >= 0 ? 'text-anchor-green'
+    : 'text-anchor-red'
 
   return (
-    <div className="min-h-screen bg-anchor-void p-3 sm:p-5 space-y-4">
+    <div className="min-h-screen bg-anchor-void px-4 pt-4 pb-24 md:pb-8 space-y-4">
 
-      {/* Session strip */}
-      <SessionTimeline />
+      {/* Today's P&L — the hero */}
+      <div className="text-center py-6">
+        <p className="text-anchor-muted text-sm mb-4">{dateLabel}</p>
+        {todayPL != null ? (
+          <AnimatedNumber
+            value={Math.abs(todayPL)}
+            prefix={todayPL >= 0 ? '+$' : '-$'}
+            decimals={2}
+            className={`text-6xl sm:text-7xl font-semibold font-mono tabular-nums leading-none ${todayColor}`}
+          />
+        ) : (
+          <span className="text-6xl font-semibold font-mono text-anchor-muted">—</span>
+        )}
+        <p className="text-anchor-muted/60 text-xs mt-3">Today's profit & loss</p>
+      </div>
 
-      {/* Hero card */}
-      <GlowCard padding={false} className={`p-6 ${sessionBorder}`}>
-
-        {/* Top row: hero P&L + secondary stats */}
-        <div className="flex flex-col md:flex-row md:items-start gap-6 mb-6">
-
-          {/* Today's P&L — the one number that matters */}
-          <div>
-            <p className="text-[10px] text-anchor-muted tracking-[0.2em] uppercase mb-2">Today</p>
-            {todayPL != null ? (
-              <AnimatedNumber
-                value={Math.abs(todayPL)}
-                prefix={todayPrefix}
-                decimals={2}
-                className={`text-4xl sm:text-5xl font-semibold font-mono tabular-nums leading-none ${todayColor}`}
-              />
-            ) : (
-              <span className="text-4xl sm:text-5xl font-semibold font-mono tabular-nums leading-none text-anchor-muted">—</span>
-            )}
-          </div>
-
-          {/* Secondary stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-3 md:ml-auto md:pt-1.5">
-            <Stat
-              label="Portfolio"
-              value={equityVal > 0 ? `$${equityVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
-            />
-            <Stat
-              label="All Time"
-              value={firstPt ? `${totalGainPct >= 0 ? '+' : ''}${totalGainPct.toFixed(2)}%` : '—'}
-              color={totalGainPct >= 0 ? 'text-anchor-green' : 'text-anchor-red'}
-            />
-            <Stat
-              label="Max DD"
-              value={equityPts.length ? `${(maxDD * 100).toFixed(1)}%` : '—'}
-              color={maxDD >= 0.10 ? 'text-anchor-red' : maxDD >= 0.05 ? 'text-amber-400' : 'text-anchor-muted'}
-            />
-          </div>
+      {/* Account + This month */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-anchor-surface rounded-2xl p-4">
+          <p className="text-anchor-muted text-xs mb-2">Your Account</p>
+          <p className="text-anchor-text text-xl font-mono font-semibold">
+            {equityVal > 0
+              ? `$${equityVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : '—'}
+          </p>
         </div>
-
-        {/* Equity curve */}
-        <EquityCurve data={equityPts} height={260} />
-      </GlowCard>
-
-      {/* Bottom grid */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-
-        {/* Open positions */}
-        <GlowCard padding={false} className="p-4 sm:p-5">
-          <div className="flex items-center justify-between gap-3 mb-5">
-            <h2 className="text-sm font-semibold text-anchor-text">Open Positions</h2>
-            {positions.length > 0 && (
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-anchor-green animate-glow-pulse" />
-                <span className="text-xs text-anchor-muted font-mono">{positions.length} active</span>
-              </div>
-            )}
-          </div>
-          <PositionsTable positions={positions} />
-        </GlowCard>
-
-        <div className="space-y-4">
-          <RolloutCard config={rolloutConfig} />
-
-          {/* Intelligence brief */}
-          <GlowCard padding={false} className="p-4 sm:p-5">
-            <h2 className="text-sm font-semibold text-anchor-text mb-4">Intelligence Brief</h2>
-            <AIBriefPanel
-              content={brief?.content ?? null}
-              sessionType={brief?.type ?? 'PRE'}
-              timestamp={brief?.created_at}
-              typewrite={false}
-            />
-          </GlowCard>
+        <div className="bg-anchor-surface rounded-2xl p-4">
+          <p className="text-anchor-muted text-xs mb-2">This Month</p>
+          {monthStats.count > 0 ? (
+            <>
+              <p className={`text-xl font-mono font-semibold ${monthStats.pl >= 0 ? 'text-anchor-green' : 'text-anchor-red'}`}>
+                {monthStats.pl >= 0 ? '+' : '-'}${Math.abs(monthStats.pl).toFixed(2)}
+              </p>
+              <p className="text-anchor-muted text-xs mt-1">
+                {monthStats.wins}W · {monthStats.losses}L
+              </p>
+            </>
+          ) : (
+            <p className="text-anchor-muted text-xl font-mono">—</p>
+          )}
         </div>
       </div>
+
+      {/* Open trades */}
+      {positions.length > 0 ? (
+        <div className="space-y-3">
+          <p className="text-anchor-muted text-xs px-1">
+            {positions.length} trade{positions.length !== 1 ? 's' : ''} open right now
+          </p>
+          {positions.map(pos => <OpenTradeCard key={pos.id} pos={pos} />)}
+        </div>
+      ) : (
+        <div className="bg-anchor-surface rounded-2xl p-5 text-center">
+          <p className="text-anchor-muted text-sm">No trades open right now</p>
+          <p className="text-anchor-muted/50 text-xs mt-1">The bot is watching the market</p>
+        </div>
+      )}
+
+      {/* Account growth chart */}
+      {equityPts.length > 0 && (
+        <div className="bg-anchor-surface rounded-2xl p-4">
+          <p className="text-anchor-muted text-xs mb-4">Account Growth</p>
+          <EquityCurve data={equityPts} height={200} />
+        </div>
+      )}
+
     </div>
   )
 }

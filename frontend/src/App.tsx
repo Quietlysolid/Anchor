@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Menu } from 'lucide-react'
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Sidebar } from './components/layout/Sidebar'
+import { BottomNav } from './components/layout/BottomNav'
 import { DisconnectedBanner } from './components/layout/DisconnectedBanner'
 import Console      from './pages/Console'
 import Intelligence from './pages/Intelligence'
@@ -112,16 +112,8 @@ function Layout() {
 
       {/* Main */}
       <main className={`flex-1 overflow-y-auto min-w-0 transition-all ${showBanner ? 'pt-9' : ''}`}>
-        {/* Mobile top bar */}
-        <div className="sticky top-0 z-10 flex items-center gap-3 px-3 py-3 bg-anchor-void border-b border-anchor-border md:hidden">
-          <button
-            type="button"
-            onClick={() => setSidebarOpen(true)}
-            className="text-anchor-muted hover:text-anchor-text p-1"
-          >
-            <Menu size={18} />
-          </button>
-          {/* Anchor mark — identical to sidebar */}
+        {/* Mobile top bar — branding only, nav is in BottomNav */}
+        <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-3 bg-anchor-void border-b border-anchor-border md:hidden">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="none" className="text-anchor-green">
             <circle cx="10" cy="4"  r="2.2" stroke="currentColor" strokeWidth="1.5"/>
             <line x1="10" y1="6.2"  x2="10"  y2="17"  stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
@@ -141,6 +133,9 @@ function Layout() {
           <Route path="/journal"      element={<Navigate to="/intelligence" replace />} />
           <Route path="/settings"     element={<Navigate to="/" replace />} />
         </Routes>
+
+        {/* Mobile bottom navigation */}
+        <BottomNav />
       </main>
     </div>
   )

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Activity, Sparkles, BarChart2, PanelLeftClose, PanelLeftOpen, X } from 'lucide-react'
+import { Home, Clock, Radio, PanelLeftClose, PanelLeftOpen, X } from 'lucide-react'
 import { StatusDot } from '../ui/StatusDot'
 import { useSystemStore } from '../../store'
 
@@ -18,9 +18,9 @@ function AnchorMark({ size = 20, className = '' }: { size?: number; className?: 
 }
 
 const NAV = [
-  { to: '/',             Icon: Activity,  label: 'Console',      end: true  },
-  { to: '/intelligence', Icon: Sparkles,  label: 'Intelligence', end: false },
-  { to: '/trades',       Icon: BarChart2, label: 'Trades',       end: false },
+  { to: '/',             Icon: Home,  label: 'Home',     end: true  },
+  { to: '/trades',       Icon: Clock, label: 'History',  end: false },
+  { to: '/intelligence', Icon: Radio, label: 'Activity', end: false },
 ]
 
 interface Props { onClose?: () => void }
