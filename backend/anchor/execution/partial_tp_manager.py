@@ -32,14 +32,12 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-# Close this fraction at the 1×ATR milestone
+# Close this fraction at the partial TP milestone
 PARTIAL_CLOSE_FRACTION = 0.50
 
-# Trigger: price has moved this many ATR from entry toward TP
-PARTIAL_TP_ATR_TRIGGER = 1.0
-
-# ATR multiplier used at signal time for SL (must match backtesting/engine.py)
-SL_ATR_MULTIPLIER = 1.5
+# Trigger: price has moved this multiple of SL distance toward TP (1.5:1 R:R)
+# Using SL distance directly avoids the need to infer ATR from the SL placement
+PARTIAL_TP_RR = 1.5
 
 
 class PartialTPManager:
@@ -89,14 +87,11 @@ class PartialTPManager:
         if current is None:
             return False
 
-        # Infer ATR from the SL distance (SL was placed at 1.5×ATR from entry)
+        # Trigger when price moves 1.5× the SL distance toward TP (1.5:1 R:R)
         sl_distance = abs(entry - stop_loss)
         if sl_distance < 1e-8:
             return False
-        atr = sl_distance / SL_ATR_MULTIPLIER
-
-        # Check if price has moved PARTIAL_TP_ATR_TRIGGER × ATR toward TP
-        trigger_distance = PARTIAL_TP_ATR_TRIGGER * atr
+        trigger_distance = PARTIAL_TP_RR * sl_distance
         if pos.direction == "LONG":
             triggered = current >= entry + trigger_distance
         else:
@@ -119,7 +114,7 @@ class PartialTPManager:
             direction=pos.direction,
             entry=entry,
             current=current,
-            atr=round(atr, 6),
+            sl_distance=round(sl_distance, 6),
             trigger_distance=round(trigger_distance, 6),
             close_units=close_units,
             remaining_units=current_units - close_units,

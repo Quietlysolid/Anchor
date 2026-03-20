@@ -142,37 +142,62 @@ class LCRBacktestEngine:
             if position is not None:
                 hi        = float(bar["high"])
                 lo        = float(bar["low"])
-                sl        = position["sl"]
-                tp        = position["tp"]
                 direction = position["direction"]
+                entry     = position["entry"]
+                sl_orig   = position["sl_original"]
+                sl_dist   = abs(sl_orig - entry)
 
                 closed = False
+
+                # Check partial TP first (scale-out: half at 1.5:1, stop to breakeven)
+                if not position["half_closed"] and position["partial_tp"] is not None:
+                    ptp = position["partial_tp"]
+                    hit = (direction == "LONG" and hi >= ptp) or (direction == "SHORT" and lo <= ptp)
+                    if hit:
+                        pd_dist = abs(ptp - entry)
+                        position["partial_pl_pct"] = 0.5 * (pd_dist / sl_dist) * position["risk_fraction"]
+                        position["partial_pips"]   = 0.5 * pd_dist / pip
+                        position["half_closed"]    = True
+                        position["sl"]             = entry  # move stop to breakeven
+
+                sl = position["sl"]
+                tp = position["tp"]
+
                 if direction == "LONG":
                     if lo <= sl:
-                        exit_price, close_reason = sl, "SL"
+                        exit_price, close_reason = sl, ("BE" if position["half_closed"] else "SL")
                         closed = True
                     elif hi >= tp:
                         exit_price, close_reason = tp, "TP"
                         closed = True
                 else:  # SHORT
                     if hi >= sl:
-                        exit_price, close_reason = sl, "SL"
+                        exit_price, close_reason = sl, ("BE" if position["half_closed"] else "SL")
                         closed = True
                     elif lo <= tp:
                         exit_price, close_reason = tp, "TP"
                         closed = True
 
                 if closed:
-                    dist    = abs(exit_price - position["entry"])
-                    sl_dist = abs(position["sl"] - position["entry"])
-                    pips    = dist / pip
-                    sign    = 1 if (direction == "LONG") == (exit_price > position["entry"]) else -1
-                    pl_pips = sign * pips
-                    # Correct 1% fixed-fractional: win = +(dist/sl_dist)×1%, loss = -1×1%
-                    pl_pct  = sign * (dist / sl_dist) * position["risk_fraction"]
+                    dist = abs(exit_price - entry)
+                    sign = 1 if (direction == "LONG") == (exit_price > entry) else -1
 
-                    # Apply swap/rollover cost: each 22:00 UTC boundary crossed costs/earns pips
-                    # swap_pips is net (positive=received, negative=paid)
+                    if position["half_closed"]:
+                        if close_reason == "BE":
+                            second_pct  = 0.0
+                            second_pips = 0.0
+                        else:
+                            second_pct  = sign * 0.5 * (dist / sl_dist) * position["risk_fraction"]
+                            second_pips = sign * 0.5 * dist / pip
+                        pl_pct  = position["partial_pl_pct"] + second_pct
+                        pl_pips = position["partial_pips"]   + second_pips
+                        final_reason = f"{close_reason}_SCALE"
+                    else:
+                        pl_pct  = sign * (dist / sl_dist) * position["risk_fraction"]
+                        pl_pips = sign * dist / pip
+                        final_reason = close_reason
+
+                    # Apply swap/rollover cost
                     swap_net = position["swap_pips"]
                     if swap_net != 0.0:
                         sl_dist_pips = sl_dist / pip if pip > 0 else 1.0
@@ -186,11 +211,11 @@ class LCRBacktestEngine:
                         "entry_time": position["entry_time"].isoformat(),
                         "exit_time":  dt.isoformat(),
                         "direction":  direction,
-                        "entry":      position["entry"],
+                        "entry":      entry,
                         "exit":       exit_price,
-                        "sl":         sl,
+                        "sl":         sl_orig,
                         "tp":         tp,
-                        "reason":     close_reason,
+                        "reason":     final_reason,
                         "pl_pips":    round(pl_pips, 1),
                         "pl_pct":     round(pl_pct * 100, 3),
                         "swap_pips":  round(swap_net, 2),
@@ -244,16 +269,29 @@ class LCRBacktestEngine:
             if sl_dist < 1e-8 or sl_dist < pip * _MIN_SL_PIPS:
                 continue
 
+            # Scale-out: partial TP at 1.5:1, then stop to breakeven, remainder to london_mid
+            if result.direction == "SHORT":
+                _ptp = entry - 1.5 * sl_dist
+                partial_tp = _ptp if _ptp > tp else None  # only if 1.5:1 lands before TP
+            else:
+                _ptp = entry + 1.5 * sl_dist
+                partial_tp = _ptp if _ptp < tp else None
+
             position = {
-                "direction":     result.direction,
-                "entry":         entry,
-                "sl":            sl,
-                "tp":            tp,
-                "entry_time":    dt,
-                "risk_fraction": _LCR_RISK.get(instrument, 0.01),
-                "confluence":    result.confluence_score,
-                "london_mid":    result.london_mid,
-                "swap_pips":     0.0,  # accrued rollover cost; updated each 22:00 UTC bar
+                "direction":      result.direction,
+                "entry":          entry,
+                "sl":             sl,
+                "sl_original":    sl,
+                "tp":             tp,
+                "partial_tp":     partial_tp,
+                "half_closed":    False,
+                "partial_pl_pct": 0.0,
+                "partial_pips":   0.0,
+                "entry_time":     dt,
+                "risk_fraction":  _LCR_RISK.get(instrument, 0.01),
+                "confluence":     result.confluence_score,
+                "london_mid":     result.london_mid,
+                "swap_pips":      0.0,  # accrued rollover cost; updated each 22:00 UTC bar
             }
 
         # ── Summary statistics ─────────────────────────────────────────────

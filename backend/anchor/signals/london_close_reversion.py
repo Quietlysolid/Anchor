@@ -70,7 +70,7 @@ settings = get_settings()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-LCR_INSTRUMENTS = set(settings.instruments)  # derived from config — single source of truth
+LCR_INSTRUMENTS = set(settings.instruments) - {"GBP_USD"}  # GBP_USD dropped: PF 1.096, DD -29.6%
 
 LCR_CONFLUENCE_THRESHOLD = 0.55
 
@@ -83,7 +83,7 @@ LCR_WEIGHTS = {
 
 LCR_RSI_OVERBOUGHT = 60.0   # above → confirms SHORT reversion signal
 LCR_RSI_OVERSOLD   = 40.0   # below → confirms LONG reversion signal
-LCR_ATR_SL_BUFFER  = 0.5    # ATR multiplier for SL beyond London extreme
+LCR_ATR_SL_BUFFER  = 1.0    # ATR multiplier for SL beyond London extreme
 LCR_MIN_RR         = 1.2    # minimum R:R ratio (tp_dist / sl_dist)
 LCR_MIN_RANGE_ATR  = 0.4    # London range must be ≥ 0.4×ATR (filter dead days)
 
