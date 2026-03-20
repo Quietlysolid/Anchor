@@ -165,7 +165,7 @@ class PositionRepository:
             position.stop_loss = Decimal(str(new_sl))
             await self.session.flush()
 
-    async def create_from_broker_trade(self, broker_trade: dict) -> Position:
+    async def create_from_broker_trade(self, broker_trade: dict, signal_id=None) -> Position:
         """Reconstruct a Position from an OANDA trade dict (for crash recovery)."""
         position = Position(
             instrument=broker_trade.get("instrument", "UNKNOWN"),
@@ -177,6 +177,7 @@ class PositionRepository:
             oanda_trade_id=broker_trade.get("id"),
             status=PositionStatus.OPEN,
             opened_at=utcnow(),
+            signal_id=signal_id,
         )
         self.session.add(position)
         await self.session.flush()

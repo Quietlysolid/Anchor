@@ -126,6 +126,13 @@ export type SessionQuality = {
   pair_rankings: string[]
 }
 
+export const useTodayActivity = () =>
+  useQuery({
+    queryKey: ['today-activity'],
+    queryFn: () => api.get<{ signals_today: number; trades_today: number }>('/signals/today'),
+    refetchInterval: 60_000,
+  })
+
 export const useIntelligenceBrief = (reportType?: 'PRESESSION' | 'POSTSESSION' | 'WEEKLY') =>
   useQuery({
     queryKey: ['intelligence-brief', reportType ?? 'any'],

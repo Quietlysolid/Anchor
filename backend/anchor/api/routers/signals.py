@@ -1,11 +1,36 @@
+from datetime import datetime, timezone, timedelta
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 
 from anchor.database.engine import get_db
-from anchor.database.models import Signal
+from anchor.database.models import Signal, Trade
 
 router = APIRouter()
+
+
+@router.get("/signals/today")
+async def get_today_activity(session: AsyncSession = Depends(get_db)):
+    """Return signals evaluated and trades placed today (ET midnight to now)."""
+    # ET midnight in UTC
+    et_offset = timedelta(hours=-4)  # EDT; EST is -5 but close enough and avoids pytz dep
+    now_et = datetime.now(timezone.utc).astimezone(timezone(et_offset))
+    et_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+    utc_midnight = et_midnight.astimezone(timezone.utc)
+
+    signals_count = (await session.execute(
+        select(func.count()).select_from(Signal).where(
+            Signal.created_at >= utc_midnight,
+            Signal.session.in_(["LONDON", "NY_LCR"]),
+        )
+    )).scalar_one()
+
+    trades_count = (await session.execute(
+        select(func.count()).select_from(Trade).where(Trade.closed_at >= utc_midnight)
+    )).scalar_one()
+
+    return {"signals_today": signals_count, "trades_today": trades_count}
 
 
 @router.get("/signals/weights")

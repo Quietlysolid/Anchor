@@ -85,10 +85,19 @@ class Reconciler:
         # Broker has trade, DB doesn't → reconstruct
         for trade in broker_trades:
             if trade["id"] not in db_trade_ids:
-                await self.pos_repo.create_from_broker_trade(trade)
+                # Try to recover signal_id from the order that opened this trade
+                signal_id = None
+                opening_order_id = trade.get("openingOrderID")
+                if opening_order_id:
+                    linked_order = await self.order_repo.get_by_oanda_id(opening_order_id)
+                    if linked_order and linked_order.signal_id:
+                        signal_id = linked_order.signal_id
+                        await self.order_repo.update_state(linked_order.id, "FILLED", {"filled_by_reconciler": True})
+
+                await self.pos_repo.create_from_broker_trade(trade, signal_id=signal_id)
                 result["missing_from_db"].append(trade["id"])
                 result["actions_taken"].append(f"RECONSTRUCTED:{trade['id']}")
-                logger.warning("position_missing_from_db", trade_id=trade["id"])
+                logger.warning("position_missing_from_db", trade_id=trade["id"], signal_linked=signal_id is not None)
 
         # Cancel stale pending orders
         stale_cutoff = utcnow() - timedelta(hours=STALE_ORDER_HOURS)

@@ -26,57 +26,29 @@ _MODEL_OPUS   = "claude-opus-4-6"    # journal analysis only
 _PRESESSION_SYSTEM = """\
 You are the intelligence layer for Anchor, an autonomous algorithmic FX trading system.
 
-Anchor trades 6 pairs (EUR_USD, GBP_USD, NZD_USD, USD_CAD, EUR_JPY, AUD_USD) using London \
-trend-following (07–12 UTC, threshold 0.72) and London Close Reversal (17–19 UTC).
+Write a 3-sentence morning update for the system owner. They are not a trader. \
+They just want to know: what is the market doing, will the bot trade today, and is there anything to worry about. \
+No jargon. No percentages. No scores. No markdown. Plain conversational English only. \
+You MAY use specific counts of trades looked at or placed (e.g. "looked at 47 setups", "placed 2 trades") — those are useful. \
+Do NOT use any other numbers: no prices, no percentages, no scores, no ratios. \
+Exactly 3 sentences. No headers. No bullets. No labels.
 
-Write the pre-session brief. 150 words max. Write like Steve Jobs thinks: \
-short declarative sentences that cut to the truth. No hedging. No "may" or "could". \
-State what the market is doing, not what it might do. \
-No markdown bold (no ** anywhere). Plain text only.
-
-Format exactly as:
-
-MACRO ENVIRONMENT
-[1-2 sentences: name the dominant force. State it as a fact, not a possibility.]
-
-SESSION OUTLOOK
-[1-2 sentences: trending or choppy. Say which one. Say why. No equivocation.]
-
-KEY RISKS
-• [one line — 2 bullets max. Name the actual risk. Not "volatility". The specific thing.]
-
-PAIR FOCUS
-• [INSTRUMENT]: [one line — tailwind or headwind. Only pairs where the case is clear.]
-
-CALENDAR GUIDANCE
-• [currency/event]: [favor / avoid / neutral — one line. Skip anything without a real read.]
-
-CONVICTION
-[TRENDING / CHOPPY / MIXED] — [one clause. The reason, stated plainly].
+Example of the right tone:
+"Markets are quiet this morning with no strong moves in either direction. The bot checked 31 potential setups but conditions weren't right so it will likely sit out most of the session. The main thing to watch is the US jobs data this afternoon, which could shake things up."
 """
 
 _POSTSESSION_SYSTEM = """\
 You are the intelligence layer for Anchor, an autonomous algorithmic FX trading system.
 
-The London session just closed. Write the debrief. 120 words max. \
-Write the way Steve Jobs would debrief a product launch: honest, direct, no spin. \
-If it was good, say it was good and why. If it was bad, say it was bad and own it. \
-No jargon. No raw numbers. No hedging. \
-No markdown bold (no ** anywhere). Plain text only.
+The London session just closed. Write a 3-sentence end-of-day update for the system owner. They are not a trader. \
+They just want to know: what happened today, what did the bot do, and what should they expect tomorrow. \
+No jargon. No percentages. No scores. No markdown. Plain conversational English only. \
+You MAY use specific counts of trades looked at or placed (e.g. "checked 52 setups", "placed 3 trades") — those are useful. \
+Do NOT use any other numbers: no prices, no percentages, no scores, no ratios. \
+Exactly 3 sentences. No headers. No bullets. No labels.
 
-Format exactly as:
-
-SESSION SUMMARY
-[1-2 sentences: what actually happened. State it plainly. Not "mixed conditions" — say what moved and where.]
-
-WHY IT HAPPENED
-[1-2 sentences: the real reason. One cause, stated with confidence.]
-
-PAIRS TO WATCH TOMORROW
-• [pair or event]: [one line — 2 bullets max. Only things that actually matter.]
-
-VERDICT
-[One sentence. Honest. If the system did the right thing, say so. If something is concerning, say that.]
+Example of the right tone:
+"The dollar pushed higher through most of the morning, giving the bot a clear trend to work with. It checked 38 setups and placed 2 trades on the Euro and the Pound, both of which closed in profit. Tomorrow is light on news so conditions should be similar."
 """
 
 _WEEKLY_SYSTEM = """\
