@@ -529,6 +529,7 @@ def run_signal_scan(self):
                         )
     
                         order_id = await order_manager.submit(order_request)
+                        pending_instruments.add(instrument)  # keep snapshot current for later engines this scan
                         logger.info(
                             "limit_order_submitted",
                             instrument=instrument,
@@ -596,9 +597,16 @@ def run_signal_scan(self):
                             continue
     
                         # Execution gates (same as trend engine)
-                        if not drawdown_monitor.check()[0]:
+                        _mr_dd_ok, _mr_dd_reason = drawdown_monitor.check()
+                        if not _mr_dd_ok:
+                            logger.warning("trade_blocked_drawdown", instrument=instrument, reason=_mr_dd_reason)
+                            await _alerts.send_critical(f"Drawdown circuit breaker triggered\n{_mr_dd_reason}\nBalance: ${balance:.2f}")
+                            await mr_session.commit()
                             continue
                         if daily_limiter.is_halted(balance):
+                            logger.warning("trade_blocked_daily_limit", instrument=instrument)
+                            await _alerts.send_critical(f"Daily loss limit hit — trading halted for today\nBalance: ${balance:.2f}")
+                            await mr_session.commit()
                             continue
                         already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
                         if already_open:
@@ -635,6 +643,7 @@ def run_signal_scan(self):
                         )
     
                         mr_order_id = await mr_order_manager.submit(mr_order)
+                        pending_instruments.add(instrument)  # keep snapshot current for later engines this scan
                         logger.info(
                             "mr_order_submitted",
                             instrument=instrument,
@@ -678,13 +687,15 @@ def run_signal_scan(self):
                     if len(m15) < 50:
                         continue
 
-                    # For M15 signals: use H1 as the "4H equivalent" and H4 as "Daily equivalent"
-                    # The engine._get_data() reads from data_cache, so we inject M15 as H1
-                    # and shift the existing H1 into the H4 slot for this scan only.
+                    # For M15 signals: use H1 as the "4H equivalent" and Daily as macro filter.
+                    # Fetch independently — do not rely on h1/d1 from the trend block above,
+                    # which may be unbound if trend is disabled or exited early for this instrument.
+                    m15_h1 = await m15_market_repo.get_latest_n_candles(instrument, "H1", 200)
+                    m15_d1 = await m15_market_repo.get_latest_n_candles(instrument, "D",  250)
                     m15_cache = {
-                        "H1": {instrument: to_df(m15)},   # M15 bars → signal timeframe
-                        "H4": {instrument: to_df(h1)},    # H1 bars  → MTF confirmation
-                        "D":  {instrument: to_df(d1)},    # Daily stays as macro filter
+                        "H1": {instrument: to_df(m15)},     # M15 bars → signal timeframe
+                        "H4": {instrument: to_df(m15_h1)},  # H1 bars  → MTF confirmation
+                        "D":  {instrument: to_df(m15_d1)},  # Daily stays as macro filter
                     }
                     engine.data_cache    = m15_cache
                     engine.hmm_detector  = _hmm_detectors.get(instrument)
@@ -715,9 +726,16 @@ def run_signal_scan(self):
                         continue
 
                     # Execution gates
-                    if not drawdown_monitor.check()[0]:
+                    _m15_dd_ok, _m15_dd_reason = drawdown_monitor.check()
+                    if not _m15_dd_ok:
+                        logger.warning("trade_blocked_drawdown", instrument=instrument, reason=_m15_dd_reason)
+                        await _alerts.send_critical(f"Drawdown circuit breaker triggered\n{_m15_dd_reason}\nBalance: ${balance:.2f}")
+                        await m15_session.commit()
                         continue
                     if daily_limiter.is_halted(balance):
+                        logger.warning("trade_blocked_daily_limit", instrument=instrument)
+                        await _alerts.send_critical(f"Daily loss limit hit — trading halted for today\nBalance: ${balance:.2f}")
+                        await m15_session.commit()
                         continue
                     already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
                     if already_open:
@@ -775,6 +793,7 @@ def run_signal_scan(self):
                     )
 
                     m15_order_id = await m15_order_manager.submit(m15_order)
+                    pending_instruments.add(instrument)  # keep snapshot current for later engines this scan
                     logger.info(
                         "m15_order_submitted",
                         instrument=instrument,
@@ -796,6 +815,21 @@ def run_signal_scan(self):
 
             except Exception as exc:
                 logger.error("m15_scan_instrument_failed", instrument=instrument, error=str(exc))
+
+        # ── Refresh portfolio snapshot before LCR loop ─────────────────────────
+        # The trend/MR/M15 instrument loop above may have submitted orders and
+        # committed those sessions. Re-query so the LCR heat cap and open-position
+        # checks reflect any orders placed earlier this scan tick.
+        try:
+            async with _db_engine.AsyncSessionFactory() as _refresh_session:
+                _refresh_pos_repo   = PositionRepository(_refresh_session)
+                _refresh_order_repo = OrderRepository(_refresh_session)
+                open_positions      = await _refresh_pos_repo.get_open()
+                _refresh_pending    = await _refresh_order_repo.get_pending()
+                pending_instruments = {o.instrument for o in _refresh_pending}
+        except Exception as _refresh_exc:
+            logger.warning("portfolio_refresh_failed", error=str(_refresh_exc))
+            # Proceed with the in-memory snapshot updated by pending_instruments.add() above.
 
         # ── Standalone LCR loop — must live outside the London-trend loop above.
         #    The trend loop fires `continue` for OFF_SESSION during NY hours (17–19 UTC),
@@ -1000,10 +1034,15 @@ def run_signal_scan(self):
                             continue
 
                         # Execution gates
-                        if not drawdown_monitor.check()[0]:
+                        _lcr_dd_ok, _lcr_dd_reason = drawdown_monitor.check()
+                        if not _lcr_dd_ok:
+                            logger.warning("trade_blocked_drawdown", instrument=instrument, reason=_lcr_dd_reason)
+                            await _alerts.send_critical(f"Drawdown circuit breaker triggered\n{_lcr_dd_reason}\nBalance: ${balance:.2f}")
                             await lcr_session.commit()
                             continue
                         if daily_limiter.is_halted(balance):
+                            logger.warning("trade_blocked_daily_limit", instrument=instrument)
+                            await _alerts.send_critical(f"Daily loss limit hit — trading halted for today\nBalance: ${balance:.2f}")
                             await lcr_session.commit()
                             continue
                         # Pending orders: never interfere — skip
@@ -1055,11 +1094,13 @@ def run_signal_scan(self):
                         # Portfolio heat cap: never hold more than max_concurrent_lcr_positions
                         # open at once. Since only LCR is active, total open == LCR open.
                         # At 1% base risk: 3 positions cap = max 3% gross portfolio heat.
-                        if len(open_positions) >= settings.max_concurrent_lcr_positions:
+                        # Use effective_open (which excludes the just-closed London reversal position)
+                        # so a valid reversal replacement is not incorrectly blocked.
+                        if len(effective_open) >= settings.max_concurrent_lcr_positions:
                             logger.info(
                                 "lcr_max_concurrent_skip",
                                 instrument=instrument,
-                                open_count=len(open_positions),
+                                open_count=len(effective_open),
                                 max_allowed=settings.max_concurrent_lcr_positions,
                             )
                             await lcr_session.commit()
