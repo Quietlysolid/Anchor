@@ -94,6 +94,7 @@ class MRBacktestEngine:
         instrument: str,
         df_h1: pd.DataFrame,
         df_daily: pd.DataFrame | None = None,
+        df_h4: pd.DataFrame | None = None,
         start: str | None = None,
         end: str | None = None,
     ) -> dict:
@@ -112,7 +113,7 @@ class MRBacktestEngine:
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(
-                self._run_async(instrument, df_h1, df_daily)
+                self._run_async(instrument, df_h1, df_daily, df_h4)
             )
         finally:
             loop.close()
@@ -122,6 +123,7 @@ class MRBacktestEngine:
         instrument: str,
         df_h1: pd.DataFrame,
         df_daily: pd.DataFrame | None,
+        df_h4: pd.DataFrame | None = None,
     ) -> dict:
         WARMUP = 50  # bars needed for indicators
         balance = self.initial_balance
@@ -233,6 +235,12 @@ class MRBacktestEngine:
                 slice_d = df_daily[df_daily.index <= dt].tail(300)
                 engine.data_cache["D"] = {instrument: slice_d}
 
+            if df_h4 is not None:
+                # Only include fully-closed H4 bars (each bar closes 4h after its open time).
+                # This prevents look-ahead from the current incomplete H4 bar.
+                slice_h4 = df_h4[df_h4.index + pd.Timedelta(hours=4) <= dt].tail(300)
+                engine.data_cache["H4"] = {instrument: slice_h4}
+
             result: MRSignalResult = await engine.evaluate(instrument, dt=dt)
 
             if result.suppressed or result.direction is None:
@@ -302,6 +310,7 @@ def main():
     parser.add_argument("--instrument", required=True)
     parser.add_argument("--h1-csv",  required=True)
     parser.add_argument("--d-csv",   default=None)
+    parser.add_argument("--h4-csv",  default=None)
     parser.add_argument("--balance", type=float, default=10_000.0)
     parser.add_argument("--start",   default=None)
     parser.add_argument("--end",     default=None)
@@ -309,12 +318,14 @@ def main():
 
     df_h1    = _load_csv(args.h1_csv)
     df_daily = _load_csv(args.d_csv) if args.d_csv else None
+    df_h4    = _load_csv(args.h4_csv) if args.h4_csv else None
 
     engine  = MRBacktestEngine(initial_balance=args.balance)
     results = engine.run(
         instrument=args.instrument,
         df_h1=df_h1,
         df_daily=df_daily,
+        df_h4=df_h4,
         start=args.start,
         end=args.end,
     )

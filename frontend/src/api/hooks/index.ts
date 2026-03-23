@@ -133,6 +133,50 @@ export const useTodayActivity = () =>
     refetchInterval: 60_000,
   })
 
+export interface LCRPairStatus {
+  instrument: string
+  status: 'active' | 'watchlist' | 'disabled'
+  reasons: string[]
+  metrics: {
+    live_trades: number
+    live_wins: number
+    live_losses: number
+    days_since_live: number
+    robustness_combined_pf: number | null
+    modeled_spread: number | null
+    realized_spread_mean: number | null
+    spread_obs_count: number
+  }
+}
+
+export interface LCRPairStatuses {
+  pairs: LCRPairStatus[]
+  evaluated_at: string
+  days_since_live: number
+}
+
+export const useLCRPairStatus = () =>
+  useQuery({
+    queryKey: ['lcr-pair-status'],
+    queryFn: () => api.get<LCRPairStatuses>('/system/lcr-pair-status'),
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
+  })
+
+export interface LCRStatusSnapshot {
+  date: string
+  evaluated_at: string
+  pairs: LCRPairStatus[]
+  summary: { active: number; watchlist: number; disabled: number }
+}
+
+export const useLCRPairStatusHistory = (days = 30) =>
+  useQuery({
+    queryKey: ['lcr-pair-status-history', days],
+    queryFn: () => api.get<{ snapshots: LCRStatusSnapshot[] }>(`/system/lcr-pair-status/history?days=${days}`),
+    staleTime: 30 * 60_000,  // snapshots only written once daily
+  })
+
 export const useIntelligenceBrief = (reportType?: 'PRESESSION' | 'POSTSESSION' | 'WEEKLY') =>
   useQuery({
     queryKey: ['intelligence-brief', reportType ?? 'any'],

@@ -105,7 +105,17 @@ class LCRBacktestEngine:
         df_h1: pd.DataFrame,
         start: str | None = None,
         end: str | None = None,
+        spread_mult: float = 1.0,
+        slippage_pips: float = 0.0,
+        session_hours: set[int] | None = None,
+        partial_tp_rr: float | None = 1.5,
     ) -> dict:
+        """
+        spread_mult:    multiply all spread costs (1.0 = baseline, 2.0 = 2x spread stress)
+        slippage_pips:  additional slippage in pips applied adversely on top of spread
+        session_hours:  override active NY hours (default {17, 18, 19})
+        partial_tp_rr:  R multiple for scale-out trigger (None = no partial TP, full position to TP)
+        """
         if instrument not in _SPREAD_COST:
             return {"error": f"LCR not defined for {instrument}", "trades": [], "stats": {}}
 
@@ -119,11 +129,28 @@ class LCRBacktestEngine:
 
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(self._run_async(instrument, df_h1))
+            return loop.run_until_complete(
+                self._run_async(
+                    instrument, df_h1,
+                    spread_mult=spread_mult,
+                    slippage_pips=slippage_pips,
+                    session_hours=session_hours,
+                    partial_tp_rr=partial_tp_rr,
+                )
+            )
         finally:
             loop.close()
 
-    async def _run_async(self, instrument: str, df_h1: pd.DataFrame) -> dict:
+    async def _run_async(
+        self,
+        instrument: str,
+        df_h1: pd.DataFrame,
+        spread_mult: float = 1.0,
+        slippage_pips: float = 0.0,
+        session_hours: set[int] | None = None,
+        partial_tp_rr: float | None = 1.5,
+    ) -> dict:
+        _session_hours = session_hours if session_hours is not None else {17, 18, 19}
         balance  = self.initial_balance
         trades: list[dict] = []
         position: dict | None = None
@@ -149,8 +176,14 @@ class LCRBacktestEngine:
 
                 closed = False
 
-                # Check partial TP first (scale-out: half at 1.5:1, stop to breakeven)
-                if not position["half_closed"] and position["partial_tp"] is not None:
+                # Check partial TP (scale-out: half at 1.5:1, stop to breakeven).
+                # Guard: if the original SL is also touched on this bar, assume SL hit
+                # first (conservative intrabar ordering — we only have OHLC, not ticks).
+                _sl_also_hit = (
+                    (direction == "LONG"  and lo <= position["sl"]) or
+                    (direction == "SHORT" and hi >= position["sl"])
+                )
+                if not position["half_closed"] and position["partial_tp"] is not None and not _sl_also_hit:
                     ptp = position["partial_tp"]
                     hit = (direction == "LONG" and hi >= ptp) or (direction == "SHORT" and lo <= ptp)
                     if hit:
@@ -234,7 +267,7 @@ class LCRBacktestEngine:
                 continue  # one position at a time
 
             # ── Only evaluate NY LCR hours ────────────────────────────────
-            if dt.hour not in {17, 18, 19}:
+            if dt.hour not in _session_hours:
                 continue
 
             # ── Feed rolling window to LCR engine ─────────────────────────
@@ -257,25 +290,30 @@ class LCRBacktestEngine:
             if sl_dist < 1e-8:
                 continue
 
-            # Apply half-spread cost to entry (worst-case fill)
-            spread = _SPREAD_COST.get(instrument, 0.0)
+            # Apply half-spread cost to entry (worst-case fill), scaled by spread_mult.
+            # Also apply extra slippage (adverse, in pips) to simulate execution friction.
+            spread = _SPREAD_COST.get(instrument, 0.0) * spread_mult
+            slip   = slippage_pips * pip
             if result.direction == "LONG":
-                entry += spread / 2
+                entry += spread / 2 + slip
             else:
-                entry -= spread / 2
+                entry -= spread / 2 + slip
 
             # Re-check sl_dist with spread-adjusted entry; enforce minimum SL
             sl_dist = abs(entry - sl)
             if sl_dist < 1e-8 or sl_dist < pip * _MIN_SL_PIPS:
                 continue
 
-            # Scale-out: partial TP at 1.5:1, then stop to breakeven, remainder to london_mid
-            if result.direction == "SHORT":
-                _ptp = entry - 1.5 * sl_dist
-                partial_tp = _ptp if _ptp > tp else None  # only if 1.5:1 lands before TP
-            else:
-                _ptp = entry + 1.5 * sl_dist
-                partial_tp = _ptp if _ptp < tp else None
+            # Scale-out: partial TP at partial_tp_rr:1, then stop to breakeven, remainder to london_mid.
+            # partial_tp_rr=None disables the scale-out (full position rides to TP).
+            partial_tp = None
+            if partial_tp_rr is not None:
+                if result.direction == "SHORT":
+                    _ptp = entry - partial_tp_rr * sl_dist
+                    partial_tp = _ptp if _ptp > tp else None
+                else:
+                    _ptp = entry + partial_tp_rr * sl_dist
+                    partial_tp = _ptp if _ptp < tp else None
 
             position = {
                 "direction":      result.direction,

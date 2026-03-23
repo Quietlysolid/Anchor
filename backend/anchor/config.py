@@ -87,23 +87,37 @@ class Settings(BaseSettings):
     max_position_pct: float = 0.05         # 5% hard cap per position notional
     correlation_block_threshold: float = 0.70
     spread_spike_multiplier: float = 3.0   # suppress if spread > 3x session median
-    enable_trend_engine: bool = True
+    # Trend engine (London confluence, 07:15-12:00 UTC) is DISABLED.
+    # No live-validated edge exists yet. LCR is the only active live strategy (2026-03-23).
+    # The HMM RANGING gate and the 0.72 confluence threshold also prevent firing in the
+    # current market, but those are runtime conditions — this flag is the explicit hard disable.
+    # Re-enable only after OOS London backtest shows PF > 1.15 with the 13-signal engine.
+    enable_trend_engine: bool = False
     trend_paper_only: bool = False
     trend_risk_pct: float = 0.01
-    enable_mr_engine: bool = True
+    # MR (mean-reversion / London BB fade) is DISABLED.
+    # Validation (2026-03-23) showed no reliable OOS edge after fixing the SL-direction
+    # bug and running a non-leaky HMM regime backtest. 4 of 5 active pairs had OOS PF < 1.0.
+    # Code is kept for future research. Re-enable only after a new production-faithful
+    # validation shows OOS PF > 1.15 on at least 2-3 pairs with 50+ trades each.
+    enable_mr_engine: bool = False
     mr_paper_only: bool = False
     mr_risk_pct: float = 0.01
     enable_lcr_engine: bool = True
     lcr_paper_only: bool = False
     lcr_risk_pct: float = 0.01
+    # Hard cap on simultaneous open LCR positions (portfolio heat limiter).
+    # At 1% base risk: 3 positions = max 3% gross portfolio heat at once.
+    # Correlation scaling may further reduce individual position sizes.
+    max_concurrent_lcr_positions: int = 3
     enable_m15_engine: bool = False
     m15_paper_only: bool = True
     m15_risk_pct: float = 0.005
-    expected_pilot_instruments: list[str] = ["EUR_USD", "GBP_USD", "USD_CAD"]
-    expected_pilot_trend_enabled: bool = True
+    expected_pilot_instruments: list[str] = ["EUR_USD", "NZD_USD", "AUD_USD", "USD_CAD", "EUR_JPY"]
+    expected_pilot_trend_enabled: bool = False  # disabled — see enable_trend_engine comment above
     expected_pilot_trend_paper_only: bool = True
     expected_pilot_trend_risk_pct: float = 0.001
-    expected_pilot_mr_enabled: bool = True
+    expected_pilot_mr_enabled: bool = False  # disabled — see enable_mr_engine comment above
     expected_pilot_mr_paper_only: bool = False
     expected_pilot_mr_risk_pct: float = 0.0015
     expected_pilot_lcr_enabled: bool = True

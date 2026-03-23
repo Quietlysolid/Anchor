@@ -465,3 +465,115 @@ def assess_edge_confidence(self):
                 _run_async(_alerts.send_info(msg))
         except Exception as exc:
             logger.warning("edge_confidence_alert_failed", error=str(exc))
+
+
+@celery_app.task(name="anchor.scheduler.jobs.snapshot_lcr_pair_status", bind=True, max_retries=1)
+def snapshot_lcr_pair_status(self):
+    """
+    Daily snapshot of LCR pair statuses written to system_events.
+
+    Runs at 21:05 UTC (after the 17-20 UTC LCR session closes).
+    Idempotent: skips if a snapshot already exists for today's UTC date.
+
+    event_type = LCR_PAIR_STATUS_SNAPSHOT
+    severity   = INFO / WARN / ERROR depending on worst pair status
+    metadata   = { pairs: [...], summary: {active, watchlist, disabled} }
+
+    Use GET /system/lcr-pair-status/history to retrieve the log.
+    """
+    import json
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import create_engine, text
+    from anchor.config import get_settings
+    cfg = get_settings()
+    db  = create_engine(cfg.sync_database_url)
+
+    # ── Deduplication: skip if already ran today ──────────────────────────────
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    with db.connect() as conn:
+        already_ran = conn.execute(text("""
+            SELECT 1 FROM system_events
+            WHERE event_type = 'LCR_PAIR_STATUS_SNAPSHOT'
+              AND event_at >= :today
+            LIMIT 1
+        """), {"today": today_start}).fetchone()
+
+    if already_ran:
+        logger.info("lcr_pair_status_snapshot_skip", reason="already_ran_today")
+        return
+
+    # ── Load current pair statuses ────────────────────────────────────────────
+    async def _load():
+        from anchor.database.engine import init_db
+        import anchor.database.engine as _eng
+        from anchor.signals.lcr_pair_status import load_lcr_pair_statuses
+        if _eng.AsyncSessionFactory is None:
+            await init_db()
+        async with _eng.AsyncSessionFactory() as session:
+            return await load_lcr_pair_statuses(session)
+
+    pair_statuses = _run_async(_load())
+
+    # ── Build payload ─────────────────────────────────────────────────────────
+    counts = {"active": 0, "watchlist": 0, "disabled": 0}
+    pairs_payload = []
+    for r in pair_statuses.values():
+        counts[r.status.value] += 1
+        pairs_payload.append({
+            "instrument": r.instrument,
+            "status":     r.status.value,
+            "reasons":    r.reasons,
+            "metrics":    r.metrics,
+        })
+
+    summary = counts
+    n = len(pairs_payload)
+    message = (
+        f"{n} pairs: {counts['active']} active, "
+        f"{counts['watchlist']} watchlist, {counts['disabled']} disabled"
+    )
+
+    if counts["disabled"] > 0:
+        severity = "ERROR"
+    elif counts["watchlist"] > 0:
+        severity = "WARN"
+    else:
+        severity = "INFO"
+
+    # ── Write event ───────────────────────────────────────────────────────────
+    with db.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO system_events
+                (event_at, event_type, severity, component, message, metadata)
+            VALUES
+                (NOW(), 'LCR_PAIR_STATUS_SNAPSHOT', :sev, 'lcr_pair_status',
+                 :msg, CAST(:meta AS jsonb))
+        """), {
+            "sev":  severity,
+            "msg":  message,
+            "meta": json.dumps({"pairs": pairs_payload, "summary": summary}),
+        })
+
+    logger.info(
+        "lcr_pair_status_snapshot_written",
+        active=counts["active"],
+        watchlist=counts["watchlist"],
+        disabled=counts["disabled"],
+    )
+
+    # ── Alert if any pair just became DISABLED ────────────────────────────────
+    disabled_pairs = [r["instrument"] for r in pairs_payload if r["status"] == "disabled"]
+    if disabled_pairs:
+        try:
+            alert = (
+                "*LCR PAIR DISABLED*\n\n"
+                + "\n".join(
+                    f"• {r['instrument'].replace('_', '/')}: "
+                    + ", ".join(r["reasons"])
+                    for r in pairs_payload if r["status"] == "disabled"
+                )
+                + "\n\nPair will be skipped automatically until trade metrics recover."
+            )
+            _run_async(_alerts.send_warning(alert))
+        except Exception as exc:
+            logger.warning("lcr_pair_disabled_alert_failed", error=str(exc))

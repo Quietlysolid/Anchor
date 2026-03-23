@@ -239,416 +239,422 @@ def run_signal_scan(self):
         # so one DB error doesn't poison the others
         for instrument in active_instruments:
             try:
-                async with _db_engine.AsyncSessionFactory() as session:
-                    market_repo   = MarketDataRepository(session)
-                    order_repo    = OrderRepository(session)
-                    order_manager = OrderManager(order_repo, broker, redis=redis_client)
-
-                    # Wire live calendar repo so the news filter actually queries the DB
-                    news_filter.calendar_repo = EconomicCalendarRepository(session)
-
-                    h1 = await market_repo.get_latest_n_candles(instrument, "H1", 200)
-                    h4 = await market_repo.get_latest_n_candles(instrument, "H4", 100)
-                    d1 = await market_repo.get_latest_n_candles(instrument, "D", 250)  # 200+ needed for SMA(200) MTF check
-
-                    if len(h1) < 50:
-                        logger.warning("signal_scan_insufficient_data", instrument=instrument)
-                        continue
-
-                    engine.update_cache(instrument, "H1", to_df(h1))
-                    engine.update_cache(instrument, "H4", to_df(h4))
-                    engine.update_cache(instrument, "D",  to_df(d1))
-                    mr_engine.update_cache(instrument, "H1", to_df(h1))
-                    mr_engine.update_cache(instrument, "D",  to_df(d1))
-
-                    # Inject instrument-specific classifier and HMM (None → engine falls back gracefully)
-                    engine.hmm_detector   = _hmm_detectors.get(instrument)
-                    mr_engine.hmm_detector = _hmm_detectors.get(instrument)
-                    engine.ml_classifier  = _classifiers.get(instrument)
-                    if not engine.ml_classifier:
-                        engine.feature_engineer = None
-                        engine.ood_detector = None
-                    else:
-                        engine.feature_engineer = feature_engineer
-                        engine.ood_detector = _ood_detectors.get(instrument)
-
-                    result = await engine.evaluate(instrument, dt=now)
-
-                    # Log component breakdown for every in-session evaluation so we
-                    # can diagnose exactly which gate is blocking each instrument.
-                    # Off-session suppression (no session name set) stays at DEBUG.
-                    _in_session = result.session in ("LONDON", "OVERLAP")
-                    (logger.info if _in_session else logger.debug)(
-                        "signal_evaluated",
-                        instrument=instrument,
-                        suppressed=result.suppressed,
-                        reason=result.suppression_reason,
-                        confluence=result.confluence_score,
-                        rsi=result.rsi_score,
-                        bb_kc=result.bb_kc_score,
-                        adx=result.adx_score,
-                        sr=result.sr_score,
-                        mtf=result.mtf_score,
-                        sentiment=result.csi_score,
-                        ml_confidence=result.ml_confidence,
-                        regime=result.regime_state,
-                        session=result.session,
-                        vix_mult=result.vix_multiplier,
-                    )
-
-                    # Persist every evaluation for audit trail
-                    row = SignalModel(
-                        instrument=instrument,
-                        timeframe="H1",
-                        direction=result.direction or "LONG",
-                        confluence_score=result.confluence_score,
-                        rsi_score=result.rsi_score,
-                        bb_kc_score=result.bb_kc_score,
-                        adx_score=result.adx_score,
-                        sr_score=result.sr_score,
-                        mtf_score=result.mtf_score,
-                        csi_score=result.csi_score,
-                        ml_confidence=result.ml_confidence,
-                        regime_state=result.regime_state,
-                        session=result.session,
-                        suppressed=result.suppressed,
-                        suppression_reason=result.suppression_reason,
-                        signal_metadata=result.metadata or {},
-                    )
-                    session.add(row)
-                    await session.flush()  # get row.id assigned
-
-                    # Broadcast signal to dashboard via Redis → WebSocket fanout
-                    try:
-                        meta = result.metadata or {}
-                        await redis_client.publish("signals", json.dumps({
-                            "channel": "signals",
-                            "data": {
-                                "id":                    str(row.id),
-                                "created_at":            row.created_at.isoformat() if row.created_at else None,
-                                "instrument":            instrument,
-                                "timeframe":             "H1",
-                                "direction":             result.direction,
-                                "confluence_score":      float(result.confluence_score),
-                                "rsi_score":             float(result.rsi_score)       if result.rsi_score       is not None else None,
-                                "bb_kc_score":           float(result.bb_kc_score)     if result.bb_kc_score     is not None else None,
-                                "adx_score":             float(result.adx_score)       if result.adx_score       is not None else None,
-                                "sr_score":              float(result.sr_score)        if result.sr_score        is not None else None,
-                                "mtf_score":             float(result.mtf_score)       if result.mtf_score       is not None else None,
-                                "csi_score":             float(result.csi_score)       if result.csi_score       is not None else None,
-                                "cot_score":             float(meta["cot_score"])             if meta.get("cot_score")             is not None else None,
-                                "rate_divergence_score": float(meta["rate_divergence_score"]) if meta.get("rate_divergence_score") is not None else None,
-                                "order_book_score":      float(meta["order_book_score"])      if meta.get("order_book_score")      is not None else None,
-                                "cme_flow_score":        float(meta["cme_flow_score"])        if meta.get("cme_flow_score")        is not None else None,
-                                "fx_options_score":      float(meta["fx_options_score"])      if meta.get("fx_options_score")      is not None else None,
-                                "econ_surprise_score":   float(meta["econ_surprise_score"])   if meta.get("econ_surprise_score")   is not None else None,
-                                "news_multiplier":       float(meta["news_multiplier"])       if meta.get("news_multiplier")       is not None else None,
-                                "ml_confidence":         float(result.ml_confidence)   if result.ml_confidence   is not None else None,
-                                "regime_state":          result.regime_state,
-                                "session":               result.session,
-                                "suppressed":            result.suppressed,
-                                "suppression_reason":    result.suppression_reason,
-                            },
-                        }))
-                    except Exception as _ws_exc:
-                        logger.warning("signal_ws_publish_failed", error=str(_ws_exc))
-
-                    if result.suppressed:
-                        await session.commit()
-                        continue
-
-                    if not settings.enable_trend_engine:
-                        logger.info("trend_engine_disabled", instrument=instrument)
-                        await session.commit()
-                        continue
-
-                    if settings.trend_paper_only:
-                        logger.info("trend_signal_paper_only", instrument=instrument, direction=result.direction)
-                        await session.commit()
-                        continue
-
-                    # ── Execution gate ────────────────────────────────────────
-
-                    # 1. Drawdown circuit breaker
-                    dd_ok, dd_reason = drawdown_monitor.check()
-                    if not dd_ok:
-                        logger.warning("trade_blocked_drawdown", instrument=instrument, reason=dd_reason)
-                        await _alerts.send_critical(f"Drawdown circuit breaker triggered\n{dd_reason}\nBalance: ${balance:.2f}")
-
-                        # Narrate the drawdown once per trigger event (gated by Redis TTL)
-                        if not _dd_narration_fired_this_scan:
-                            _dd_narration_fired_this_scan = True
-                            try:
-                                from datetime import date as _date
-                                _trigger_type = "HALT" if "HALT" in (dd_reason or "") else "REDUCE"
-                                _gate_key = f"dd_narrated:{_date.today().isoformat()}:{_trigger_type}"
-                                if not await redis_client.exists(_gate_key):
-                                    await redis_client.set(_gate_key, "1", ex=4 * 3_600)
-
-                                    # Fetch recent trades for context
-                                    from sqlalchemy import text as _sqlt
-                                    from anchor.database.engine import AsyncSessionLocal as _ASL
-                                    _recent_trades: list[dict] = []
-                                    try:
-                                        async with _ASL() as _s:
-                                            _rows = (await _s.execute(_sqlt("""
-                                                SELECT instrument, direction, net_pl,
-                                                       session_at_entry, regime_at_entry,
-                                                       close_reason, closed_at
-                                                FROM trades
-                                                WHERE closed_at IS NOT NULL
-                                                ORDER BY closed_at DESC LIMIT 20
-                                            """))).fetchall()
-                                            _recent_trades = [dict(r._mapping) for r in _rows]
-                                    except Exception as _exc:
-                                        logger.debug("dd_narration_trades_query_failed", error=str(_exc))
-
-                                    # Macro snapshot from Redis
-                                    import json as _j
-                                    _macro: dict = {}
-                                    for _rk, _rl in [("vix_data", "vix"), ("cross_asset_risk", "cross_asset"), ("fred_rate_diff", "rate_differentials")]:
+                if settings.enable_trend_engine:
+                    async with _db_engine.AsyncSessionFactory() as session:
+                        market_repo   = MarketDataRepository(session)
+                        order_repo    = OrderRepository(session)
+                        order_manager = OrderManager(order_repo, broker, redis=redis_client)
+    
+                        # Wire live calendar repo so the news filter actually queries the DB
+                        news_filter.calendar_repo = EconomicCalendarRepository(session)
+    
+                        h1 = await market_repo.get_latest_n_candles(instrument, "H1", 200)
+                        h4 = await market_repo.get_latest_n_candles(instrument, "H4", 100)
+                        d1 = await market_repo.get_latest_n_candles(instrument, "D", 250)  # 200+ needed for SMA(200) MTF check
+    
+                        if len(h1) < 50:
+                            logger.warning("signal_scan_insufficient_data", instrument=instrument)
+                            continue
+    
+                        engine.update_cache(instrument, "H1", to_df(h1))
+                        engine.update_cache(instrument, "H4", to_df(h4))
+                        engine.update_cache(instrument, "D",  to_df(d1))
+    
+                        # Inject instrument-specific classifier and HMM (None → engine falls back gracefully)
+                        engine.hmm_detector   = _hmm_detectors.get(instrument)
+                        engine.ml_classifier  = _classifiers.get(instrument)
+                        if not engine.ml_classifier:
+                            engine.feature_engineer = None
+                            engine.ood_detector = None
+                        else:
+                            engine.feature_engineer = feature_engineer
+                            engine.ood_detector = _ood_detectors.get(instrument)
+    
+                        result = await engine.evaluate(instrument, dt=now)
+    
+                        # Log component breakdown for every in-session evaluation so we
+                        # can diagnose exactly which gate is blocking each instrument.
+                        # Off-session suppression (no session name set) stays at DEBUG.
+                        _in_session = result.session in ("LONDON", "OVERLAP")
+                        (logger.info if _in_session else logger.debug)(
+                            "signal_evaluated",
+                            instrument=instrument,
+                            suppressed=result.suppressed,
+                            reason=result.suppression_reason,
+                            confluence=result.confluence_score,
+                            rsi=result.rsi_score,
+                            bb_kc=result.bb_kc_score,
+                            adx=result.adx_score,
+                            sr=result.sr_score,
+                            mtf=result.mtf_score,
+                            sentiment=result.csi_score,
+                            ml_confidence=result.ml_confidence,
+                            regime=result.regime_state,
+                            session=result.session,
+                            vix_mult=result.vix_multiplier,
+                        )
+    
+                        # Persist every evaluation for audit trail
+                        row = SignalModel(
+                            instrument=instrument,
+                            timeframe="H1",
+                            direction=result.direction or "LONG",
+                            confluence_score=result.confluence_score,
+                            rsi_score=result.rsi_score,
+                            bb_kc_score=result.bb_kc_score,
+                            adx_score=result.adx_score,
+                            sr_score=result.sr_score,
+                            mtf_score=result.mtf_score,
+                            csi_score=result.csi_score,
+                            ml_confidence=result.ml_confidence,
+                            regime_state=result.regime_state,
+                            session=result.session,
+                            suppressed=result.suppressed,
+                            suppression_reason=result.suppression_reason,
+                            signal_metadata=result.metadata or {},
+                        )
+                        session.add(row)
+                        await session.flush()  # get row.id assigned
+    
+                        # Broadcast signal to dashboard via Redis → WebSocket fanout
+                        try:
+                            meta = result.metadata or {}
+                            await redis_client.publish("signals", json.dumps({
+                                "channel": "signals",
+                                "data": {
+                                    "id":                    str(row.id),
+                                    "created_at":            row.created_at.isoformat() if row.created_at else None,
+                                    "instrument":            instrument,
+                                    "timeframe":             "H1",
+                                    "direction":             result.direction,
+                                    "confluence_score":      float(result.confluence_score),
+                                    "rsi_score":             float(result.rsi_score)       if result.rsi_score       is not None else None,
+                                    "bb_kc_score":           float(result.bb_kc_score)     if result.bb_kc_score     is not None else None,
+                                    "adx_score":             float(result.adx_score)       if result.adx_score       is not None else None,
+                                    "sr_score":              float(result.sr_score)        if result.sr_score        is not None else None,
+                                    "mtf_score":             float(result.mtf_score)       if result.mtf_score       is not None else None,
+                                    "csi_score":             float(result.csi_score)       if result.csi_score       is not None else None,
+                                    "cot_score":             float(meta["cot_score"])             if meta.get("cot_score")             is not None else None,
+                                    "rate_divergence_score": float(meta["rate_divergence_score"]) if meta.get("rate_divergence_score") is not None else None,
+                                    "order_book_score":      float(meta["order_book_score"])      if meta.get("order_book_score")      is not None else None,
+                                    "cme_flow_score":        float(meta["cme_flow_score"])        if meta.get("cme_flow_score")        is not None else None,
+                                    "fx_options_score":      float(meta["fx_options_score"])      if meta.get("fx_options_score")      is not None else None,
+                                    "econ_surprise_score":   float(meta["econ_surprise_score"])   if meta.get("econ_surprise_score")   is not None else None,
+                                    "news_multiplier":       float(meta["news_multiplier"])       if meta.get("news_multiplier")       is not None else None,
+                                    "ml_confidence":         float(result.ml_confidence)   if result.ml_confidence   is not None else None,
+                                    "regime_state":          result.regime_state,
+                                    "session":               result.session,
+                                    "suppressed":            result.suppressed,
+                                    "suppression_reason":    result.suppression_reason,
+                                },
+                            }))
+                        except Exception as _ws_exc:
+                            logger.warning("signal_ws_publish_failed", error=str(_ws_exc))
+    
+                        if result.suppressed:
+                            await session.commit()
+                            continue
+    
+    
+                        if settings.trend_paper_only:
+                            logger.info("trend_signal_paper_only", instrument=instrument, direction=result.direction)
+                            await session.commit()
+                            continue
+    
+                        # ── Execution gate ────────────────────────────────────────
+    
+                        # 1. Drawdown circuit breaker
+                        dd_ok, dd_reason = drawdown_monitor.check()
+                        if not dd_ok:
+                            logger.warning("trade_blocked_drawdown", instrument=instrument, reason=dd_reason)
+                            await _alerts.send_critical(f"Drawdown circuit breaker triggered\n{dd_reason}\nBalance: ${balance:.2f}")
+    
+                            # Narrate the drawdown once per trigger event (gated by Redis TTL)
+                            if not _dd_narration_fired_this_scan:
+                                _dd_narration_fired_this_scan = True
+                                try:
+                                    from datetime import date as _date
+                                    _trigger_type = "HALT" if "HALT" in (dd_reason or "") else "REDUCE"
+                                    _gate_key = f"dd_narrated:{_date.today().isoformat()}:{_trigger_type}"
+                                    if not await redis_client.exists(_gate_key):
+                                        await redis_client.set(_gate_key, "1", ex=4 * 3_600)
+    
+                                        # Fetch recent trades for context
+                                        from sqlalchemy import text as _sqlt
+                                        from anchor.database.engine import AsyncSessionLocal as _ASL
+                                        _recent_trades: list[dict] = []
                                         try:
-                                            _rv = await redis_client.get(_rk)
-                                            if _rv:
-                                                _macro[_rl] = _j.loads(_rv)
+                                            async with _ASL() as _s:
+                                                _rows = (await _s.execute(_sqlt("""
+                                                    SELECT instrument, direction, net_pl,
+                                                           session_at_entry, regime_at_entry,
+                                                           close_reason, closed_at
+                                                    FROM trades
+                                                    WHERE closed_at IS NOT NULL
+                                                    ORDER BY closed_at DESC LIMIT 20
+                                                """))).fetchall()
+                                                _recent_trades = [dict(r._mapping) for r in _rows]
                                         except Exception as _exc:
-                                            logger.debug("dd_narration_redis_read_failed", key=_rk, error=str(_exc))
-
-                                    from anchor.intelligence.trade_intelligence import narrate_drawdown as _narrate_dd
-                                    _narration, _ = await _narrate_dd(
-                                        _trigger_type,
-                                        drawdown_monitor.current_drawdown,
-                                        _recent_trades,
-                                        _macro,
-                                    )
-                                    if _narration:
-                                        await _alerts.send_warning(
-                                            f"🧠 Drawdown Analysis ({_trigger_type} — {drawdown_monitor.current_drawdown:.1%})\n\n{_narration}"
+                                            logger.debug("dd_narration_trades_query_failed", error=str(_exc))
+    
+                                        # Macro snapshot from Redis
+                                        import json as _j
+                                        _macro: dict = {}
+                                        for _rk, _rl in [("vix_data", "vix"), ("cross_asset_risk", "cross_asset"), ("fred_rate_diff", "rate_differentials")]:
+                                            try:
+                                                _rv = await redis_client.get(_rk)
+                                                if _rv:
+                                                    _macro[_rl] = _j.loads(_rv)
+                                            except Exception as _exc:
+                                                logger.debug("dd_narration_redis_read_failed", key=_rk, error=str(_exc))
+    
+                                        from anchor.intelligence.trade_intelligence import narrate_drawdown as _narrate_dd
+                                        _narration, _ = await _narrate_dd(
+                                            _trigger_type,
+                                            drawdown_monitor.current_drawdown,
+                                            _recent_trades,
+                                            _macro,
                                         )
-                            except Exception as _dd_narr_exc:
-                                logger.warning("drawdown_narration_failed", error=str(_dd_narr_exc))
-
-                        await session.commit()
-                        continue
-
-                    # 2. Daily loss limit
-                    if daily_limiter.is_halted(balance):
-                        logger.warning("trade_blocked_daily_limit", instrument=instrument)
-                        await _alerts.send_critical(f"Daily loss limit hit — trading halted for today\nBalance: ${balance:.2f}")
-                        await session.commit()
-                        continue
-
-                    # 3. Already have an open position in this instrument?
-                    already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
-                    if already_open:
-                        logger.info("trade_skipped_already_open", instrument=instrument)
-                        await session.commit()
-                        continue
-
-                    # 4. Correlation check
-                    corr_ok, corr_reason = correlation_mgr.check_new_position(
-                        instrument, result.direction, open_positions
-                    )
-                    if not corr_ok:
-                        logger.warning("trade_blocked_correlation", instrument=instrument, reason=corr_reason)
-                        await session.commit()
-                        continue
-
-                    # 5. Compute true ATR-based stop loss & take profit.
-                    # True ATR = max(H-L, |H-prev_C|, |L-prev_C|) — accounts for overnight gaps.
-                    h1_df = to_df(h1)
-                    prev_close = h1_df["close"].shift(1)
-                    true_range = pd.concat([
-                        h1_df["high"] - h1_df["low"],
-                        (h1_df["high"] - prev_close).abs(),
-                        (h1_df["low"]  - prev_close).abs(),
-                    ], axis=1).max(axis=1)
-                    atr = true_range.rolling(14).mean().iloc[-1]
-
-                    # ATR volatility filter: skip dead markets (no movement = noise) and
-                    # news spikes (ATR 5× normal = stop blown through unpredictably).
-                    atr_series = true_range.rolling(14).mean()
-                    atr_pct_20 = atr_series.rolling(30).quantile(0.20).iloc[-1]
-                    atr_pct_95 = atr_series.rolling(30).quantile(0.95).iloc[-1]
-                    if not (pd.isna(atr_pct_20) or pd.isna(atr_pct_95)):
-                        if atr < atr_pct_20:
-                            logger.debug("trade_blocked_dead_market", instrument=instrument, atr=atr)
+                                        if _narration:
+                                            await _alerts.send_warning(
+                                                f"🧠 Drawdown Analysis ({_trigger_type} — {drawdown_monitor.current_drawdown:.1%})\n\n{_narration}"
+                                            )
+                                except Exception as _dd_narr_exc:
+                                    logger.warning("drawdown_narration_failed", error=str(_dd_narr_exc))
+    
                             await session.commit()
                             continue
-                        if atr > atr_pct_95:
-                            logger.debug("trade_blocked_news_spike", instrument=instrument, atr=atr)
+    
+                        # 2. Daily loss limit
+                        if daily_limiter.is_halted(balance):
+                            logger.warning("trade_blocked_daily_limit", instrument=instrument)
+                            await _alerts.send_critical(f"Daily loss limit hit — trading halted for today\nBalance: ${balance:.2f}")
                             await session.commit()
                             continue
+    
+                        # 3. Already have an open position in this instrument?
+                        already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
+                        if already_open:
+                            logger.info("trade_skipped_already_open", instrument=instrument)
+                            await session.commit()
+                            continue
+    
+                        # 4. Correlation check
+                        corr_ok, corr_reason = correlation_mgr.check_new_position(
+                            instrument, result.direction, open_positions
+                        )
+                        if not corr_ok:
+                            logger.warning("trade_blocked_correlation", instrument=instrument, reason=corr_reason)
+                            await session.commit()
+                            continue
+    
+                        # 5. Compute true ATR-based stop loss & take profit.
+                        # True ATR = max(H-L, |H-prev_C|, |L-prev_C|) — accounts for overnight gaps.
+                        h1_df = to_df(h1)
+                        prev_close = h1_df["close"].shift(1)
+                        true_range = pd.concat([
+                            h1_df["high"] - h1_df["low"],
+                            (h1_df["high"] - prev_close).abs(),
+                            (h1_df["low"]  - prev_close).abs(),
+                        ], axis=1).max(axis=1)
+                        atr = true_range.rolling(14).mean().iloc[-1]
+    
+                        # ATR volatility filter: skip dead markets (no movement = noise) and
+                        # news spikes (ATR 5× normal = stop blown through unpredictably).
+                        atr_series = true_range.rolling(14).mean()
+                        atr_pct_20 = atr_series.rolling(30).quantile(0.20).iloc[-1]
+                        atr_pct_95 = atr_series.rolling(30).quantile(0.95).iloc[-1]
+                        if not (pd.isna(atr_pct_20) or pd.isna(atr_pct_95)):
+                            if atr < atr_pct_20:
+                                logger.debug("trade_blocked_dead_market", instrument=instrument, atr=atr)
+                                await session.commit()
+                                continue
+                            if atr > atr_pct_95:
+                                logger.debug("trade_blocked_news_spike", instrument=instrument, atr=atr)
+                                await session.commit()
+                                continue
+    
+                        # Pullback entry: limit order at 50% of the signal candle's body.
+                        # For LONG:  limit below close (wait for a dip into support).
+                        # For SHORT: limit above close (wait for a pop into resistance).
+                        # This improves effective R:R from 2:1 → ~2.5:1 without widening the stop.
+                        # Doji guard: if candle body < 0.2×ATR (doji), use 0.3×ATR as minimum
+                        # pullback so we don't accidentally submit a market-price limit order.
+                        last_candle = h1_df.iloc[-1]
+                        candle_body = abs(float(last_candle["close"]) - float(last_candle["open"]))
+                        pullback    = max(candle_body * 0.5, atr * 0.3) if candle_body < atr * 0.2 else candle_body * 0.5
+    
+                        close_price = float(h1_df["close"].iloc[-1])
+                        if result.direction == "LONG":
+                            entry       = round(close_price - pullback, 5)
+                            stop_loss   = round(entry - 1.5 * atr, 5)
+                            take_profit = round(entry + 2.0 * atr, 5)
+                        else:
+                            entry       = round(close_price + pullback, 5)
+                            stop_loss   = round(entry + 1.5 * atr, 5)
+                            take_profit = round(entry - 2.0 * atr, 5)
+    
+                        # Limit order expires after 4 hours — prevents stale fills
+                        # in the next session under completely different conditions.
+                        gtd_time = now + timedelta(hours=4)
+    
+                        # 6. Size the position
+                        units = sizer.compute(
+                            account_balance=balance,
+                            instrument=instrument,
+                            entry_price=entry,
+                            stop_loss=stop_loss,
+                            risk_pct_override=settings.trend_risk_pct,
+                            kelly_fraction=float(result.ml_confidence) if result.ml_confidence else None,
+                            drawdown_scale=drawdown_monitor.scale_factor,
+                            vix_scale=result.vix_multiplier,
+                            news_scale=result.news_multiplier,
+                            session_scale=_session_size_scale,
+                            rolling_score_scale=_rolling_score_scale,
+                            regime_scale=_regime_size_scale(result.regime_state, "trend"),
+                        )
+    
+                        # 7. Submit limit order (GTD — expires in 4 hours if not filled)
+                        direction = Direction.LONG if result.direction == "LONG" else Direction.SHORT
+                        order_request = OrderRequest(
+                            instrument=instrument,
+                            direction=direction,
+                            units=units,
+                            order_type=OrderType.LIMIT,
+                            stop_loss=stop_loss,
+                            take_profit=take_profit,
+                            limit_price=entry,
+                            gtd_time=gtd_time,
+                            signal_id=row.id,
+                        )
+    
+                        order_id = await order_manager.submit(order_request)
+                        logger.info(
+                            "limit_order_submitted",
+                            instrument=instrument,
+                            direction=result.direction,
+                            units=units,
+                            limit_price=entry,
+                            stop_loss=stop_loss,
+                            take_profit=take_profit,
+                            confluence=result.confluence_score,
+                            expires=gtd_time.isoformat(),
+                            order_id=str(order_id),
+                        )
+                        await _alerts.send_info(
+                            f"Order placed: {result.direction} {instrument}\n"
+                            f"Entry: {entry}  SL: {stop_loss}  TP: {take_profit}\n"
+                            f"Units: {units}  Confluence: {result.confluence_score:.2f}\n"
+                            f"Expires: {gtd_time.strftime('%H:%M UTC')}"
+                        )
+                        await session.commit()
+                else:
+                    logger.debug("trend_engine_disabled_skipping", instrument=instrument)
 
-                    # Pullback entry: limit order at 50% of the signal candle's body.
-                    # For LONG:  limit below close (wait for a dip into support).
-                    # For SHORT: limit above close (wait for a pop into resistance).
-                    # This improves effective R:R from 2:1 → ~2.5:1 without widening the stop.
-                    # Doji guard: if candle body < 0.2×ATR (doji), use 0.3×ATR as minimum
-                    # pullback so we don't accidentally submit a market-price limit order.
-                    last_candle = h1_df.iloc[-1]
-                    candle_body = abs(float(last_candle["close"]) - float(last_candle["open"]))
-                    pullback    = max(candle_body * 0.5, atr * 0.3) if candle_body < atr * 0.2 else candle_body * 0.5
-
-                    close_price = float(h1_df["close"].iloc[-1])
-                    if result.direction == "LONG":
-                        entry       = round(close_price - pullback, 5)
-                        stop_loss   = round(entry - 1.5 * atr, 5)
-                        take_profit = round(entry + 2.0 * atr, 5)
-                    else:
-                        entry       = round(close_price + pullback, 5)
-                        stop_loss   = round(entry + 1.5 * atr, 5)
-                        take_profit = round(entry - 2.0 * atr, 5)
-
-                    # Limit order expires after 4 hours — prevents stale fills
-                    # in the next session under completely different conditions.
-                    gtd_time = now + timedelta(hours=4)
-
-                    # 6. Size the position
-                    units = sizer.compute(
-                        account_balance=balance,
-                        instrument=instrument,
-                        entry_price=entry,
-                        stop_loss=stop_loss,
-                        risk_pct_override=settings.trend_risk_pct,
-                        kelly_fraction=float(result.ml_confidence) if result.ml_confidence else None,
-                        drawdown_scale=drawdown_monitor.scale_factor,
-                        vix_scale=result.vix_multiplier,
-                        news_scale=result.news_multiplier,
-                        session_scale=_session_size_scale,
-                        rolling_score_scale=_rolling_score_scale,
-                        regime_scale=_regime_size_scale(result.regime_state, "trend"),
-                    )
-
-                    # 7. Submit limit order (GTD — expires in 4 hours if not filled)
-                    direction = Direction.LONG if result.direction == "LONG" else Direction.SHORT
-                    order_request = OrderRequest(
-                        instrument=instrument,
-                        direction=direction,
-                        units=units,
-                        order_type=OrderType.LIMIT,
-                        stop_loss=stop_loss,
-                        take_profit=take_profit,
-                        limit_price=entry,
-                        gtd_time=gtd_time,
-                        signal_id=row.id,
-                    )
-
-                    order_id = await order_manager.submit(order_request)
-                    logger.info(
-                        "limit_order_submitted",
-                        instrument=instrument,
-                        direction=result.direction,
-                        units=units,
-                        limit_price=entry,
-                        stop_loss=stop_loss,
-                        take_profit=take_profit,
-                        confluence=result.confluence_score,
-                        expires=gtd_time.isoformat(),
-                        order_id=str(order_id),
-                    )
-                    await _alerts.send_info(
-                        f"Order placed: {result.direction} {instrument}\n"
-                        f"Entry: {entry}  SL: {stop_loss}  TP: {take_profit}\n"
-                        f"Units: {units}  Confluence: {result.confluence_score:.2f}\n"
-                        f"Expires: {gtd_time.strftime('%H:%M UTC')}"
-                    )
-                    await session.commit()
 
             except Exception as exc:
                 logger.error("signal_scan_instrument_failed", instrument=instrument, error=str(exc))
                 await _alerts.send_warning(f"Signal scan failed for {instrument}\n{exc}")
 
             # ── Mean-reversion scan (separate try block — trend failure must not block MR) ──
+            # MR is DISABLED (validated No-Go 2026-03-23). The block is kept intact so
+            # re-enabling is a one-line config change (enable_mr_engine = True in config.py).
+            # Do not re-enable without a new production-faithful backtest showing OOS PF > 1.15.
             try:
-                async with _db_engine.AsyncSessionFactory() as mr_session:
-                    mr_order_repo    = OrderRepository(mr_session)
-                    mr_order_manager = OrderManager(mr_order_repo, broker, redis=redis_client)
-                    news_filter.calendar_repo = EconomicCalendarRepository(mr_session)
-
-                    mr_result = await mr_engine.evaluate(instrument, dt=now)
-
-                    logger.debug(
-                        "mr_signal_evaluated",
-                        instrument=instrument,
-                        suppressed=mr_result.suppressed,
-                        reason=mr_result.suppression_reason,
-                        confluence=mr_result.confluence_score,
-                        regime=mr_result.regime_state,
-                        session=mr_result.session,
-                    )
-
-                    if mr_result.suppressed:
-                        continue
-
-                    if not settings.enable_mr_engine:
-                        logger.info("mr_engine_disabled", instrument=instrument)
+                if settings.enable_mr_engine:
+                    async with _db_engine.AsyncSessionFactory() as mr_session:
+                        mr_market_repo = MarketDataRepository(mr_session)
+                        mr_order_repo    = OrderRepository(mr_session)
+                        mr_order_manager = OrderManager(mr_order_repo, broker, redis=redis_client)
+                        news_filter.calendar_repo = EconomicCalendarRepository(mr_session)
+    
+                        # Populate MR cache here — independent of whether the trend block ran.
+                        mr_h1 = await mr_market_repo.get_latest_n_candles(instrument, "H1", 200)
+                        mr_d1 = await mr_market_repo.get_latest_n_candles(instrument, "D", 250)
+                        mr_engine.update_cache(instrument, "H1", to_df(mr_h1))
+                        mr_engine.update_cache(instrument, "D",  to_df(mr_d1))
+                        mr_engine.hmm_detector = _hmm_detectors.get(instrument)
+    
+                        mr_result = await mr_engine.evaluate(instrument, dt=now)
+    
+                        logger.debug(
+                            "mr_signal_evaluated",
+                            instrument=instrument,
+                            suppressed=mr_result.suppressed,
+                            reason=mr_result.suppression_reason,
+                            confluence=mr_result.confluence_score,
+                            regime=mr_result.regime_state,
+                            session=mr_result.session,
+                        )
+    
+                        if mr_result.suppressed:
+                            continue
+    
+                        if settings.mr_paper_only:
+                            logger.info("mr_signal_paper_only", instrument=instrument, direction=mr_result.direction)
+                            await mr_session.commit()
+                            continue
+    
+                        # Execution gates (same as trend engine)
+                        if not drawdown_monitor.check()[0]:
+                            continue
+                        if daily_limiter.is_halted(balance):
+                            continue
+                        already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
+                        if already_open:
+                            continue
+                        corr_ok, _ = correlation_mgr.check_new_position(
+                            instrument, mr_result.direction, open_positions
+                        )
+                        if not corr_ok:
+                            continue
+    
+                        # R:R already validated inside mr_engine.evaluate()
+                        mr_units = sizer.compute(
+                            account_balance=balance,
+                            instrument=instrument,
+                            entry_price=mr_result.entry_price,
+                            stop_loss=mr_result.stop_loss,
+                            risk_pct_override=settings.mr_risk_pct,
+                            drawdown_scale=drawdown_monitor.scale_factor,
+                            session_scale=_session_size_scale,
+                            rolling_score_scale=_rolling_score_scale,
+                            regime_scale=_regime_size_scale(mr_result.regime_state, "revert"),
+                        )
+    
+                        mr_direction = Direction.LONG if mr_result.direction == "LONG" else Direction.SHORT
+                        mr_order = OrderRequest(
+                            instrument=instrument,
+                            direction=mr_direction,
+                            units=mr_units,
+                            order_type=OrderType.LIMIT,
+                            stop_loss=mr_result.stop_loss,
+                            take_profit=mr_result.take_profit,
+                            limit_price=mr_result.entry_price,
+                            gtd_time=now + timedelta(hours=2),  # MR setups expire faster than trend
+                        )
+    
+                        mr_order_id = await mr_order_manager.submit(mr_order)
+                        logger.info(
+                            "mr_order_submitted",
+                            instrument=instrument,
+                            direction=mr_result.direction,
+                            units=mr_units,
+                            entry=mr_result.entry_price,
+                            sl=mr_result.stop_loss,
+                            tp=mr_result.take_profit,
+                            confluence=mr_result.confluence_score,
+                            order_id=str(mr_order_id),
+                        )
+                        await _alerts.send_info(
+                            f"MR Order placed: {mr_result.direction} {instrument}\n"
+                            f"Entry: {mr_result.entry_price}  SL: {mr_result.stop_loss}  TP: {mr_result.take_profit}\n"
+                            f"Units: {mr_units}  Confluence: {mr_result.confluence_score:.2f}\n"
+                            f"Regime: RANGING  Expires: {(now + timedelta(hours=2)).strftime('%H:%M UTC')}"
+                        )
                         await mr_session.commit()
-                        continue
-
-                    if settings.mr_paper_only:
-                        logger.info("mr_signal_paper_only", instrument=instrument, direction=mr_result.direction)
-                        await mr_session.commit()
-                        continue
-
-                    # Execution gates (same as trend engine)
-                    if not drawdown_monitor.check()[0]:
-                        continue
-                    if daily_limiter.is_halted(balance):
-                        continue
-                    already_open = any(p.instrument == instrument for p in open_positions) or instrument in pending_instruments
-                    if already_open:
-                        continue
-                    corr_ok, _ = correlation_mgr.check_new_position(
-                        instrument, mr_result.direction, open_positions
-                    )
-                    if not corr_ok:
-                        continue
-
-                    # R:R already validated inside mr_engine.evaluate()
-                    mr_units = sizer.compute(
-                        account_balance=balance,
-                        instrument=instrument,
-                        entry_price=mr_result.entry_price,
-                        stop_loss=mr_result.stop_loss,
-                        risk_pct_override=settings.mr_risk_pct,
-                        drawdown_scale=drawdown_monitor.scale_factor,
-                        session_scale=_session_size_scale,
-                        rolling_score_scale=_rolling_score_scale,
-                        regime_scale=_regime_size_scale(mr_result.regime_state, "revert"),
-                    )
-
-                    mr_direction = Direction.LONG if mr_result.direction == "LONG" else Direction.SHORT
-                    mr_order = OrderRequest(
-                        instrument=instrument,
-                        direction=mr_direction,
-                        units=mr_units,
-                        order_type=OrderType.LIMIT,
-                        stop_loss=mr_result.stop_loss,
-                        take_profit=mr_result.take_profit,
-                        limit_price=mr_result.entry_price,
-                        gtd_time=now + timedelta(hours=2),  # MR setups expire faster than trend
-                    )
-
-                    mr_order_id = await mr_order_manager.submit(mr_order)
-                    logger.info(
-                        "mr_order_submitted",
-                        instrument=instrument,
-                        direction=mr_result.direction,
-                        units=mr_units,
-                        entry=mr_result.entry_price,
-                        sl=mr_result.stop_loss,
-                        tp=mr_result.take_profit,
-                        confluence=mr_result.confluence_score,
-                        order_id=str(mr_order_id),
-                    )
-                    await _alerts.send_info(
-                        f"MR Order placed: {mr_result.direction} {instrument}\n"
-                        f"Entry: {mr_result.entry_price}  SL: {mr_result.stop_loss}  TP: {mr_result.take_profit}\n"
-                        f"Units: {mr_units}  Confluence: {mr_result.confluence_score:.2f}\n"
-                        f"Regime: RANGING  Expires: {(now + timedelta(hours=2)).strftime('%H:%M UTC')}"
-                    )
-                    await mr_session.commit()
+                else:
+                    logger.debug("mr_engine_disabled_skipping", instrument=instrument)
 
             except Exception as exc:
                 logger.error("mr_scan_instrument_failed", instrument=instrument, error=str(exc))
@@ -795,9 +801,48 @@ def run_signal_scan(self):
         #    The trend loop fires `continue` for OFF_SESSION during NY hours (17–19 UTC),
         #    which would skip the LCR block entirely if it lived inside that loop.
         if now.hour in {17, 18, 19}:
+            # ── Pair-level disable check (precommitted rules) ──────────────────
+            # Evaluate all LCR pairs once per scan tick using the deterministic
+            # disable/watchlist framework. DISABLED pairs are skipped; WATCHLIST
+            # pairs still execute but are flagged in logs.
+            _lcr_pair_statuses: dict = {}
+            _lcr_status_loaded: bool = False
+            try:
+                from anchor.signals.lcr_pair_status import load_lcr_pair_statuses
+                async with _db_engine.AsyncSessionFactory() as _ps_session:
+                    _lcr_pair_statuses = await load_lcr_pair_statuses(_ps_session)
+                _lcr_status_loaded = True
+            except Exception as _ps_exc:
+                logger.warning(
+                    "lcr_pair_status_eval_failed",
+                    error=str(_ps_exc),
+                    action="skipping_lcr_session",
+                )
+
             for instrument in LCR_INSTRUMENTS:
+                # If pair status could not be loaded, we cannot enforce disable rules.
+                # Skip all instruments this session rather than trading blind.
+                if not _lcr_status_loaded:
+                    break
+
                 if instrument not in active_instruments:
                     continue
+
+                # ── Pair-level disable gate ────────────────────────────────────
+                _pair_status = _lcr_pair_statuses.get(instrument)
+                if _pair_status is not None and _pair_status.status.value == "disabled":
+                    logger.warning(
+                        "lcr_pair_disabled_skip",
+                        instrument=instrument,
+                        reasons=_pair_status.reasons,
+                    )
+                    continue
+                if _pair_status is not None and _pair_status.status.value == "watchlist":
+                    logger.info(
+                        "lcr_pair_watchlist",
+                        instrument=instrument,
+                        reasons=_pair_status.reasons,
+                    )
 
                 # ── EUR/JPY rolling 60-day PF circuit breaker ─────────────────
                 # Walk-forward showed EUR_JPY fails in non-JPY regimes (2018, 2019).
@@ -863,15 +908,28 @@ def run_signal_scan(self):
                         # Persist every LCR evaluation (audit trail) — map to Signal model:
                         # rsi_score=rsi, bb_kc_score=rejection, adx_score=range_pos, sr_score=range_qual
                         lcr_meta = lcr_result.metadata or {}
+                        # Compute partial TP price (1.5:1 R toward TP) so it's auditable
+                        _lcr_partial_tp_price = None
+                        if (
+                            lcr_result.entry_price is not None
+                            and lcr_result.stop_loss is not None
+                            and lcr_result.direction is not None
+                        ):
+                            _sl_d = abs(lcr_result.entry_price - lcr_result.stop_loss)
+                            if lcr_result.direction == "LONG":
+                                _lcr_partial_tp_price = round(lcr_result.entry_price + 1.5 * _sl_d, 5)
+                            else:
+                                _lcr_partial_tp_price = round(lcr_result.entry_price - 1.5 * _sl_d, 5)
                         lcr_meta.update({
-                            "london_high":  lcr_result.london_high,
-                            "london_low":   lcr_result.london_low,
-                            "london_mid":   lcr_result.london_mid,
-                            "atr":          lcr_result.atr,
-                            "entry_price":  lcr_result.entry_price,
-                            "stop_loss":    lcr_result.stop_loss,
-                            "take_profit":  lcr_result.take_profit,
-                            "strategy":     "LCR",
+                            "london_high":    lcr_result.london_high,
+                            "london_low":     lcr_result.london_low,
+                            "london_mid":     lcr_result.london_mid,
+                            "atr":            lcr_result.atr,
+                            "entry_price":    lcr_result.entry_price,
+                            "stop_loss":      lcr_result.stop_loss,
+                            "take_profit":    lcr_result.take_profit,
+                            "partial_tp_price": _lcr_partial_tp_price,
+                            "strategy":       "LCR",
                         })
                         lcr_row = SignalModel(
                             instrument=instrument,
@@ -994,10 +1052,35 @@ def run_signal_scan(self):
                             await lcr_session.commit()
                             continue
 
+                        # Portfolio heat cap: never hold more than max_concurrent_lcr_positions
+                        # open at once. Since only LCR is active, total open == LCR open.
+                        # At 1% base risk: 3 positions cap = max 3% gross portfolio heat.
+                        if len(open_positions) >= settings.max_concurrent_lcr_positions:
+                            logger.info(
+                                "lcr_max_concurrent_skip",
+                                instrument=instrument,
+                                open_count=len(open_positions),
+                                max_allowed=settings.max_concurrent_lcr_positions,
+                            )
+                            await lcr_session.commit()
+                            continue
+
+                        # EUR_JPY: paper-observe only — signal/SL/TP logged but no live order submitted.
+                        # Live data showed 2/2 EUR_JPY trades were intrabar stops (< 15 min).
+                        # Re-enable only after 20+ paper trades with PF > 1.0.
+                        if instrument == "EUR_JPY":
+                            logger.info(
+                                "lcr_eurjpy_paper_only",
+                                instrument=instrument,
+                                direction=lcr_result.direction,
+                                confluence=lcr_result.confluence_score,
+                            )
+                            await lcr_session.commit()
+                            continue
+
                         # SL/TP computed inside LCR engine (london extreme + ATR buffer → london mid)
-                        # EUR_JPY uses 0.75% risk — failed 2018+2019 in walk-forward (JPY cross weakness)
-                        # USD_CAD: walk-forward confirmed 7/7 profitable, lowest DD (-15.2%) → full 1% risk
-                        _lcr_risk_scale = 0.75 if instrument in {"EUR_JPY"} else 1.0
+                        # USD_CAD: reduced to 0.5% risk — live underperformance review 2026-03-23
+                        _lcr_risk_scale = 0.50 if instrument in {"USD_CAD"} else 1.0
                         # Correlation scaling: EUR/GBP/AUD/NZD vs USD move together on DXY reversals.
                         # If 2+ of those pairs already have open positions, cap new signals at 0.5%
                         # to avoid treating three 1% bets as independent when they're one 3% USD bet.

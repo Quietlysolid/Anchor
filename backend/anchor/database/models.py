@@ -213,6 +213,7 @@ class Trade(Base):
     regime_at_entry:         Mapped[str | None]      = mapped_column(String(16))
     session_at_entry:        Mapped[str | None]      = mapped_column(String(16))
     signal_id:               Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("signals.id"))
+    spread_at_fill:          Mapped[Decimal | None]  = mapped_column(Numeric(10, 5))
 
     position: Mapped["Position"] = relationship("Position", back_populates="trade")
 

@@ -133,6 +133,10 @@ celery_app.conf.update(
             "task": "anchor.scheduler.jobs.assess_edge_confidence",
             "schedule": 86_400.0,  # daily after London close — detects macro dislocation
         },
+        "snapshot-lcr-pair-status-daily": {
+            "task": "anchor.scheduler.jobs.snapshot_lcr_pair_status",
+            "schedule": crontab(hour=21, minute=5, day_of_week="1-5"),  # Mon–Fri 21:05 UTC
+        },
         "update-economic-surprise-every-30-min": {
             "task": "anchor.scheduler.jobs.update_economic_surprise",
             "schedule": 1_800.0,  # 30 min — cheap DB read, only meaningful after releases

@@ -4,8 +4,10 @@ Every 15 minutes: compare DB open positions vs OANDA ground truth.
 On VPS restart: full state reconstruction from broker.
 """
 from datetime import timedelta
+from decimal import Decimal
 
 import structlog
+from sqlalchemy import text as _sql_text
 
 from anchor.utils.time_utils import utcnow
 

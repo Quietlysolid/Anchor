@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from anchor.build_info import DEPLOYED_AT, DEPLOYED_SHA
 from anchor.config import get_settings
 from anchor.database.engine import get_db
-from anchor.api.schemas import RolloutConfigResponse
+from anchor.api.schemas import RolloutConfigResponse, LCRPairStatusesResponse
 from anchor.utils.time_utils import utcnow
 
 router = APIRouter()
@@ -117,6 +117,75 @@ async def get_system_config():
         "min_confluence_score": settings.min_confluence_score,
         "min_ml_confidence": settings.min_ml_confidence,
     }
+
+
+@router.get("/system/lcr-pair-status", response_model=LCRPairStatusesResponse)
+async def get_lcr_pair_status(session: AsyncSession = Depends(get_db)):
+    """
+    Evaluate per-pair LCR status using precommitted rules.
+    Returns status (active/watchlist/disabled), machine-readable reasons, and metrics for each pair.
+    """
+    from datetime import datetime, timezone
+    from anchor.signals.lcr_pair_status import load_lcr_pair_statuses, LCR_LIVE_DATE
+
+    now = datetime.now(timezone.utc)
+    days_since_live = max(0, (now.date() - LCR_LIVE_DATE).days)
+
+    pair_statuses = await load_lcr_pair_statuses(session)
+
+    results = [
+        {
+            "instrument": r.instrument,
+            "status":     r.status.value,
+            "reasons":    r.reasons,
+            "metrics":    r.metrics,
+        }
+        for r in pair_statuses.values()
+    ]
+
+    return {
+        "pairs":           results,
+        "evaluated_at":    now.isoformat(),
+        "days_since_live": days_since_live,
+    }
+
+
+@router.get("/system/lcr-pair-status/history")
+async def get_lcr_pair_status_history(
+    days: int = 30,
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Return daily LCR pair-status snapshots for the last N days.
+    Each snapshot is one LCR_PAIR_STATUS_SNAPSHOT system event written at 21:05 UTC.
+    """
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import text
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (await session.execute(
+        text("""
+            SELECT event_at, metadata
+            FROM system_events
+            WHERE event_type = 'LCR_PAIR_STATUS_SNAPSHOT'
+              AND event_at >= :cutoff
+            ORDER BY event_at DESC
+            LIMIT :limit
+        """),
+        {"cutoff": cutoff, "limit": days},
+    )).fetchall()
+
+    snapshots = []
+    for r in rows:
+        meta = dict(r[1] or {})
+        snapshots.append({
+            "date":         r[0].strftime("%Y-%m-%d"),
+            "evaluated_at": r[0].isoformat(),
+            "pairs":        meta.get("pairs", []),
+            "summary":      meta.get("summary", {}),
+        })
+
+    return {"snapshots": snapshots}
 
 
 @router.get("/system/edge-confidence")

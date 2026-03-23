@@ -51,6 +51,20 @@ class RolloutConfigResponse(BaseModel):
     min_ml_confidence: float
 
 
+# ── LCR Pair Status ───────────────────────────────────────────────────────────
+class LCRPairStatusResponse(BaseModel):
+    instrument: str
+    status: str           # "active" | "watchlist" | "disabled"
+    reasons: List[str]
+    metrics: Dict
+
+
+class LCRPairStatusesResponse(BaseModel):
+    pairs: List[LCRPairStatusResponse]
+    evaluated_at: str
+    days_since_live: int
+
+
 # ── Market Data ───────────────────────────────────────────────────────────────
 class CandleResponse(BaseModel):
     time: datetime

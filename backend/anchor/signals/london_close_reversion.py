@@ -84,6 +84,10 @@ LCR_WEIGHTS = {
 LCR_RSI_OVERBOUGHT = 60.0   # above → confirms SHORT reversion signal
 LCR_RSI_OVERSOLD   = 40.0   # below → confirms LONG reversion signal
 LCR_ATR_SL_BUFFER  = 1.0    # ATR multiplier for SL beyond London extreme
+# NOTE (2026-03-23): Live data showed 44% intrabar SL rate (4/9 trades < 3h). Tested 1.25 ATR —
+# all pairs degraded (EUR_USD PF 1.411→1.277, USD_CAD PF 1.195→1.011, AUD_USD 1.269→1.112).
+# 9 trades is too small to override 8-year backtest. Live intrabar rate likely reflects
+# the directional/momentum regime of March 2026, not a stop placement flaw.
 LCR_MIN_RR         = 1.2    # minimum R:R ratio (tp_dist / sl_dist)
 LCR_MIN_RANGE_ATR  = 0.4    # London range must be ≥ 0.4×ATR (filter dead days)
 

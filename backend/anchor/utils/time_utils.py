@@ -9,7 +9,9 @@ def utcnow() -> datetime:
 
 
 def is_london_session(dt: datetime) -> bool:
-    """07:00–17:00 UTC"""
+    """07:00–17:00 UTC (full London window including overlap).
+    Note: get_session_name() classifies 12:00–17:00 as OVERLAP, so the
+    effective 'LONDON' label only covers 07:00–12:00."""
     t = dt.time()
     return time(7, 0) <= t < time(17, 0)
 

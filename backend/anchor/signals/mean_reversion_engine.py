@@ -1,6 +1,26 @@
 """
 Mean-Reversion Signal Engine.
 
+STATUS: EXPERIMENTAL — DISABLED FOR PRODUCTION SCHEDULING (as of 2026-03-23).
+
+Validation result: No-Go.
+  After fixing a stop-loss direction bug and running a non-leaky HMM regime
+  backtest (IS 2018-2022, OOS 2022-2026), MR showed no reliable out-of-sample
+  edge. 4 of 5 active pairs had OOS PF < 1.0 under proper regime gating.
+  Only USD/CAD showed marginal positive OOS PF but with only 9 OOS trades
+  (insufficient statistical evidence).
+
+  The production flag `enable_mr_engine` in config.py is set to False.
+  The Celery task in signal_tasks.py checks this flag before calling evaluate()
+  and skips the entire block when False.
+
+  To re-enable: set enable_mr_engine = True in config.py AND complete a new
+  production-faithful validation showing OOS PF > 1.15 on 2+ pairs with 50+
+  trades each. See mr_regime_backtest.py for the validated backtest template.
+
+The SL-direction fix below (stop_loss must be on the correct side of entry)
+was applied 2026-03-23 and must be preserved regardless of strategy status.
+
 Runs in parallel with ConfluenceEngine. Only active when HMM regime is RANGING
 and ADX < 25. Fades price to the Bollinger Band mean (middle band).
 
@@ -309,6 +329,18 @@ class MeanReversionEngine:
         else:
             stop_loss   = round(lower - MR_ATR_SL_BUFFER * atr, 5)
             take_profit = round(mid, 5)
+
+        # Sanity check: SL must be on the correct side of entry.
+        # When price drops more than 0.5×ATR below the lower BB, the formula
+        # (lower - 0.5×ATR) can land above the current close, producing a LONG
+        # trade where SL > entry. abs() in sl_dist hides this and creates phantom
+        # high-R:R wins in the backtest.
+        if direction == "LONG" and stop_loss >= entry:
+            result.suppression_reason = f"SL_WRONG_SIDE:sl={stop_loss:.5f}_entry={entry:.5f}"
+            return result
+        if direction == "SHORT" and stop_loss <= entry:
+            result.suppression_reason = f"SL_WRONG_SIDE:sl={stop_loss:.5f}_entry={entry:.5f}"
+            return result
 
         sl_dist = abs(entry - stop_loss)
         tp_dist = abs(entry - take_profit)

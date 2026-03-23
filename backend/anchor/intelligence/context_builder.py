@@ -15,7 +15,12 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-_INSTRUMENTS = ["EUR_USD", "GBP_USD", "NZD_USD", "USD_CAD", "EUR_JPY", "AUD_USD"]
+from anchor.config import get_settings as _get_settings
+_cfg         = _get_settings()
+_INSTRUMENTS = _cfg.instruments  # all scanned pairs (may include inactive ones)
+# Pairs currently live or paper-traded by LCR — excludes dropped pairs (e.g. GBP_USD).
+# Used to ground the LLM so briefs don't mention pairs that are no longer active.
+_ACTIVE_LCR_INSTRUMENTS = [i for i in _INSTRUMENTS if i != "GBP_USD"]
 _CURRENCIES  = ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "NZD", "CHF"]
 
 
@@ -31,6 +36,7 @@ async def build_context(report_type: str, session, redis_client) -> dict[str, An
         "generated_at_utc": now.isoformat(),
     }
 
+    ctx["active_instruments"] = _ACTIVE_LCR_INSTRUMENTS  # pairs LCR is actually trading/paper-trading
     ctx["macro"]           = await _get_macro_context(redis_client)
     ctx["account"]         = await _get_account_context(session)
     ctx["upcoming_events"] = await _get_upcoming_events(session, hours=168 if report_type == "WEEKLY" else 24)
@@ -145,10 +151,16 @@ async def _get_upcoming_events(session, hours: int = 24) -> list[dict]:
 
 async def _get_recent_signals(session, hours: int = 12) -> dict:
     from anchor.database.models import Signal
-    from sqlalchemy import select, desc
+    from sqlalchemy import select, desc, func
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     try:
+        # Get exact total count first (not capped) so LLM reports the real number
+        total_evaluated = (await session.execute(
+            select(func.count()).select_from(Signal).where(Signal.created_at >= cutoff)
+        )).scalar_one()
+
+        # Fetch a sample for detail — capped to keep context window manageable
         result = await session.execute(
             select(Signal)
             .where(Signal.created_at >= cutoff)
@@ -173,7 +185,7 @@ async def _get_recent_signals(session, hours: int = 12) -> dict:
 
         return {
             "fired":               fired[:25],
-            "total_evaluated":     len(signals),
+            "total_evaluated":     total_evaluated,  # real count, not capped
             "total_fired":         len(fired),
             "suppression_summary": suppression_counts,
         }
@@ -258,7 +270,7 @@ async def _get_regime_context(session) -> dict:
     from sqlalchemy import select, desc
 
     regimes: dict[str, str] = {}
-    for pair in _INSTRUMENTS:
+    for pair in _ACTIVE_LCR_INSTRUMENTS:
         try:
             result = await session.execute(
                 select(RegimeHistory)
