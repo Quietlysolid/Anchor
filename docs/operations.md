@@ -36,6 +36,17 @@ it sends a Telegram message — every day that pair stays disabled, not just the
 
 - The server crashes or Docker goes down — the bot cannot trade if it is not running.
 
+## Known operational notes
+
+**Celery worker concurrency: 2 (prefork)**
+The `celery_worker` container runs without a `--concurrency` flag, so Celery defaults to the CPU
+core count on the VPS, which is 2. This is no longer a correctness blocker for the risk gates after
+the fixes applied 2026-03-23 (stale portfolio state, silent DD alerts, M15 unbound vars, reversal
+heat cap). It remains an operational hardening option: dropping to `--concurrency 1` would give
+strict execution-path serialization with no possibility of two scan ticks running concurrently.
+To apply, add `--concurrency 1` to the `command:` line for `celery_worker` in `docker-compose.yml`
+and redeploy.
+
 ## Enforcement reference
 
 | Rule | Enforced in execution | Notes |
