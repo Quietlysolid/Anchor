@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anchor.database.models import Signal
@@ -63,3 +63,52 @@ class SignalRepository:
             .order_by(Signal.created_at)
         )
         return list(result.scalars().all())
+
+    async def count_lcr_session_signals(
+        self,
+        instrument: str,
+        session_start: datetime,
+        exclude_id: "UUID | None" = None,
+    ) -> int:
+        """
+        Count non-suppressed NY_LCR signals for instrument since session_start.
+
+        Used to enforce the one-signal-per-instrument-per-session cap.
+        Pass exclude_id to exclude the signal row just inserted in this transaction.
+        """
+        from uuid import UUID as _UUID
+        conditions = [
+            Signal.instrument == instrument,
+            Signal.session    == "NY_LCR",
+            Signal.suppressed == False,  # noqa: E712
+            Signal.created_at >= session_start,
+        ]
+        if exclude_id is not None:
+            conditions.append(Signal.id != exclude_id)
+
+        result = await self.session.execute(
+            select(func.count(Signal.id)).where(and_(*conditions))
+        )
+        return result.scalar_one() or 0
+
+    async def count_session_signals(
+        self,
+        instrument: str,
+        session: str,
+        session_start: datetime,
+        exclude_id: "UUID | None" = None,
+    ) -> int:
+        """Count non-suppressed signals for an instrument/session since session_start."""
+        conditions = [
+            Signal.instrument == instrument,
+            Signal.session == session,
+            Signal.suppressed == False,  # noqa: E712
+            Signal.created_at >= session_start,
+        ]
+        if exclude_id is not None:
+            conditions.append(Signal.id != exclude_id)
+
+        result = await self.session.execute(
+            select(func.count(Signal.id)).where(and_(*conditions))
+        )
+        return result.scalar_one() or 0

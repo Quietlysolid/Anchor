@@ -3,8 +3,6 @@ import { ChevronDown, Sparkles } from 'lucide-react'
 import { Pill } from '../ui/Pill'
 import { TradeDetail } from './TradeDetail'
 import type { Trade } from '../../types'
-import { format } from 'date-fns'
-
 interface Props { trade: Trade; explanation?: string }
 
 function holdTime(opened: string, closed: string): string {
@@ -19,6 +17,11 @@ export function TradeRow({ trade, explanation }: Props) {
   const [expanded, setExpanded] = useState(false)
   const won    = trade.net_pl >= 0
   const plSign = trade.net_pl >= 0 ? '+' : ''
+  const openedLabel = new Date(trade.opened_at).toLocaleDateString('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+  })
 
   return (
     <>
@@ -27,7 +30,7 @@ export function TradeRow({ trade, explanation }: Props) {
         onClick={() => setExpanded(v => !v)}
       >
         <td className="py-2.5 px-3 font-mono text-xs text-anchor-muted">
-          {format(new Date(trade.opened_at), 'MMM d')}
+          {openedLabel}
         </td>
         <td className="py-2.5 px-3 font-mono font-medium text-anchor-text text-sm">
           {trade.instrument.replace('_', '/')}

@@ -73,7 +73,7 @@ function TradeRow({ trade, explanation }: { trade: Trade; explanation?: string }
 }
 
 export default function History() {
-  const { data: apiTrades }       = useTradeJournal()
+  const { data: apiTrades, isLoading, isError } = useTradeJournal()
   const { data: explanationData } = useTradeExplanations(50)
   const trades: Trade[] = useMemo(() => apiTrades ?? [], [apiTrades])
 
@@ -111,9 +111,21 @@ export default function History() {
 
   return (
     <div className="min-h-screen bg-anchor-void px-4 pt-4 pb-24 md:pb-8 space-y-5">
+      {isLoading && (
+        <div className="bg-anchor-surface rounded-2xl p-8 text-center">
+          <p className="text-anchor-muted text-sm">Loading trade history…</p>
+        </div>
+      )}
+
+      {isError && !isLoading && (
+        <div className="bg-anchor-surface rounded-2xl p-8 text-center">
+          <p className="text-anchor-red text-sm">Trade history unavailable</p>
+          <p className="text-anchor-muted/50 text-xs mt-1">The dashboard could not load closed trades.</p>
+        </div>
+      )}
 
       {/* Monthly summary — horizontal scroll */}
-      {monthlyStats.length > 0 && (
+      {!isLoading && !isError && monthlyStats.length > 0 && (
         <div>
           <p className="text-anchor-muted text-xs mb-3 px-1">Monthly Summary</p>
           <div className="flex gap-3 overflow-x-auto pb-1 -mx-4 px-4" style={{ scrollbarWidth: 'none' }}>
@@ -138,12 +150,12 @@ export default function History() {
       )}
 
       {/* Trade list grouped by day */}
-      {grouped.length === 0 ? (
+      {!isLoading && !isError && grouped.length === 0 ? (
         <div className="bg-anchor-surface rounded-2xl p-8 text-center">
           <p className="text-anchor-muted text-sm">No trades yet</p>
           <p className="text-anchor-muted/50 text-xs mt-1">Your trade history will appear here</p>
         </div>
-      ) : (
+      ) : !isLoading && !isError && (
         <div className="space-y-4">
           {grouped.map(([day, { trades: dayTrades }]) => (
             <div key={day} className="bg-anchor-surface rounded-2xl px-4 py-1">

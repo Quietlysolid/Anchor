@@ -87,7 +87,11 @@ def run_regime_detection(self):
             repo = MarketDataRepository(session)
             for instrument in settings.instruments:
                 try:
-                    rows = await repo.get_latest_n_candles(instrument, "D", 300)
+                    # Use full daily history (up to 3000 rows ≈ 8 years) so the HMM
+                    # sees diverse regimes: 2018-19 ranging, 2020 COVID vol, 2021-22 USD
+                    # sustained trend, 2023-24 mixed.  300 rows (~1.2yr) produced near-
+                    # identical RANGING/TRENDING means because it only captured one regime.
+                    rows = await repo.get_latest_n_candles(instrument, "D", 3000)
                     if len(rows) < 60:
                         logger.warning("regime_insufficient_data", instrument=instrument, rows=len(rows))
                         continue
@@ -159,6 +163,7 @@ def startup_diagnostics(self):
         from pathlib import Path
         from anchor.config import settings
         from anchor.database.engine import init_db
+        from anchor.database.repositories.events import SystemEventRepository
         from anchor.execution.broker_client import BrokerClient
         from anchor.utils.time_utils import utcnow, get_session_name
         from anchor.signals.session_filter import check_session
@@ -210,14 +215,47 @@ def startup_diagnostics(self):
 
         # ── Redis connectivity ─────────────────────────────────────────────
         redis_ok = False
+        redis_features = {}
         try:
             import redis.asyncio as aioredis
             rc = aioredis.from_url(settings.redis_url, decode_responses=True)
             await rc.ping()
             redis_ok = True
+            for key in ("fred_rate_diff", "dxy_data", "vix_data", "cross_asset_risk", "cot_data"):
+                redis_features[key] = bool(await rc.get(key))
             await rc.aclose()
         except Exception:
             redis_ok = False
+            redis_features = {k: False for k in ("fred_rate_diff", "dxy_data", "vix_data", "cross_asset_risk", "cot_data")}
+
+        # Model expectations should match the live thesis, not every dormant engine.
+        # Trend/MR are disabled in production; LCR can use HMM when available but does
+        # not require XGB or OOD models to trade correctly.
+        required_model_pairs = {}
+        for inst, status in model_status.items():
+            if not isinstance(status, dict):
+                continue
+
+            required = {}
+            if settings.enable_trend_engine:
+                required["xgb"] = status["xgb"]
+                required["ood"] = status["ood"]
+                required["hmm"] = status["hmm"]
+            elif settings.enable_mr_engine:
+                required["hmm"] = status["hmm"]
+
+            if required and not all(required.values()):
+                required_model_pairs[inst] = required
+
+        missing_redis_keys = [key for key, present in redis_features.items() if not present]
+        severity = "WARN" if required_model_pairs or missing_redis_keys or not redis_ok else "INFO"
+        message_parts = []
+        if required_model_pairs:
+            message_parts.append(f"missing_required_models={len(required_model_pairs)}")
+        if missing_redis_keys:
+            message_parts.append(f"missing_redis_keys={','.join(missing_redis_keys)}")
+        if not message_parts:
+            message_parts.append("startup diagnostics clean")
 
         logger.info(
             "startup_diagnostics",
@@ -229,9 +267,27 @@ def startup_diagnostics(self):
             candle_counts=candle_counts,
             models=model_status,
             redis_ok=redis_ok,
+            redis_features=redis_features,
             oanda_key_set=bool(settings.oanda_api_key),
             fred_key_set=bool(settings.fred_api_key),
         )
+
+        async with _db_engine.AsyncSessionFactory() as session:
+            await SystemEventRepository(session).insert(
+                event_type="STARTUP_DIAGNOSTICS",
+                severity=severity,
+                component="ENGINE",
+                message="; ".join(message_parts),
+                metadata={
+                    "account": account_info,
+                    "candle_counts": candle_counts,
+                    "models": model_status,
+                    "required_models": required_model_pairs,
+                    "redis_ok": redis_ok,
+                    "redis_features": redis_features,
+                },
+            )
+            await session.commit()
 
     try:
         _run_async(_inner())

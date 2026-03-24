@@ -10,7 +10,14 @@ function formatPair(raw: string) {
 }
 
 export function RolloutCard({ config }: Props) {
-  if (!config) return null
+  if (!config) {
+    return (
+      <div className="rounded-2xl bg-anchor-surface p-5 space-y-2">
+        <p className="text-anchor-muted text-xs">What's trading right now</p>
+        <p className="text-anchor-red text-sm">Rollout configuration unavailable.</p>
+      </div>
+    )
+  }
 
   const liveEngines: string[] = []
   const pausedEngines: string[] = []
@@ -22,7 +29,7 @@ export function RolloutCard({ config }: Props) {
   if (config.lcr.enabled)            liveEngines.push('London Close Reversal')
   else                                pausedEngines.push('London Close Reversal')
 
-  const pairs = config.instruments.filter(i => i !== 'GBP_USD')
+  const pairs = config.instruments
 
   return (
     <div className="rounded-2xl bg-anchor-surface p-5 space-y-4">

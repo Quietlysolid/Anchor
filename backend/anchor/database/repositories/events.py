@@ -67,13 +67,21 @@ class EconomicCalendarRepository:
         self.session = session
 
     async def insert_many(self, events: List[EconomicEvent]) -> int:
-        """Insert events, skipping duplicates on (event_time, currency, event_name)."""
+        """Insert events and update existing rows when released values arrive.
+
+        ForexFactory rows are often seen twice:
+          1. before release, with time/title but missing actual/forecast
+          2. after release, with the same identity and populated values
+
+        Pure duplicate-skipping leaves the DB permanently stuck with empty release
+        fields, which breaks all event-conditioned research and surprise logic.
+        """
         if not events:
             return 0
 
         keys = [(e.event_time, e.currency, e.event_name) for e in events]
         existing = await self.session.execute(
-            select(EconomicEvent.event_time, EconomicEvent.currency, EconomicEvent.event_name)
+            select(EconomicEvent)
             .where(
                 tuple_(
                     EconomicEvent.event_time,
@@ -82,16 +90,35 @@ class EconomicCalendarRepository:
                 ).in_(keys)
             )
         )
-        existing_keys = {(r.event_time, r.currency, r.event_name) for r in existing}
+        existing_rows = {
+            (row.event_time, row.currency, row.event_name): row
+            for row in existing.scalars().all()
+        }
 
-        new_events = [
-            e for e in events
-            if (e.event_time, e.currency, e.event_name) not in existing_keys
-        ]
-        if new_events:
-            self.session.add_all(new_events)
+        changed = 0
+        for event in events:
+            key = (event.event_time, event.currency, event.event_name)
+            current = existing_rows.get(key)
+            if current is None:
+                self.session.add(event)
+                changed += 1
+                continue
+
+            row_changed = False
+            for attr in ("impact", "forecast", "previous", "actual"):
+                incoming = getattr(event, attr)
+                if incoming in (None, ""):
+                    continue
+                if getattr(current, attr) != incoming:
+                    setattr(current, attr, incoming)
+                    row_changed = True
+
+            if row_changed:
+                changed += 1
+
+        if changed:
             await self.session.flush()
-        return len(new_events)
+        return changed
 
     async def get_upcoming(
         self, start: datetime, end: datetime, impact: Optional[str] = None

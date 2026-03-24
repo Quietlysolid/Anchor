@@ -35,7 +35,7 @@ settings = get_settings()
 
 
 async def _reconcile_account(stream_client: OANDAStreamClient, redis_client=None) -> None:
-    """Poll OANDA REST API every 60s — update balance/equity and broadcast positions via WS."""
+    """Poll OANDA REST API every 30s — update balance/equity and broadcast positions via WS."""
     from oandapyV20 import API
     from oandapyV20.endpoints.accounts import AccountDetails
     from anchor.utils.time_utils import utcnow

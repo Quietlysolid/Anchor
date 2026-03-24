@@ -61,9 +61,9 @@ class ForexFactoryScraper:
             return []
 
         await asyncio.sleep(5)  # polite delay
-        return self._parse(resp.text)
+        return self._parse(resp.text, anchor_date=for_date)
 
-    def _parse(self, html: str) -> List[EconomicEvent]:
+    def _parse(self, html: str, anchor_date: Optional[date] = None) -> List[EconomicEvent]:
         soup = BeautifulSoup(html, "lxml")
         table = soup.find("table", class_="calendar__table")
         if not table:
@@ -83,9 +83,14 @@ class ForexFactoryScraper:
                     text = date_cell.get_text(strip=True)
                     # Insert space between weekday abbrev and month if missing
                     text = _re.sub(r'^([A-Za-z]{3})([A-Za-z])', r'\1 \2', text)
-                    current_date = datetime.strptime(
-                        f"{text} {datetime.now().year}", "%a %b %d %Y"
-                    ).date()
+                    base_year = anchor_date.year if anchor_date else datetime.now().year
+                    parsed = datetime.strptime(f"{text} {base_year}", "%a %b %d %Y").date()
+                    if anchor_date:
+                        if anchor_date.month == 12 and parsed.month == 1:
+                            parsed = parsed.replace(year=base_year + 1)
+                        elif anchor_date.month == 1 and parsed.month == 12:
+                            parsed = parsed.replace(year=base_year - 1)
+                    current_date = parsed
                 except ValueError:
                     pass
 

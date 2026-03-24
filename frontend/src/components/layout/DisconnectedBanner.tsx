@@ -9,7 +9,7 @@ export function DisconnectedBanner({ visible, onDismiss }: Props) {
   return (
     <div className="fixed top-0 left-0 right-0 z-50 flex items-center justify-center gap-3 px-4 py-2 bg-anchor-red/90 backdrop-blur-sm text-white text-xs font-mono">
       <span className="animate-glow-pulse">●</span>
-      <span>Reconnecting to Anchor...</span>
+      <span>Live updates disconnected. Reconnecting...</span>
       {onDismiss && (
         <button
           type="button"

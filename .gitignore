@@ -19,5 +19,8 @@ frontend/dist/
 *.log
 *.db
 backend/data/
+backend/anchor/backtesting/validation_artifacts/
+data/cot_cache/
+data/models/
 .DS_Store
 Thumbs.db

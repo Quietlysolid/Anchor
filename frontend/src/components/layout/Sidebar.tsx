@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { Home, Clock, Radio, PanelLeftClose, PanelLeftOpen, X } from 'lucide-react'
 import { StatusDot } from '../ui/StatusDot'
-import { useSystemStore } from '../../store'
+import { useSystemHealth } from '../../api/hooks'
 
 // The Anchor mark — custom, not from any library
 function AnchorMark({ size = 20, className = '' }: { size?: number; className?: string }) {
@@ -27,7 +27,16 @@ interface Props { onClose?: () => void }
 
 export function Sidebar({ onClose }: Props) {
   const [collapsed, setCollapsed] = useState(false)
-  const { wsConnected } = useSystemStore()
+  const { data: health, isLoading, isError } = useSystemHealth()
+
+  const healthConnected = health?.status === 'ok' && health.stream_connected
+  const footerLabel = isLoading
+    ? 'Checking'
+    : isError || !health
+      ? 'Unknown'
+      : healthConnected
+        ? 'Running'
+        : 'Degraded'
 
   return (
     <aside className={`
@@ -98,10 +107,12 @@ export function Sidebar({ onClose }: Props) {
         flex ${collapsed ? 'flex-col items-center gap-3' : 'items-center justify-between'}
       `}>
         <div className={`flex items-center gap-2 ${collapsed ? 'flex-col gap-1.5' : ''}`}>
-          <StatusDot connected={wsConnected} />
+          <StatusDot connected={healthConnected} />
           {!collapsed && (
-            <span className={`text-[11px] font-mono ${wsConnected ? 'text-anchor-green' : 'text-anchor-red'}`}>
-              {wsConnected ? 'Live' : 'Offline'}
+            <span className={`text-[11px] font-mono ${
+              isLoading ? 'text-anchor-muted' : healthConnected ? 'text-anchor-green' : 'text-anchor-red'
+            }`}>
+              {footerLabel}
             </span>
           )}
         </div>

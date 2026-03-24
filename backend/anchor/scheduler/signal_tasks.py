@@ -1,4 +1,4 @@
-"""Signal scan task: London trend, M15, mean-reversion, and LCR evaluation + execution."""
+"""Signal scan task: London trend, M15, fix continuation, mean-reversion, and LCR evaluation + execution."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -50,10 +50,19 @@ def run_signal_scan(self):
         from anchor.database.repositories.market_data import MarketDataRepository
         from anchor.database.repositories.orders import OrderRepository
         from anchor.database.repositories.positions import PositionRepository
+        from anchor.database.repositories.signals import SignalRepository
         from anchor.database.models import Signal as SignalModel
         from anchor.signals.engine import ConfluenceEngine
+        from anchor.signals.fix_continuation import FixContinuationEngine, FIX_SESSION
+        from anchor.signals.macro_state_overlay import get_macro_state_overlay
         from anchor.signals.mean_reversion_engine import MeanReversionEngine
+        from anchor.signals.nfp_continuation import (
+            NFP_SESSION,
+            NfpContinuationEngine,
+            fetch_recent_nfp_bundle,
+        )
         from anchor.signals.news_filter import NewsFilter
+        from anchor.signals.positioning_overlay import get_cot_positioning_overlay
         from anchor.database.repositories import EconomicCalendarRepository
         from anchor.execution.broker_client import BrokerClient
         from anchor.execution.order_manager import OrderManager
@@ -74,6 +83,10 @@ def run_signal_scan(self):
         # Sync Redis client for FeatureEngineer (called in executor thread, not async)
         sync_redis = redis.Redis.from_url(settings.redis_url, decode_responses=True)
         active_instruments = settings.instruments
+        trend_instruments = settings.trend_instruments
+        fix_instruments = settings.fix_instruments
+        nfp_instruments = settings.nfp_instruments
+        scan_instruments = sorted(set(active_instruments) | set(fix_instruments) | set(nfp_instruments) | set(trend_instruments))
 
         broker = BrokerClient()
         sizer = PositionSizer()
@@ -86,11 +99,14 @@ def run_signal_scan(self):
         balance = float(account.get("balance", 0))
         equity  = float(account.get("NAV", balance))
 
-        # Bootstrap peak equity from DB on the first scan after a worker restart
-        # so the drawdown circuit breaker doesn't silently reset to the current equity.
-        if drawdown_monitor._peak_equity is None:
+        # Bootstrap durable risk state from DB on the first scan after a worker restart
+        # so drawdown / monthly circuit breakers don't silently reset.
+        if drawdown_monitor._peak_equity is None or drawdown_monitor._month_start_equity is None:
             async with _db_engine.AsyncSessionFactory() as _bootstrap_session:
-                await drawdown_monitor.bootstrap_peak_equity(_bootstrap_session)
+                if drawdown_monitor._peak_equity is None:
+                    await drawdown_monitor.bootstrap_peak_equity(_bootstrap_session)
+                if drawdown_monitor._month_start_equity is None:
+                    await drawdown_monitor.bootstrap_month_state(_bootstrap_session, current_equity=equity)
 
         drawdown_monitor.update(equity)
 
@@ -146,7 +162,7 @@ def run_signal_scan(self):
         feature_engineer = FeatureEngineer(redis_client=sync_redis)
         _classifiers: dict = {}
         _ood_detectors: dict = {}
-        for _inst in active_instruments:
+        for _inst in trend_instruments:
             _clf = XGBDirectionClassifier()
             _model_path = _Path("/app/models") / f"{_inst}_xgb.pkl"
             if _clf.load(_model_path):
@@ -167,7 +183,7 @@ def run_signal_scan(self):
             order_repo_pre = OrderRepository(session)
 
             daily_closes = {}
-            for inst in active_instruments:
+            for inst in trend_instruments:
                 rows = await market_repo.get_latest_n_candles(inst, "D", 250)
                 if len(rows) >= 2:
                     daily_closes[inst] = pd.Series(
@@ -190,7 +206,7 @@ def run_signal_scan(self):
         # Falls back to the shared "hmm_latest.pkl" if the per-instrument file is missing,
         # and to no HMM at all (engine skips the gate) if neither file exists.
         _hmm_detectors: dict = {}
-        for _inst in active_instruments:
+        for _inst in trend_instruments:
             _per_inst_path  = _HMMPath("/app/models") / f"hmm_{_inst}.pkl"
             _fallback_path  = _HMMPath("/app/models/hmm_latest.pkl")
             _det = HMMRegimeDetector()
@@ -222,6 +238,21 @@ def run_signal_scan(self):
             hmm_detector=None,  # set per-instrument in the loop below
         )
 
+        # London benchmark-fix continuation engine: paper-only sleeve for now.
+        fix_engine = FixContinuationEngine(
+            news_filter=news_filter,
+            spread_monitor=_spread_monitor,
+            drawdown_monitor=drawdown_monitor,
+        )
+        nfp_engine = NfpContinuationEngine()
+        recent_nfp_bundle = None
+        if settings.enable_nfp_engine:
+            try:
+                async with _db_engine.AsyncSessionFactory() as _nfp_bundle_session:
+                    recent_nfp_bundle = await fetch_recent_nfp_bundle(_nfp_bundle_session, now)
+            except Exception as _nfp_bundle_exc:
+                logger.warning("nfp_bundle_fetch_failed", error=str(_nfp_bundle_exc))
+
         # London Close Reversal engine: NY session (17:00–19:59 UTC), EUR/GBP/JPY only
         from anchor.signals.london_close_reversion import LondonCloseReversionEngine, LCR_INSTRUMENTS
         lcr_engine = LondonCloseReversionEngine(
@@ -237,9 +268,9 @@ def run_signal_scan(self):
 
         # Evaluate + persist each instrument in its own isolated session
         # so one DB error doesn't poison the others
-        for instrument in active_instruments:
+        for instrument in scan_instruments:
             try:
-                if settings.enable_trend_engine:
+                if settings.enable_trend_engine and instrument in trend_instruments:
                     async with _db_engine.AsyncSessionFactory() as session:
                         market_repo   = MarketDataRepository(session)
                         order_repo    = OrderRepository(session)
@@ -271,6 +302,26 @@ def run_signal_scan(self):
                             engine.ood_detector = _ood_detectors.get(instrument)
     
                         result = await engine.evaluate(instrument, dt=now)
+
+                        if result.direction:
+                            _macro_overlay = await get_macro_state_overlay(
+                                redis_client, instrument, result.direction
+                            )
+                            result.metadata["macro_state_overlay"] = _macro_overlay.to_metadata()
+                            if _macro_overlay.veto and not result.suppressed:
+                                result.suppressed = True
+                                result.suppression_reason = f"MACRO_STATE_VETO:{_macro_overlay.regime}"
+
+                            _pos_overlay = await get_cot_positioning_overlay(
+                                redis_client, instrument, result.direction
+                            )
+                            result.metadata["positioning_overlay"] = _pos_overlay.to_metadata()
+                            if _pos_overlay.veto and not result.suppressed:
+                                result.suppressed = True
+                                result.suppression_reason = f"COT_POSITIONING_VETO:{_pos_overlay.regime}"
+                        else:
+                            _macro_overlay = None
+                            _pos_overlay = None
     
                         # Log component breakdown for every in-session evaluation so we
                         # can diagnose exactly which gate is blocking each instrument.
@@ -335,6 +386,8 @@ def run_signal_scan(self):
                                     "mtf_score":             float(result.mtf_score)       if result.mtf_score       is not None else None,
                                     "csi_score":             float(result.csi_score)       if result.csi_score       is not None else None,
                                     "cot_score":             float(meta["cot_score"])             if meta.get("cot_score")             is not None else None,
+                                    "macro_state_overlay":   meta.get("macro_state_overlay"),
+                                    "positioning_overlay":   meta.get("positioning_overlay"),
                                     "rate_divergence_score": float(meta["rate_divergence_score"]) if meta.get("rate_divergence_score") is not None else None,
                                     "order_book_score":      float(meta["order_book_score"])      if meta.get("order_book_score")      is not None else None,
                                     "cme_flow_score":        float(meta["cme_flow_score"])        if meta.get("cme_flow_score")        is not None else None,
@@ -381,7 +434,7 @@ def run_signal_scan(self):
     
                                         # Fetch recent trades for context
                                         from sqlalchemy import text as _sqlt
-                                        from anchor.database.engine import AsyncSessionLocal as _ASL
+                                        from anchor.database.engine import AsyncSessionFactory as _ASL
                                         _recent_trades: list[dict] = []
                                         try:
                                             async with _ASL() as _s:
@@ -512,6 +565,13 @@ def run_signal_scan(self):
                             session_scale=_session_size_scale,
                             rolling_score_scale=_rolling_score_scale,
                             regime_scale=_regime_size_scale(result.regime_state, "trend"),
+                            positioning_scale=(
+                                float((result.metadata or {}).get("positioning_overlay", {}).get("multiplier", 1.0))
+                                if result.metadata else 1.0
+                            ) * (
+                                float((result.metadata or {}).get("macro_state_overlay", {}).get("multiplier", 1.0))
+                                if result.metadata else 1.0
+                            ),
                         )
     
                         # 7. Submit limit order (GTD — expires in 4 hours if not filled)
@@ -562,7 +622,7 @@ def run_signal_scan(self):
             # re-enabling is a one-line config change (enable_mr_engine = True in config.py).
             # Do not re-enable without a new production-faithful backtest showing OOS PF > 1.15.
             try:
-                if settings.enable_mr_engine:
+                if settings.enable_mr_engine and instrument in trend_instruments:
                     async with _db_engine.AsyncSessionFactory() as mr_session:
                         mr_market_repo = MarketDataRepository(mr_session)
                         mr_order_repo    = OrderRepository(mr_session)
@@ -668,13 +728,252 @@ def run_signal_scan(self):
             except Exception as exc:
                 logger.error("mr_scan_instrument_failed", instrument=instrument, error=str(exc))
 
+            # ── London benchmark-fix continuation scan (paper-only sleeve) ──
+            try:
+                if settings.enable_fix_engine and instrument in set(fix_instruments):
+                    async with _db_engine.AsyncSessionFactory() as fix_session:
+                        fix_market_repo = MarketDataRepository(fix_session)
+                        fix_signal_repo = SignalRepository(fix_session)
+                        news_filter.calendar_repo = EconomicCalendarRepository(fix_session)
+
+                        fix_h1 = await fix_market_repo.get_latest_n_candles(instrument, "H1", 80)
+                        if len(fix_h1) < 30:
+                            logger.debug("fix_scan_insufficient_data", instrument=instrument)
+                            await fix_session.commit()
+                        else:
+                            fix_engine.update_cache(instrument, "H1", to_df(fix_h1))
+                            fix_result = await fix_engine.evaluate(instrument, dt=now)
+                            if fix_result.direction:
+                                _fix_macro_overlay = await get_macro_state_overlay(
+                                    redis_client, instrument, fix_result.direction
+                                )
+                                fix_result.metadata["macro_state_overlay"] = _fix_macro_overlay.to_metadata()
+                                _fix_pos_overlay = await get_cot_positioning_overlay(
+                                    redis_client, instrument, fix_result.direction
+                                )
+                                fix_result.metadata["positioning_overlay"] = _fix_pos_overlay.to_metadata()
+                            else:
+                                _fix_macro_overlay = None
+                                _fix_pos_overlay = None
+
+                            _in_fix_window = not fix_result.suppressed or not (
+                                (fix_result.suppression_reason or "").startswith("FIX_OFF_WINDOW:")
+                                or fix_result.suppression_reason == f"FIX_INSTRUMENT_EXCLUDED:{instrument}"
+                            )
+                            (logger.info if _in_fix_window else logger.debug)(
+                                "fix_signal_evaluated",
+                                instrument=instrument,
+                                suppressed=fix_result.suppressed,
+                                reason=fix_result.suppression_reason,
+                                confluence=fix_result.confluence_score,
+                                direction=fix_result.direction,
+                                session=fix_result.session,
+                                pre_move_pips=fix_result.pre_move_pips,
+                            )
+
+                            fix_meta = fix_result.metadata or {}
+                            fix_row = SignalModel(
+                                instrument=instrument,
+                                timeframe="H1",
+                                direction=fix_result.direction or "LONG",
+                                confluence_score=fix_result.confluence_score,
+                                rsi_score=fix_result.move_score,
+                                bb_kc_score=None,
+                                adx_score=fix_result.atr_score,
+                                sr_score=None,
+                                mtf_score=None,
+                                csi_score=None,
+                                ml_confidence=None,
+                                regime_state=None,
+                                session=fix_result.session,
+                                suppressed=fix_result.suppressed,
+                                suppression_reason=fix_result.suppression_reason,
+                                signal_metadata=fix_meta,
+                            )
+                            fix_session.add(fix_row)
+                            await fix_session.flush()
+
+                            try:
+                                await redis_client.publish("signals", json.dumps({
+                                    "channel": "signals",
+                                    "data": {
+                                        "id":                 str(fix_row.id),
+                                        "created_at":         fix_row.created_at.isoformat() if fix_row.created_at else None,
+                                        "instrument":         instrument,
+                                        "timeframe":          "H1",
+                                        "direction":          fix_result.direction,
+                                        "confluence_score":   float(fix_result.confluence_score),
+                                        "rsi_score":          float(fix_result.move_score) if fix_result.move_score is not None else None,
+                                        "bb_kc_score":        None,
+                                        "adx_score":          float(fix_result.atr_score) if fix_result.atr_score is not None else None,
+                                        "sr_score":           None,
+                                        "mtf_score":          None,
+                                        "csi_score":          None,
+                                        "ml_confidence":      None,
+                                        "regime_state":       None,
+                                        "session":            fix_result.session,
+                                        "suppressed":         fix_result.suppressed,
+                                        "suppression_reason": fix_result.suppression_reason,
+                                        "pre_move_pips":      fix_result.pre_move_pips,
+                                        "fix_time_utc":       fix_meta.get("fix_time_utc"),
+                                        "month_end_tag":      fix_meta.get("month_end_tag"),
+                                        "macro_state_overlay": fix_meta.get("macro_state_overlay"),
+                                        "positioning_overlay": fix_meta.get("positioning_overlay"),
+                                    },
+                                }))
+                            except Exception as _ws_exc:
+                                logger.warning("fix_ws_publish_failed", error=str(_ws_exc))
+
+                            if not fix_result.suppressed:
+                                _fix_session_start = now.replace(minute=0, second=0, microsecond=0)
+                                _prior_fix_count = await fix_signal_repo.count_session_signals(
+                                    instrument=instrument,
+                                    session=FIX_SESSION,
+                                    session_start=_fix_session_start,
+                                    exclude_id=fix_row.id,
+                                )
+                                if _prior_fix_count > 0:
+                                    logger.info(
+                                        "fix_session_cap_skip",
+                                        instrument=instrument,
+                                        prior_signals=_prior_fix_count,
+                                        session_start=_fix_session_start.isoformat(),
+                                    )
+                                elif settings.fix_paper_only:
+                                    logger.info(
+                                        "fix_signal_paper_only",
+                                        instrument=instrument,
+                                        direction=fix_result.direction,
+                                        pre_move_pips=fix_result.pre_move_pips,
+                                        month_end_tag=fix_meta.get("month_end_tag"),
+                                    )
+                                else:
+                                    logger.warning(
+                                        "fix_live_execution_not_implemented",
+                                        instrument=instrument,
+                                        direction=fix_result.direction,
+                                    )
+                            await fix_session.commit()
+                else:
+                    logger.debug("fix_engine_disabled_skipping", instrument=instrument)
+
+            except Exception as exc:
+                logger.error("fix_scan_instrument_failed", instrument=instrument, error=str(exc))
+
+            # ── NFP continuation scan (paper-only event sleeve) ───────────────
+            try:
+                if settings.enable_nfp_engine and instrument in set(nfp_instruments) and recent_nfp_bundle is not None:
+                    async with _db_engine.AsyncSessionFactory() as nfp_session:
+                        nfp_market_repo = MarketDataRepository(nfp_session)
+                        nfp_signal_repo = SignalRepository(nfp_session)
+
+                        nfp_h1 = await nfp_market_repo.get_latest_n_candles(instrument, "H1", 80)
+                        if len(nfp_h1) < 30:
+                            await nfp_session.commit()
+                        else:
+                            nfp_engine.update_cache(instrument, "H1", to_df(nfp_h1))
+                            nfp_result = nfp_engine.evaluate(instrument, recent_nfp_bundle, dt=now)
+                            if (
+                                nfp_result.suppressed
+                                and (
+                                    nfp_result.suppression_reason == "NFP_NO_RECENT_BUNDLE"
+                                    or (nfp_result.suppression_reason or "").startswith("NFP_OFF_WINDOW:")
+                                )
+                            ):
+                                await nfp_session.commit()
+                            else:
+                                nfp_meta = nfp_result.metadata or {}
+                                nfp_row = SignalModel(
+                                    instrument=instrument,
+                                    timeframe="H1",
+                                    direction=nfp_result.direction or "LONG",
+                                    confluence_score=nfp_result.confluence_score,
+                                    rsi_score=float(nfp_result.support_count),
+                                    bb_kc_score=None,
+                                    adx_score=float(nfp_result.surprise_mag) if nfp_result.surprise_mag is not None else None,
+                                    sr_score=float(nfp_result.conflict_count),
+                                    mtf_score=None,
+                                    csi_score=None,
+                                    ml_confidence=None,
+                                    regime_state=None,
+                                    session=nfp_result.session,
+                                    suppressed=nfp_result.suppressed,
+                                    suppression_reason=nfp_result.suppression_reason,
+                                    signal_metadata=nfp_meta,
+                                )
+                                nfp_session.add(nfp_row)
+                                await nfp_session.flush()
+
+                                try:
+                                    await redis_client.publish("signals", json.dumps({
+                                        "channel": "signals",
+                                        "data": {
+                                            "id": str(nfp_row.id),
+                                            "created_at": nfp_row.created_at.isoformat() if nfp_row.created_at else None,
+                                            "instrument": instrument,
+                                            "timeframe": "H1",
+                                            "direction": nfp_result.direction,
+                                            "confluence_score": float(nfp_result.confluence_score),
+                                            "rsi_score": float(nfp_result.support_count),
+                                            "adx_score": float(nfp_result.surprise_mag) if nfp_result.surprise_mag is not None else None,
+                                            "sr_score": float(nfp_result.conflict_count),
+                                            "session": nfp_result.session,
+                                            "suppressed": nfp_result.suppressed,
+                                            "suppression_reason": nfp_result.suppression_reason,
+                                            "agreement": nfp_meta.get("agreement"),
+                                            "surprise_bucket": nfp_meta.get("surprise_bucket"),
+                                            "event_time_utc": nfp_meta.get("event_time_utc"),
+                                            "expected_exit_time_utc": nfp_meta.get("expected_exit_time_utc"),
+                                        },
+                                    }))
+                                except Exception as _ws_exc:
+                                    logger.warning("nfp_ws_publish_failed", error=str(_ws_exc))
+
+                                if not nfp_result.suppressed:
+                                    _nfp_session_start = pd.Timestamp(nfp_meta["entry_time_utc"]).to_pydatetime().replace(
+                                        minute=0, second=0, microsecond=0
+                                    )
+                                    _prior_nfp_count = await nfp_signal_repo.count_session_signals(
+                                        instrument=instrument,
+                                        session=NFP_SESSION,
+                                        session_start=_nfp_session_start,
+                                        exclude_id=nfp_row.id,
+                                    )
+                                    if _prior_nfp_count > 0:
+                                        logger.info(
+                                            "nfp_session_cap_skip",
+                                            instrument=instrument,
+                                            prior_signals=_prior_nfp_count,
+                                            session_start=_nfp_session_start.isoformat(),
+                                        )
+                                    elif settings.nfp_paper_only:
+                                        logger.info(
+                                            "nfp_signal_paper_only",
+                                            instrument=instrument,
+                                            direction=nfp_result.direction,
+                                            agreement=nfp_result.agreement,
+                                            surprise_bucket=nfp_result.surprise_bucket,
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "nfp_live_execution_not_implemented",
+                                            instrument=instrument,
+                                            direction=nfp_result.direction,
+                                        )
+                                await nfp_session.commit()
+                else:
+                    logger.debug("nfp_engine_disabled_or_no_bundle", instrument=instrument)
+
+            except Exception as exc:
+                logger.error("nfp_scan_instrument_failed", instrument=instrument, error=str(exc))
+
             # ── M15 trend-following scan (same engine, shorter timeframe) ──
             # M15 uses H1 as the higher-timeframe confirmation (instead of H4+D).
             # This generates 3-4× more signals per day. Same confluence threshold (0.65).
             # SL/TP use M15 ATR — smaller in $ terms but same 1% risk sizing.
             # GTD 1 hour (M15 setups go stale much faster than H1).
             try:
-                if not settings.enable_m15_engine:
+                if not settings.enable_m15_engine or instrument not in trend_instruments:
                     continue
 
                 async with _db_engine.AsyncSessionFactory() as m15_session:
@@ -878,37 +1177,40 @@ def run_signal_scan(self):
                         reasons=_pair_status.reasons,
                     )
 
-                # ── EUR/JPY rolling 60-day PF circuit breaker ─────────────────
-                # Walk-forward showed EUR_JPY fails in non-JPY regimes (2018, 2019).
-                # If PF < 1.0 over the last 60 days, pause EUR_JPY LCR until it recovers.
-                if instrument == "EUR_JPY":
-                    try:
-                        from sqlalchemy import text as _text
-                        async with _db_engine.AsyncSessionFactory() as _cb_session:
-                            cutoff_60d = now - timedelta(days=60)
-                            _rows = (await _cb_session.execute(_text(
-                                "SELECT net_pl FROM trades "
-                                "WHERE instrument = 'EUR_JPY' "
-                                "AND closed_at >= :cutoff AND signal_id IS NOT NULL"
-                            ), {"cutoff": cutoff_60d})).fetchall()
-                        if len(_rows) >= 10:   # need at least 10 trades to judge
-                            _gross_win  = sum(r[0] for r in _rows if r[0] > 0)
-                            _gross_loss = abs(sum(r[0] for r in _rows if r[0] <= 0))
-                            _pf_60d     = _gross_win / _gross_loss if _gross_loss > 0 else float("inf")
-                            if _pf_60d < 1.0:
-                                logger.warning(
-                                    "eurjpy_circuit_breaker_active",
-                                    trades_60d=len(_rows),
-                                    pf_60d=round(_pf_60d, 3),
-                                )
-                                continue
-                    except Exception as _cb_exc:
-                        logger.debug("eurjpy_circuit_breaker_check_failed", error=str(_cb_exc))
+                # ── Per-pair rolling 60-day PF circuit breaker ────────────────
+                # Applies to all LCR pairs. A strategy can bleed slowly within
+                # the drawdown halt limit — this catches that case.
+                # Threshold: PF < 1.0 over last 60 days with >= 15 closed trades.
+                # Fewer than 15 trades → insufficient data, pass through.
+                try:
+                    from sqlalchemy import text as _text
+                    async with _db_engine.AsyncSessionFactory() as _cb_session:
+                        cutoff_60d = now - timedelta(days=60)
+                        _rows = (await _cb_session.execute(_text(
+                            "SELECT net_pl FROM trades "
+                            "WHERE instrument = :inst "
+                            "AND closed_at >= :cutoff AND signal_id IS NOT NULL"
+                        ), {"inst": instrument, "cutoff": cutoff_60d})).fetchall()
+                    if len(_rows) >= 15:
+                        _gross_win  = sum(r[0] for r in _rows if r[0] > 0)
+                        _gross_loss = abs(sum(r[0] for r in _rows if r[0] <= 0))
+                        _pf_60d     = _gross_win / _gross_loss if _gross_loss > 0 else float("inf")
+                        if _pf_60d < 1.0:
+                            logger.warning(
+                                "lcr_rolling_pf_circuit_breaker",
+                                instrument=instrument,
+                                trades_60d=len(_rows),
+                                pf_60d=round(_pf_60d, 3),
+                            )
+                            continue
+                except Exception as _cb_exc:
+                    logger.debug("lcr_rolling_pf_check_failed", instrument=instrument, error=str(_cb_exc))
 
                 try:
                     async with _db_engine.AsyncSessionFactory() as lcr_session:
                         lcr_market_repo   = MarketDataRepository(lcr_session)
                         lcr_order_repo    = OrderRepository(lcr_session)
+                        lcr_signal_repo   = SignalRepository(lcr_session)
                         lcr_order_manager = OrderManager(lcr_order_repo, broker, redis=redis_client)
                         news_filter.calendar_repo = EconomicCalendarRepository(lcr_session)
 
@@ -1119,27 +1421,45 @@ def run_signal_scan(self):
                             await lcr_session.commit()
                             continue
 
-                        # SL/TP computed inside LCR engine (london extreme + ATR buffer → london mid)
-                        # USD_CAD: reduced to 0.5% risk — live underperformance review 2026-03-23
-                        _lcr_risk_scale = 0.50 if instrument in {"USD_CAD"} else 1.0
-                        # Correlation scaling: EUR/GBP/AUD/NZD vs USD move together on DXY reversals.
-                        # If 2+ of those pairs already have open positions, cap new signals at 0.5%
-                        # to avoid treating three 1% bets as independent when they're one 3% USD bet.
-                        # USD_CAD and EUR_JPY are excluded — they have different structural drivers.
-                        # Count drops when positions close (current open count, not session peak).
-                        _DOLLAR_PAIRS_CORR = {"EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD"}
-                        if instrument in _DOLLAR_PAIRS_CORR:
-                            _open_dollar_count = sum(
-                                1 for p in open_positions if p.instrument in _DOLLAR_PAIRS_CORR
+                        # One-signal-per-instrument-per-session cap.
+                        # LCR can produce a signal at 17:00, 18:00, and 19:00 on the same pair
+                        # using the same London range and the same directional thesis.
+                        # A second attempt after the first has already fired is not an independent
+                        # trade — it's averaging down on a failed setup. Cap at 1.
+                        _lcr_session_start = now.replace(hour=17, minute=0, second=0, microsecond=0)
+                        _prior_lcr_count = await lcr_signal_repo.count_lcr_session_signals(
+                            instrument, _lcr_session_start, exclude_id=lcr_row.id
+                        )
+                        if _prior_lcr_count > 0:
+                            logger.info(
+                                "lcr_session_cap_skip",
+                                instrument=instrument,
+                                prior_signals=_prior_lcr_count,
+                                session_start=_lcr_session_start.isoformat(),
                             )
-                            if _open_dollar_count >= 2:
-                                _lcr_risk_scale = 0.5
-                                logger.info(
-                                    "lcr_correlation_scale_applied",
-                                    instrument=instrument,
-                                    open_dollar_positions=_open_dollar_count,
-                                    risk_scale=_lcr_risk_scale,
-                                )
+                            await lcr_session.commit()
+                            continue
+
+                        # SL/TP computed inside LCR engine (london extreme + ATR buffer → london mid)
+                        # USD_CAD: reduced to 0.5% risk — live underperformance review 2026-03-23.
+                        # This is a pair-specific underperformance penalty, not a correlation adjustment.
+                        _lcr_risk_scale = 0.50 if instrument in {"USD_CAD"} else 1.0
+                        # Continuous correlation scaling: use the live 45-day correlation matrix to
+                        # compute how much independent risk the new position actually adds.
+                        # scale = max(0.35, 1.0 - max_effective_overlap) where
+                        # effective_overlap = corr × direction_alignment with each open position.
+                        # Replaces the previous binary 2-open-dollar-pairs → 0.5x rule.
+                        # Passed as correlation_scale (separate parameter) so it's tracked independently.
+                        _corr_scale = correlation_mgr.compute_scale_factor(
+                            instrument, lcr_result.direction, effective_open
+                        )
+                        if _corr_scale < 1.0:
+                            logger.info(
+                                "lcr_correlation_scale_applied",
+                                instrument=instrument,
+                                direction=lcr_result.direction,
+                                correlation_scale=round(_corr_scale, 3),
+                            )
                         # DXY scaling: strong USD momentum (|5d change| > 1.5%) reduces LCR size
                         # on USD pairs by 30% — mean reversion less reliable during macro trends
                         _USD_PAIRS = {"EUR_USD", "GBP_USD", "NZD_USD", "USD_CAD", "AUD_USD"}
@@ -1162,6 +1482,7 @@ def run_signal_scan(self):
                             entry_price=lcr_result.entry_price,
                             stop_loss=lcr_result.stop_loss,
                             risk_pct_override=settings.lcr_risk_pct,
+                            correlation_scale=_corr_scale,
                             drawdown_scale=drawdown_monitor.scale_factor * _lcr_risk_scale,
                             session_scale=_session_size_scale,
                             rolling_score_scale=_rolling_score_scale,

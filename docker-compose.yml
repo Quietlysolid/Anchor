@@ -51,6 +51,7 @@ services:
     volumes:
       - mlflow_artifacts:/app/mlflow_artifacts
       - ./data:/app/data
+      - ./data/models:/app/models
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -76,6 +77,7 @@ services:
     volumes:
       - mlflow_artifacts:/app/mlflow_artifacts
       - ./data:/app/data
+      - ./data/models:/app/models
 
   celery_beat:
     build:
@@ -92,6 +94,7 @@ services:
     command: celery -A anchor.scheduler.celery_app beat --loglevel=info --scheduler celery.beat:PersistentScheduler
     volumes:
       - mlflow_artifacts:/app/mlflow_artifacts
+      - ./data/models:/app/models
 
   mlflow:
     build:
@@ -127,6 +130,8 @@ services:
     environment:
       - SERVICE_NAME=watchdog
     command: python -m anchor.monitoring.watchdog
+    volumes:
+      - ./data/models:/app/models
 
   frontend:
     build:

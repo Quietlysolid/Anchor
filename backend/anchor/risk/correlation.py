@@ -35,7 +35,7 @@ class CorrelationManager:
         if len(returns) < 2:
             return
 
-        df = pd.DataFrame(returns).dropna()
+        df = pd.DataFrame(returns).dropna().tail(LOOKBACK_DAYS)
         self._matrix = df.corr()
         logger.debug("correlation_matrix_updated", pairs=list(returns.keys()))
 
@@ -73,6 +73,58 @@ class CorrelationManager:
                 return False, f"CORRELATED_WITH_{other_instrument}:{corr:.2f}"
 
         return True, None
+
+    def compute_scale_factor(
+        self,
+        instrument: str,
+        direction: str,
+        open_positions: list,
+        floor: float = 0.35,
+    ) -> float:
+        """
+        Continuous position-size scale factor based on correlation overlap.
+
+        For each open position, computes effective_overlap = corr × direction_alignment.
+        scale = max(floor, 1.0 - max_effective_overlap)
+
+        Examples (floor=0.35):
+          EUR_USD LONG, NZD_USD LONG open (corr=0.85) → scale = max(0.35, 1-0.85) = 0.35
+          EUR_USD LONG, NZD_USD SHORT open (corr=0.85) → overlap=-0.85, ignored → scale = 1.0
+          EUR_USD LONG, NZD_USD LONG open (corr=0.55) → scale = max(0.35, 1-0.55) = 0.45
+          no correlated open positions → scale = 1.0
+
+        Returns 1.0 when matrix is unavailable (fail-open).
+        """
+        if self._matrix is None or instrument not in self._matrix.index:
+            return 1.0
+
+        new_dir = 1 if direction == "LONG" else -1
+        max_overlap = 0.0
+
+        for pos in open_positions:
+            other = pos.instrument
+            if other == instrument or other not in self._matrix.columns:
+                continue
+
+            corr = float(self._matrix.loc[instrument, other])
+            # Handle both Direction enum and plain string
+            _pos_dir_str = pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction)
+            pos_dir = 1 if _pos_dir_str == "LONG" else -1
+
+            effective_overlap = corr * new_dir * pos_dir
+            if effective_overlap > max_overlap:
+                max_overlap = effective_overlap
+
+        scale = max(floor, 1.0 - max_overlap)
+        if scale < 1.0:
+            logger.debug(
+                "correlation_scale_computed",
+                instrument=instrument,
+                direction=direction,
+                max_overlap=round(max_overlap, 3),
+                scale=round(scale, 3),
+            )
+        return scale
 
     def get_correlation(self, instrument_a: str, instrument_b: str) -> float | None:
         if self._matrix is None:

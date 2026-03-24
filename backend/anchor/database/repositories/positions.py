@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Optional
 from uuid import UUID
@@ -57,18 +57,6 @@ class PositionRepository:
             position.unrealized_pl = unrealized_pl
             await self.session.flush()
 
-    async def close_position(
-        self,
-        position_id: UUID,
-        exit_price: float,
-        unrealized_pl: float,
-    ) -> None:
-        position = await self.get_by_id(position_id)
-        if position:
-            position.status = PositionStatus.CLOSED
-            position.unrealized_pl = unrealized_pl
-            await self.session.flush()
-
     # ── Methods called by Reconciler ──────────────────────────────────────────
 
     async def get_open_positions(self) -> List[Position]:
@@ -99,7 +87,7 @@ class PositionRepository:
 
         # Resolve close_reason to SL or TP by comparing exit price to stored levels
         resolved_reason = close_reason
-        if close_reason in ("TP_SL", "SL_TP_OR_MANUAL") and exit_price is not None:
+        if close_reason == "SL_TP_OR_MANUAL" and exit_price is not None:
             ep = float(exit_price)
             sl = float(position.stop_loss)   if position.stop_loss   else None
             tp = float(position.take_profit) if position.take_profit else None
@@ -167,16 +155,26 @@ class PositionRepository:
 
     async def create_from_broker_trade(self, broker_trade: dict, signal_id=None) -> Position:
         """Reconstruct a Position from an OANDA trade dict (for crash recovery)."""
+        open_time_raw = broker_trade.get("openTime")
+        opened_at = utcnow()
+        if open_time_raw:
+            try:
+                opened_at = datetime.fromisoformat(open_time_raw.replace("Z", "+00:00"))
+            except ValueError:
+                opened_at = utcnow()
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=timezone.utc)
+
         position = Position(
             instrument=broker_trade.get("instrument", "UNKNOWN"),
-            direction="LONG" if float(broker_trade.get("currentUnits", 0)) > 0 else "SHORT",
-            units=Decimal(str(abs(float(broker_trade.get("currentUnits", 0))))),
+            direction="LONG" if float(broker_trade.get("currentUnits", broker_trade.get("initialUnits", 0))) > 0 else "SHORT",
+            units=Decimal(str(abs(float(broker_trade.get("currentUnits", broker_trade.get("initialUnits", 0)))))),
             avg_entry_price=Decimal(str(broker_trade.get("price", 0))),
             current_price=Decimal(str(broker_trade.get("price", 0))),
             unrealized_pl=Decimal(str(broker_trade.get("unrealizedPL", 0))),
             oanda_trade_id=broker_trade.get("id"),
             status=PositionStatus.OPEN,
-            opened_at=utcnow(),
+            opened_at=opened_at,
             signal_id=signal_id,
         )
         self.session.add(position)

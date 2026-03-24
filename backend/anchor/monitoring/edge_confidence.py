@@ -53,11 +53,11 @@ settings = get_settings()
 # ── Active pairs ──────────────────────────────────────────────────────────────
 _ACTIVE_PAIRS = settings.instruments  # derived from config — edit config.py to change
 
-# Pairs that should be strongly correlated under normal conditions
+# Pairs that should be strongly correlated under normal conditions.
+# Derived from active instruments (EUR_USD, NZD_USD, EUR_JPY).
 _CORRELATION_PAIRS = [
-    ("EUR_USD", "GBP_USD"),   # typically 0.80+
-    ("EUR_USD", "AUD_USD"),   # typically 0.65+
-    ("NZD_USD", "AUD_USD"),   # typically 0.85+
+    ("EUR_USD", "NZD_USD"),   # both USD-denominated, typically 0.60+
+    ("EUR_USD", "EUR_JPY"),   # share EUR base, typically 0.70+
 ]
 _CORRELATION_BASELINE_DAYS = 60   # long-window baseline
 _CORRELATION_CURRENT_DAYS  = 10   # short-window to detect breakdown

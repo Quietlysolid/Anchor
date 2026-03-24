@@ -91,6 +91,7 @@ class PositionSizer:
         reference_atr:     float | None = None,
         rolling_score_scale: float = 1.0,
         regime_scale:      float = 1.0,
+        positioning_scale: float = 1.0,
     ) -> int:
         """
         Returns position size in units (OANDA native).
@@ -153,13 +154,15 @@ class PositionSizer:
             if current_atr > 1e-10 and reference_atr > 1e-10:
                 vol_scale = max(0.5, min(1.5, reference_atr / current_atr))
 
-        # Scale factors (correlation, drawdown, VIX, news proximity, session quality, rolling score, volatility regime, market regime)
+        # Scale factors (correlation, drawdown, VIX, news proximity, session quality,
+        # rolling score, volatility regime, market regime, positioning crowding)
         vix_scale           = max(0.25, min(1.0, vix_scale))           # clamp to safe range
         news_scale          = max(0.25, min(1.0, news_scale))           # clamp to safe range
         session_scale       = max(0.50, min(1.0, session_scale))        # clamp to safe range
         rolling_score_scale = max(0.75, min(1.0, rolling_score_scale))  # clamp: floor 0.75, no upside
         regime_scale        = max(0.50, min(1.0, regime_scale))         # clamp: floor 0.50, never upsize
-        units_scaled = units_raw * correlation_scale * drawdown_scale * vix_scale * news_scale * session_scale * rolling_score_scale * vol_scale * regime_scale
+        positioning_scale   = max(0.50, min(1.0, positioning_scale))    # clamp: reduce-only
+        units_scaled = units_raw * correlation_scale * drawdown_scale * vix_scale * news_scale * session_scale * rolling_score_scale * vol_scale * regime_scale * positioning_scale
 
         # Snap to micro-lot boundary
         units = int(units_scaled // MICRO_LOT) * MICRO_LOT
@@ -184,6 +187,7 @@ class PositionSizer:
             drawdown_scale=round(drawdown_scale, 3),
             session_scale=round(session_scale, 3),
             regime_scale=round(regime_scale, 3),
+            positioning_scale=round(positioning_scale, 3),
         )
         return final
 

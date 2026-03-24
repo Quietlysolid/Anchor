@@ -104,6 +104,40 @@ class HMMRegimeDetector:
         regime = self._state_map.get(current_int, "UNKNOWN")
         return regime, round(confidence, 4)
 
+    def predict_recent_states(
+        self, df_daily: pd.DataFrame, n: int = 3
+    ) -> Tuple[list, float]:
+        """
+        Returns (recent_regimes: list[str], current_confidence: float).
+
+        recent_regimes: last n regime labels in chronological order (oldest first).
+        current_confidence: posterior probability of the most recent state.
+
+        Use this instead of calling predict_current() when you need consecutive-day
+        regime counts (e.g., to detect sustained trending blocks).
+        Falls back to (["UNKNOWN"] * n, 0.0) if model is not ready.
+        """
+        if not self._fitted:
+            return ["UNKNOWN"] * n, 0.0
+
+        features, _ = self.build_features(df_daily)
+        if len(features) < 10:
+            return ["UNKNOWN"] * n, 0.0
+
+        recent = features[-60:]
+        try:
+            hidden_states = self.model.predict(recent)
+            posteriors    = self.model.predict_proba(recent)
+        except Exception as exc:
+            logger.warning("hmm_predict_failed", error=str(exc))
+            return ["UNKNOWN"] * n, 0.0
+
+        labels     = [self._state_map.get(int(s), "UNKNOWN") for s in hidden_states]
+        current_int = int(hidden_states[-1])
+        confidence  = float(posteriors[-1, current_int])
+
+        return labels[-n:], round(confidence, 4)
+
     def _assign_state_labels(self) -> None:
         """
         Assign semantic labels by inspecting state means.

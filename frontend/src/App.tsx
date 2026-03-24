@@ -39,7 +39,7 @@ function WsBootstrap() {
   }, [seedRegime, setRegime])
 
   useEffect(() => {
-    if (seedPositions && usePositionStore.getState().positions.length === 0) {
+    if (seedPositions) {
       setPositions(seedPositions)
     }
   }, [seedPositions, setPositions])

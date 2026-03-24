@@ -16,16 +16,6 @@ async def get_open_positions(session: AsyncSession = Depends(get_db)):
     return [_position_to_dict(p) for p in positions]
 
 
-@router.get("/positions/{position_id}")
-async def get_position(position_id: str, session: AsyncSession = Depends(get_db)):
-    q = select(Position).where(Position.id == position_id)
-    result = await session.execute(q)
-    position = result.scalar_one_or_none()
-    if not position:
-        raise HTTPException(status_code=404, detail="Position not found")
-    return _position_to_dict(position)
-
-
 @router.get("/positions/history")
 async def get_position_history(
     limit: int = 100,
@@ -35,6 +25,16 @@ async def get_position_history(
     result = await session.execute(q)
     positions = result.scalars().all()
     return [_position_to_dict(p) for p in positions]
+
+
+@router.get("/positions/{position_id}")
+async def get_position(position_id: str, session: AsyncSession = Depends(get_db)):
+    q = select(Position).where(Position.id == position_id)
+    result = await session.execute(q)
+    position = result.scalar_one_or_none()
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+    return _position_to_dict(position)
 
 
 def _position_to_dict(p: Position) -> dict:

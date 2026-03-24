@@ -109,7 +109,7 @@ def _run_intelligence_brief(report_type: str) -> None:
                 "POSTSESSION": "📋 POST-SESSION DEBRIEF",
                 "WEEKLY": "📈 WEEKLY SYNTHESIS",
             }[report_type]
-            await _alerts.send_info(f"<b>{header}</b>\n\n{content[:3900]}")
+            await _alerts.send_info(f"{header}\n\n{content[:3900]}")
 
             # Mark delivered
             async with get_session() as session:

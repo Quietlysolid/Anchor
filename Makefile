@@ -1,5 +1,6 @@
 .PHONY: up down dev logs shell-engine shell-db migrate upgrade seed backtest backtest-all lint test \
         download-history ablation walk-forward fit-weights instrument-confidence monte-carlo lcr-backtest lcr-backtest-all \
+        arb-backtest arb-backtest-all event-study event-study-nfp nfp-drift nfp-signal-backtest fix-flow-backtest fix-signal-backtest month-end-rebalancing combined-sleeve-validation london-funnel-diagnostics london-rescue-matrix eurusd-london-direct-entry sleeve-validate-nfp sleeve-validate-fix calendar-backfill calendar-cleanup \
         lcr-walkforward lcr-walkforward-all london-walk-forward london-walk-forward-all \
         threshold-sweep threshold-sweep-london portfolio-backtest live-perf-check
 
@@ -146,6 +147,299 @@ monte-carlo-all:
 			--instrument $$pair --end 2024-01-01 --forward-months 6; \
 	done
 
+# Generic macro event study. Uses a bind-mounted ad hoc container on the compose network
+# so it can access both the current workspace code and the running Postgres calendar DB.
+EVENT_QUERY ?=
+event-study:
+	@DB_HOST=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_HOST=' | cut -d= -f2-); \
+	DB_PORT=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PORT=' | cut -d= -f2-); \
+	DB_USER=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_USER=' | cut -d= -f2-); \
+	DB_PASSWORD=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PASSWORD=' | cut -d= -f2-); \
+	DB_NAME=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_NAME=' | cut -d= -f2-); \
+	docker run --rm \
+		--network anchor_default \
+		-e DB_HOST="$$DB_HOST" \
+		-e DB_PORT="$$DB_PORT" \
+		-e DB_USER="$$DB_USER" \
+		-e DB_PASSWORD="$$DB_PASSWORD" \
+		-e DB_NAME="$$DB_NAME" \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.event_study \
+			--pairs EUR_USD,GBP_USD,USD_JPY,USD_CAD \
+			--currencies USD,EUR,GBP,JPY,CAD \
+			--impacts HIGH \
+			$(if $(EVENT_QUERY),--event-query '$(EVENT_QUERY)',) \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--windows 1,4,8,24"
+
+event-study-nfp:
+	$(MAKE) event-study EVENT_QUERY='Non-Farm Employment Change'
+
+nfp-drift:
+	@DB_HOST=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_HOST=' | cut -d= -f2-); \
+	DB_PORT=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PORT=' | cut -d= -f2-); \
+	DB_USER=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_USER=' | cut -d= -f2-); \
+	DB_PASSWORD=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PASSWORD=' | cut -d= -f2-); \
+	DB_NAME=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_NAME=' | cut -d= -f2-); \
+	docker run --rm \
+		--network anchor_default \
+		-e APP_ENV=production \
+		-e DB_HOST="$$DB_HOST" \
+		-e DB_PORT="$$DB_PORT" \
+		-e DB_USER="$$DB_USER" \
+		-e DB_PASSWORD="$$DB_PASSWORD" \
+		-e DB_NAME="$$DB_NAME" \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.nfp_drift_backtest \
+			--pairs EUR_USD,GBP_USD,USD_JPY,USD_CAD \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--windows 4,8,24 \
+			--include-delayed \
+			--include-fade"
+
+nfp-signal-backtest:
+	@DB_HOST=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_HOST=' | cut -d= -f2-); \
+	DB_PORT=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PORT=' | cut -d= -f2-); \
+	DB_USER=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_USER=' | cut -d= -f2-); \
+	DB_PASSWORD=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PASSWORD=' | cut -d= -f2-); \
+	DB_NAME=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_NAME=' | cut -d= -f2-); \
+	docker run --rm \
+		--network anchor_default \
+		-e APP_ENV=production \
+		-e DB_HOST="$$DB_HOST" \
+		-e DB_PORT="$$DB_PORT" \
+		-e DB_USER="$$DB_USER" \
+		-e DB_PASSWORD="$$DB_PASSWORD" \
+		-e DB_NAME="$$DB_NAME" \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.nfp_signal_backtest \
+			--pairs EUR_USD,GBP_USD,USD_CAD,USD_JPY \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--horizon-hours 24 \
+			--agreements ALIGNED \
+			--sizes BIG \
+			--spread-mult $(or $(SIGNAL_SPREAD_MULT),1.0) \
+			--slippage-pips $(or $(SIGNAL_SLIPPAGE_PIPS),0.0)"
+
+fix-flow-backtest:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.fix_flow_backtest \
+			--pairs EUR_USD,GBP_USD,USD_JPY \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--pre-hours 1 \
+			--post-hours 1 \
+			--min-pre-move-pips 5 \
+			--focus-setup post_fix_continuation \
+			--focus-month-end REG,ME \
+			--spread-mult $(or $(FIX_SPREAD_MULT),1.0) \
+			--slippage-pips $(or $(FIX_SLIPPAGE_PIPS),0.0)"
+
+fix-signal-backtest:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.fix_signal_backtest \
+			--pairs USD_JPY,EUR_USD,GBP_USD \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--pre-hours 1 \
+			--post-hours 1 \
+			--min-pre-move-pips 5 \
+			--tags REG,ME \
+			--spread-mult $(or $(FIX_SPREAD_MULT),1.0) \
+			--slippage-pips $(or $(FIX_SLIPPAGE_PIPS),0.0)"
+
+month-end-rebalancing:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.month_end_rebalancing \
+			--pairs EUR_USD,GBP_USD,USD_JPY \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--offsets=-1,0,1 \
+			--pre-hours 1 \
+			--post-hours 1 \
+			--min-pre-move-pips 5 \
+			--focus-setup post_fix_continuation \
+			--spread-mult $(or $(ME_SPREAD_MULT),1.0) \
+			--slippage-pips $(or $(ME_SLIPPAGE_PIPS),0.0)"
+
+combined-sleeve-validation:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.combined_sleeve_validation \
+			--trend-pairs '$(if $(TREND_PAIRS),$(TREND_PAIRS),EUR_JPY)' \
+			--lcr-pairs '$(if $(LCR_PAIRS),$(LCR_PAIRS),EUR_JPY,EUR_USD,NZD_USD)' \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--spread-mult $(or $(COMBINED_SPREAD_MULT),1.0) \
+			--slippage-pips $(or $(COMBINED_SLIPPAGE_PIPS),0.0)"
+
+london-funnel-diagnostics:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.london_funnel_diagnostics \
+			--pairs '$(if $(TREND_PAIRS),$(TREND_PAIRS),EUR_JPY)' \
+			--start 2018-01-01 \
+			--end 2025-12-31"
+
+london-rescue-matrix:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.london_rescue_matrix \
+			--pairs '$(if $(TREND_PAIRS),$(TREND_PAIRS),EUR_JPY)' \
+			--thresholds '$(if $(TREND_THRESHOLDS),$(TREND_THRESHOLDS),0.55,0.76)' \
+			--start 2018-01-01 \
+			--end 2025-12-31"
+
+eurusd-london-direct-entry:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.eurusd_london_direct_entry_backtest \
+			--pair EUR_USD \
+			--threshold $(or $(EURUSD_TREND_THRESHOLD),0.55) \
+			$(if $(NO_HMM),--no-hmm,) \
+			--start 2018-01-01 \
+			--end 2025-12-31"
+
+sleeve-validate-nfp:
+	@DB_HOST=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_HOST=' | cut -d= -f2-); \
+	DB_PORT=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PORT=' | cut -d= -f2-); \
+	DB_USER=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_USER=' | cut -d= -f2-); \
+	DB_PASSWORD=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PASSWORD=' | cut -d= -f2-); \
+	DB_NAME=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_NAME=' | cut -d= -f2-); \
+	docker run --rm \
+		--network anchor_default \
+		-e APP_ENV=production \
+		-e DB_HOST="$$DB_HOST" \
+		-e DB_PORT="$$DB_PORT" \
+		-e DB_USER="$$DB_USER" \
+		-e DB_PASSWORD="$$DB_PASSWORD" \
+		-e DB_NAME="$$DB_NAME" \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.nfp_signal_backtest \
+			--pairs EUR_USD,GBP_USD,USD_CAD,USD_JPY \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--horizon-hours 24 \
+			--agreements ALIGNED \
+			--sizes BIG \
+			--spread-mult $(or $(SIGNAL_SPREAD_MULT),1.0) \
+			--slippage-pips $(or $(SIGNAL_SLIPPAGE_PIPS),0.0) \
+			--export-csv /app/data/validation_nfp && \
+			python -m anchor.backtesting.sleeve_validation \
+			--csv /app/data/validation_nfp.observations.csv \
+			--pnl-col ret_pips_net \
+			--group-col pair \
+			--min-trades 5 \
+			--block-size 2 \
+			--trades-per-month 1"
+
+sleeve-validate-fix:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.fix_flow_backtest \
+			--pairs EUR_USD,GBP_USD,USD_JPY \
+			--start 2018-01-01 \
+			--end 2025-12-31 \
+			--pre-hours 1 \
+			--post-hours 1 \
+			--min-pre-move-pips 5 \
+			--focus-setup post_fix_continuation \
+			--focus-month-end REG,ME \
+			--spread-mult $(or $(FIX_SPREAD_MULT),1.0) \
+			--slippage-pips $(or $(FIX_SLIPPAGE_PIPS),0.0) \
+			--export-csv /app/data/validation_fix && \
+			python -m anchor.backtesting.sleeve_validation \
+			--csv /app/data/validation_fix.observations.csv \
+			--pnl-col ret_pips_net \
+			--group-col pair \
+			--filter-col setup \
+			--filter-values post_fix_continuation \
+			--min-trades 50 \
+			--block-size 5 \
+			--trades-per-month 20"
+
+calendar-backfill:
+	@DB_HOST=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_HOST=' | cut -d= -f2-); \
+	DB_PORT=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PORT=' | cut -d= -f2-); \
+	DB_USER=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_USER=' | cut -d= -f2-); \
+	DB_PASSWORD=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PASSWORD=' | cut -d= -f2-); \
+	DB_NAME=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_NAME=' | cut -d= -f2-); \
+	docker run --rm \
+		--network anchor_default \
+		-e APP_ENV=production \
+		-e DB_HOST="$$DB_HOST" \
+		-e DB_PORT="$$DB_PORT" \
+		-e DB_USER="$$DB_USER" \
+		-e DB_PASSWORD="$$DB_PASSWORD" \
+		-e DB_NAME="$$DB_NAME" \
+		-v /opt/anchor/backend:/app \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.data.economic_calendar_backfill \
+			--start 2018-01-01 \
+			--end 2025-12-31"
+
+calendar-cleanup:
+	@DB_HOST=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_HOST=' | cut -d= -f2-); \
+	DB_PORT=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PORT=' | cut -d= -f2-); \
+	DB_USER=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_USER=' | cut -d= -f2-); \
+	DB_PASSWORD=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_PASSWORD=' | cut -d= -f2-); \
+	DB_NAME=$$(docker inspect anchor_engine --format '{{range .Config.Env}}{{println .}}{{end}}' | rg '^DB_NAME=' | cut -d= -f2-); \
+	docker run --rm \
+		--network anchor_default \
+		-e APP_ENV=production \
+		-e DB_HOST="$$DB_HOST" \
+		-e DB_PORT="$$DB_PORT" \
+		-e DB_USER="$$DB_USER" \
+		-e DB_PASSWORD="$$DB_PASSWORD" \
+		-e DB_NAME="$$DB_NAME" \
+		-v /opt/anchor/backend:/app \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.data.economic_calendar_cleanup --future-days 1"
+
 # Backtest the London Close Reversal (NY session) strategy in isolation.
 # Tests EUR_USD, GBP_USD, USD_JPY only — the pairs with documented LCR edge.
 lcr-backtest:
@@ -158,6 +452,24 @@ lcr-backtest-all:
 	@for pair in EUR_USD GBP_USD USD_JPY; do \
 		echo "========== LCR BACKTEST: $$pair =========="; \
 		$(MAKE) lcr-backtest PAIR=$$pair; \
+	done
+
+# Standalone Asian Range Breakout validation on the 5-pair research universe.
+arb-backtest:
+	docker run --rm \
+		-v /opt/anchor/backend:/app \
+		-v /opt/anchor/data:/app/data \
+		-w /app \
+		anchor-engine \
+		bash -lc "python -m anchor.backtesting.arb_backtest \
+			--instrument $(or $(PAIR),EUR_USD) \
+			--h1-csv /app/data/$(or $(PAIR),EUR_USD)_H1.csv \
+			--balance 10000"
+
+arb-backtest-all:
+	@for pair in EUR_USD GBP_USD USD_JPY AUD_USD USD_CAD; do \
+		echo "========== ARB BACKTEST: $$pair =========="; \
+		$(MAKE) arb-backtest PAIR=$$pair; \
 	done
 
 lcr-walkforward:

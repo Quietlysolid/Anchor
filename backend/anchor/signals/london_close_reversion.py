@@ -88,8 +88,20 @@ LCR_ATR_SL_BUFFER  = 1.0    # ATR multiplier for SL beyond London extreme
 # all pairs degraded (EUR_USD PF 1.411→1.277, USD_CAD PF 1.195→1.011, AUD_USD 1.269→1.112).
 # 9 trades is too small to override 8-year backtest. Live intrabar rate likely reflects
 # the directional/momentum regime of March 2026, not a stop placement flaw.
-LCR_MIN_RR         = 1.2    # minimum R:R ratio (tp_dist / sl_dist)
-LCR_MIN_RANGE_ATR  = 0.4    # London range must be ≥ 0.4×ATR (filter dead days)
+LCR_MIN_RR            = 1.2    # minimum R:R ratio (tp_dist / sl_dist)
+LCR_MIN_RANGE_ATR     = 0.4    # London range must be ≥ 0.4×ATR (filter dead days)
+# Vol spike gate: compare 5-bar short ATR vs 14-bar Wilder's ATR.
+# If recent vol > 1.5× normal vol, stops get hit before mean reversion has time to play out.
+# Observed live: 44% intrabar SL rate in March 2026 USD momentum regime.
+# 1.5× threshold chosen so it suppresses genuine spikes (news, macro moves) without
+# filtering normal intraday vol fluctuations (which only reach ~1.2-1.3×).
+LCR_VOL_SPIKE_MULT    = 1.5
+# Sustained trend block: if HMM classifies TRENDING for this many consecutive daily closes,
+# hard-block LCR entirely. In a sustained trend NY session continues London direction rather
+# than reversing it — the institutional liquidation effect is overwhelmed by macro flow.
+# 2 days chosen so a single outlier trending day doesn't suppress (those still raise threshold
+# to 0.65). Must be at least 2 consecutive days to confirm the trend is structural.
+LCR_TRENDING_BLOCK_DAYS = 2
 
 # London session bar hours (UTC): bars that OPEN during London session
 _LONDON_HOURS = set(range(7, 17))   # 07:00–16:00 inclusive
@@ -114,6 +126,7 @@ class LCRSignalResult:
     london_mid:        float | None = None
     atr:               float | None = None
     session:           str          = "NY_LCR"
+    regime_state:      str | None   = None
     suppressed:        bool         = True
     suppression_reason: str | None  = None
     created_at:        datetime     = field(default_factory=utcnow)
@@ -192,23 +205,44 @@ class LondonCloseReversionEngine:
         # London midpoint after institutional liquidation. This works best in
         # RANGING or mildly TRENDING markets where liquidation pressure dominates.
         #
-        # In a strong TRENDING regime, NY session often continues the London
-        # trend rather than reversing it — exactly when LCR fails. We raise the
-        # confluence threshold from 0.55 → 0.65 to demand stronger confirmation.
-        # VOLATILE regime: block outright (spreads blow out, fills are unreliable).
+        # Three-tier response based on regime persistence:
+        #   VOLATILE (any)            → block outright (spreads blow out)
+        #   TRENDING × 1 day          → raise threshold 0.55 → 0.65 (demand stronger setup)
+        #   TRENDING × 2+ consecutive → hard block (sustained macro flow overwhelms LCR)
         _lcr_threshold = LCR_CONFLUENCE_THRESHOLD  # default 0.55
         if self.hmm_detector and self.hmm_detector.is_ready:
             _df_d = self.data_cache.get("D", {}).get(instrument)
             if _df_d is not None and len(_df_d) >= 60:
-                _regime, _regime_conf = self.hmm_detector.predict_current(_df_d)
+                # Fetch last LCR_TRENDING_BLOCK_DAYS + 1 states in one predict pass
+                _recent_regimes, _regime_conf = self.hmm_detector.predict_recent_states(
+                    _df_d, n=LCR_TRENDING_BLOCK_DAYS + 1
+                )
+                _regime = _recent_regimes[-1]  # today's state
                 result.regime_state = _regime
-                result.metadata["hmm_regime"]     = _regime
-                result.metadata["hmm_confidence"] = round(_regime_conf, 4)
+                result.metadata["hmm_regime"]        = _regime
+                result.metadata["hmm_confidence"]    = round(_regime_conf, 4)
+                result.metadata["hmm_recent_states"] = _recent_regimes
+
                 if _regime == "VOLATILE":
                     result.suppression_reason = f"LCR_HMM_VOLATILE:{_regime_conf:.3f}"
                     return result
+
+                # Count consecutive trailing TRENDING days (from the end)
+                _consecutive_trending = 0
+                for _s in reversed(_recent_regimes):
+                    if _s == "TRENDING":
+                        _consecutive_trending += 1
+                    else:
+                        break
+
+                if _consecutive_trending >= LCR_TRENDING_BLOCK_DAYS:
+                    result.suppression_reason = (
+                        f"LCR_SUSTAINED_TREND:{_consecutive_trending}d"
+                    )
+                    return result
+
                 if _regime == "TRENDING":
-                    # Raise bar — only highest-quality LCR setups survive a trending day
+                    # Single trending day — raise bar, don't block outright
                     _lcr_threshold = 0.65
 
         # ── Gate 5: Load H1 data ──────────────────────────────────────────
@@ -287,6 +321,18 @@ class LondonCloseReversionEngine:
             return result
 
         result.atr = round(atr, 6)
+
+        # ── Gate 7b: Vol spike suppression ────────────────────────────────
+        # Compare the 5-bar short ATR (recent vol) to the 14-bar Wilder's ATR (baseline).
+        # When recent vol > LCR_VOL_SPIKE_MULT × baseline, mean reversion stalls —
+        # directional momentum overwhelms the London-close liquidation effect and stops
+        # get hit before price can revert to the London midpoint.
+        _short_atr = float(np.mean(tr[-5:])) if len(tr) >= 5 else atr
+        _vol_ratio = _short_atr / atr if atr > 1e-10 else 1.0
+        result.metadata["vol_ratio"] = round(_vol_ratio, 3)
+        if _vol_ratio > LCR_VOL_SPIKE_MULT:
+            result.suppression_reason = f"LCR_ELEVATED_VOL:{_vol_ratio:.2f}x"
+            return result
 
         # ── Gate 7: Range quality — London range must be meaningful ───────
         # A dead day (london_range < 0.4×ATR) means no displacement to revert

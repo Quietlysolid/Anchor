@@ -19,6 +19,7 @@ interface SystemStore {
   currentRegime: Record<string, { state: string; confidence: number }>
   balance: number
   equity: number
+  accountUpdatedAt: Date | null
   setWsConnected: (v: boolean) => void
   setHeartbeat: () => void
   setRegime: (r: Record<string, { state: string; confidence: number }>) => void
@@ -31,10 +32,11 @@ export const useSystemStore = create<SystemStore>(set => ({
   currentRegime: {},
   balance: 0,
   equity: 0,
+  accountUpdatedAt: null,
   setWsConnected: (v) => set({ wsConnected: v }),
   setHeartbeat: () => set({ lastHeartbeat: new Date() }),
   setRegime: (r) => set({ currentRegime: r }),
-  setAccount: (balance, equity) => set({ balance, equity }),
+  setAccount: (balance, equity) => set({ balance, equity, accountUpdatedAt: new Date() }),
 }))
 
 // ── Live signals feed (last 50) ───────────────────────────────
@@ -130,10 +132,12 @@ export const useWeightsStore = create<WeightsStore>(set => ({
 // ── Live positions (WebSocket override) ───────────────────────
 interface PositionStore {
   positions: Position[]
+  positionsUpdatedAt: Date | null
   setPositions: (p: Position[]) => void
 }
 
 export const usePositionStore = create<PositionStore>(set => ({
   positions: [],
-  setPositions: (positions) => set({ positions }),
+  positionsUpdatedAt: null,
+  setPositions: (positions) => set({ positions, positionsUpdatedAt: new Date() }),
 }))

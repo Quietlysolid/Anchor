@@ -44,7 +44,11 @@ export function EquityCurve({ data, height = 220 }: Props) {
         timeVisible: true,
         tickMarkFormatter: (t: number) => {
           const d = new Date(t * 1000)
-          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+          return d.toLocaleDateString('en-US', {
+            timeZone: 'America/New_York',
+            month: 'short',
+            day: 'numeric',
+          })
         },
       },
       handleScale:  { axisPressedMouseMove: false },

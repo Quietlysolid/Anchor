@@ -65,8 +65,8 @@ export interface Position {
   direction: Direction
   units: number
   avg_entry_price: number
-  current_price: number
-  unrealized_pl: number
+  current_price: number | null
+  unrealized_pl: number | null
   stop_loss: number | null
   take_profit: number | null
   opened_at: string
@@ -145,13 +145,27 @@ export interface MonteCarloResult {
 
 // ── System ────────────────────────────────────────────────────
 export interface SystemHealth {
-  status: 'healthy' | 'degraded' | 'critical'
-  heartbeat_age_seconds: number
+  status: 'ok' | 'degraded'
+  db: 'ok' | 'error'
+  timestamp: string
+  deployed_sha: string | null
+  deployed_at: string | null
   last_reconciliation: string | null
   stream_connected: boolean
   open_positions: number
   account_balance: number
   account_equity: number
+  today_pl: number | null
+}
+
+export interface SystemEvent {
+  id: string
+  event_at: string
+  event_type: string
+  severity: string
+  component: string | null
+  message: string
+  metadata: Record<string, unknown>
 }
 
 export interface EngineRolloutConfig {

@@ -45,6 +45,51 @@ class DrawdownMonitor:
         except Exception as exc:
             logger.warning("drawdown_bootstrap_failed", error=str(exc))
 
+    async def bootstrap_month_state(self, session, current_equity: float | None = None) -> None:
+        """Load current-month baseline from DB so restarts do not clear monthly halt state."""
+        try:
+            from datetime import datetime, timezone
+            from anchor.database.models import EquityCurvePoint
+            from sqlalchemy import select
+
+            now = datetime.now(timezone.utc)
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            current_month = now.strftime("%Y-%m")
+
+            row = await session.execute(
+                select(EquityCurvePoint)
+                .where(EquityCurvePoint.time >= month_start)
+                .order_by(EquityCurvePoint.time.asc())
+                .limit(1)
+            )
+            first_point = row.scalar_one_or_none()
+            baseline = None
+            if first_point is not None:
+                baseline = float(first_point.account_equity)
+            elif current_equity is not None:
+                baseline = float(current_equity)
+
+            if baseline is None:
+                return
+
+            self._current_month = current_month
+            self._month_start_equity = baseline
+            self._monthly_halted = False
+
+            if current_equity is not None and baseline > 0:
+                mtd_loss = (baseline - float(current_equity)) / baseline
+                if mtd_loss >= settings.monthly_halt_pct:
+                    self._monthly_halted = True
+
+            logger.info(
+                "monthly_circuit_breaker_bootstrapped",
+                month=current_month,
+                month_start_equity=baseline,
+                monthly_halted=self._monthly_halted,
+            )
+        except Exception as exc:
+            logger.warning("monthly_circuit_bootstrap_failed", error=str(exc))
+
     def update(self, equity: float) -> None:
         self._current_equity = equity
         if self._peak_equity is None or equity > self._peak_equity:

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useCalendar, useIntelligenceBrief, useTodayActivity, useRolloutConfig, useLCRPairStatus, useLCRPairStatusHistory, type LCRPairStatus, type LCRStatusSnapshot } from '../api/hooks'
+import { useCalendar, useIntelligenceBrief, useTodayActivity, useRolloutConfig, useLCRPairStatus, useLCRPairStatusHistory, useSystemHealth, type LCRPairStatus, type LCRStatusSnapshot } from '../api/hooks'
 import { useSystemStore } from '../store'
 import { RolloutCard } from '../components/panels/RolloutCard'
 
@@ -10,49 +10,6 @@ function timeUntil(isoStr: string): string {
   const m = Math.floor((diff % 3_600_000) / 60_000)
   if (h > 0) return `in ${h}h ${m}m`
   return `in ${m}m`
-}
-
-function sessionStatus(): { label: string; sub: string; active: boolean } {
-  const now = new Date()
-  const utcHour = now.getUTCHours()
-  const utcDay  = now.getUTCDay() // 0=Sun, 6=Sat
-
-  const weekend = utcDay === 0 || utcDay === 6
-  const fridayAfterClose = utcDay === 5 && utcHour >= 20
-
-  if (weekend || fridayAfterClose) {
-    // Next London open: Monday 07:00 UTC
-    const daysUntilMon = ((8 - utcDay) % 7) || 7
-    const nextMon = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntilMon, 7, 0, 0))
-    const minsUntil = Math.round((nextMon.getTime() - now.getTime()) / 60_000)
-    const h = Math.floor(minsUntil / 60)
-    const m = minsUntil % 60
-    return { label: 'Markets closed', sub: `London session opens Monday in ${h}h ${m}m`, active: false }
-  }
-
-  if (utcHour >= 7 && utcHour < 12) {
-    return { label: 'London session is active', sub: 'The bot is watching for trades', active: true }
-  }
-  if (utcHour >= 17 && utcHour < 20) {
-    return { label: 'Evening trades are active', sub: 'The bot is looking for evening trades', active: true }
-  }
-  if (utcHour < 7) {
-    const minsUntil = (7 - utcHour) * 60 - now.getUTCMinutes()
-    const h = Math.floor(minsUntil / 60)
-    const m = minsUntil % 60
-    return { label: 'Market watching begins soon', sub: `London session starts in ${h}h ${m}m`, active: false }
-  }
-  if (utcHour >= 12 && utcHour < 17) {
-    const minsUntil = (17 - utcHour) * 60 - now.getUTCMinutes()
-    const h = Math.floor(minsUntil / 60)
-    const m = minsUntil % 60
-    return { label: 'Quiet period', sub: `Evening trades open in ${h}h ${m}m`, active: false }
-  }
-  // 20:00–24:00 UTC on a weekday — next session is London tomorrow
-  const minsUntil = (24 - utcHour) * 60 - now.getUTCMinutes() + 7 * 60
-  const h = Math.floor(minsUntil / 60)
-  const m = minsUntil % 60
-  return { label: 'Markets closed', sub: `London session opens tomorrow in ${h}h ${m}m`, active: false }
 }
 
 function formatReason(r: string): string {
@@ -72,6 +29,68 @@ function statusDot(status: string) {
   if (status === 'active')    return 'bg-anchor-green'
   if (status === 'watchlist') return 'bg-amber-400'
   return 'bg-anchor-red'
+}
+
+function ageText(value: Date | string | null | undefined): string {
+  if (!value) return 'unknown'
+  const ts = value instanceof Date ? value.getTime() : new Date(value).getTime()
+  if (Number.isNaN(ts)) return 'unknown'
+  const secs = Math.max(0, Math.round((Date.now() - ts) / 1000))
+  if (secs < 5) return 'just now'
+  if (secs < 60) return `${secs}s ago`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
+function FreshnessBadge({ value, staleAfterSeconds }: { value: Date | string | null | undefined; staleAfterSeconds: number }) {
+  const ts = value instanceof Date ? value.getTime() : value ? new Date(value).getTime() : NaN
+  const secs = Number.isNaN(ts) ? null : Math.max(0, Math.round((Date.now() - ts) / 1000))
+  const tone = secs == null ? 'unknown' : secs > staleAfterSeconds ? 'stale' : 'fresh'
+  const cls = tone === 'fresh'
+    ? 'text-anchor-green border-anchor-green/20 bg-anchor-green/5'
+    : 'text-amber-300 border-amber-400/20 bg-amber-400/10'
+
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2 py-1 text-[10px] font-mono ${cls}`}>
+      updated {ageText(value)}
+    </span>
+  )
+}
+
+function StatusCard({
+  title,
+  value,
+  detail,
+  tone,
+  freshness,
+}: {
+  title: string
+  value: string
+  detail: string
+  tone: 'green' | 'amber' | 'red'
+  freshness?: Date | string | null
+}) {
+  const dot = tone === 'green' ? 'bg-anchor-green' : tone === 'amber' ? 'bg-amber-400' : 'bg-anchor-red'
+  const text = tone === 'green' ? 'text-anchor-green' : tone === 'amber' ? 'text-amber-300' : 'text-anchor-red'
+
+  return (
+    <div className="rounded-2xl border border-anchor-border bg-anchor-surface p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.18em] text-anchor-muted font-mono">{title}</p>
+          <div className="mt-2 flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 rounded-full ${dot}`} />
+            <p className={`text-base font-semibold ${text}`}>{value}</p>
+          </div>
+        </div>
+        {freshness && <FreshnessBadge value={freshness} staleAfterSeconds={60} />}
+      </div>
+      <p className="mt-3 text-sm text-anchor-muted leading-relaxed">{detail}</p>
+    </div>
+  )
 }
 
 function LCRStatusHistoryTable({ snapshots }: { snapshots: LCRStatusSnapshot[] }) {
@@ -95,41 +114,73 @@ function LCRStatusHistoryTable({ snapshots }: { snapshots: LCRStatusSnapshot[] }
   const dates = snapshots.map(s => s.date)
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs font-mono">
-        <thead>
-          <tr>
-            <th className="text-anchor-muted/50 text-left pb-1.5 pr-3 font-normal">date</th>
-            {instruments.map(inst => (
-              <th key={inst} className="text-anchor-muted/50 text-center pb-1.5 px-1 font-normal">
-                {inst.replace('_', '/').replace(/USD$/, '').replace(/^USD/, '').replace(/EUR\//, 'E/').replace(/NZD\//, 'N/')}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {dates.map((date, i) => {
-            const prev = i < dates.length - 1 ? lookup[dates[i + 1]] : null
-            return (
-              <tr key={date} className="border-t border-anchor-border/20">
-                <td className="text-anchor-muted/70 pr-3 py-1">{date.slice(5)}</td>
+    <>
+      <div className="space-y-2 md:hidden">
+        {dates.map((date, i) => {
+          const prev = i < dates.length - 1 ? lookup[dates[i + 1]] : null
+          return (
+            <div key={date} className="rounded-xl border border-anchor-border/30 bg-anchor-void/40 p-3">
+              <p className="text-[11px] font-mono text-anchor-muted/70 mb-2">{date}</p>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2">
                 {instruments.map(inst => {
                   const status = lookup[date]?.[inst]
                   const prevStatus = prev?.[inst]
                   const changed = prevStatus && prevStatus !== status
                   return (
-                    <td key={inst} className="text-center py-1 px-1">
-                      <span className={`inline-block w-2 h-2 rounded-full ${status ? statusDot(status) : 'bg-anchor-border'} ${changed ? 'ring-1 ring-white/40' : ''}`} />
-                    </td>
+                    <div key={inst} className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-mono text-anchor-text">
+                        {inst.replace('_', '/')}
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        {changed && <span className="text-[9px] font-mono text-amber-300">chg</span>}
+                        <span className={`inline-block h-2.5 w-2.5 rounded-full ${status ? statusDot(status) : 'bg-anchor-border'}`} />
+                      </span>
+                    </div>
                   )
                 })}
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-      <p className="text-anchor-muted/40 text-[10px] mt-2">Ring = status changed from the day before</p>
-    </div>
+              </div>
+            </div>
+          )
+        })}
+        <p className="text-anchor-muted/40 text-[10px]">`chg` means the pair status changed from the prior snapshot.</p>
+      </div>
+
+      <div className="hidden overflow-x-auto md:block">
+        <table className="w-full text-xs font-mono">
+          <thead>
+            <tr>
+              <th className="text-anchor-muted/50 text-left pb-1.5 pr-3 font-normal">date</th>
+              {instruments.map(inst => (
+                <th key={inst} className="text-anchor-muted/50 text-center pb-1.5 px-1 font-normal">
+                  {inst.replace('_', '/').replace(/USD$/, '').replace(/^USD/, '').replace(/EUR\//, 'E/').replace(/NZD\//, 'N/')}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {dates.map((date, i) => {
+              const prev = i < dates.length - 1 ? lookup[dates[i + 1]] : null
+              return (
+                <tr key={date} className="border-t border-anchor-border/20">
+                  <td className="text-anchor-muted/70 pr-3 py-1">{date.slice(5)}</td>
+                  {instruments.map(inst => {
+                    const status = lookup[date]?.[inst]
+                    const prevStatus = prev?.[inst]
+                    const changed = prevStatus && prevStatus !== status
+                    return (
+                      <td key={inst} className="text-center py-1 px-1">
+                        <span className={`inline-block w-2 h-2 rounded-full ${status ? statusDot(status) : 'bg-anchor-border'} ${changed ? 'ring-1 ring-white/40' : ''}`} />
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <p className="text-anchor-muted/40 text-[10px] mt-2">Ring = status changed from the day before</p>
+      </div>
+    </>
   )
 }
 
@@ -142,7 +193,7 @@ function LCRPairStatusCard({ statuses, daysLive, history }: {
 
   return (
     <div className="rounded-2xl bg-anchor-surface p-5 space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-anchor-muted text-xs">Pair status</p>
         <p className="text-anchor-muted/50 text-xs">Live for {daysLive} days</p>
       </div>
@@ -199,31 +250,79 @@ function LCRPairStatusCard({ statuses, daysLive, history }: {
 export default function Activity() {
   const { data: calendarData }    = useCalendar()
   const { data: brief }           = useIntelligenceBrief()
-  const { data: todayData }       = useTodayActivity()
+  const { data: todayData, isLoading: todayLoading, isError: todayError } = useTodayActivity()
   const { data: rolloutConfig }   = useRolloutConfig()
   const { data: pairStatuses }    = useLCRPairStatus()
   const { data: pairHistory }     = useLCRPairStatusHistory(30)
-  const { wsConnected }           = useSystemStore()
+  const { data: health, isLoading: healthLoading, isError: healthError } = useSystemHealth()
+  const { wsConnected, lastHeartbeat } = useSystemStore()
 
   const events  = useMemo(() => (calendarData ?? []).slice(0, 5), [calendarData])
-  const session = sessionStatus()
+  const botHealthy = health?.status === 'ok' && health.stream_connected
+  const feedAge = wsConnected ? ageText(lastHeartbeat) : 'unknown'
+  const feedSeconds = lastHeartbeat ? Math.max(0, Math.round((Date.now() - lastHeartbeat.getTime()) / 1000)) : null
+  const enabledEngines = rolloutConfig
+    ? [
+        rolloutConfig.trend.enabled,
+        rolloutConfig.mean_reversion.enabled,
+        rolloutConfig.lcr.enabled,
+        rolloutConfig.m15.enabled,
+      ].filter(Boolean).length
+    : null
+  const statusMeta = health?.last_reconciliation
+    ? `Last reconciliation ${new Date(health.last_reconciliation).toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      })} ET`
+    : null
 
-  const signalsToday = todayData?.signals_today ?? 0
-  const tradesToday  = todayData?.trades_today  ?? 0
+  const signalsToday = todayData?.signals_today ?? null
+  const tradesToday  = todayData?.trades_today  ?? null
 
   return (
     <div className="min-h-screen bg-anchor-void px-4 pt-4 pb-24 md:pb-8 space-y-4">
 
       {/* Bot status */}
-      <div className="bg-anchor-surface rounded-2xl p-5">
-        <div className="flex items-center gap-3 mb-4">
-          <div className={`w-2.5 h-2.5 rounded-full ${wsConnected ? 'bg-anchor-green animate-pulse' : 'bg-anchor-red'}`} />
-          <p className="text-anchor-text font-semibold">
-            {wsConnected ? 'Bot is running' : 'Bot is offline'}
-          </p>
+      <div className="space-y-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-anchor-muted font-mono">Intelligence</p>
+            <p className="text-anchor-text text-xl font-semibold mt-1">Context And Monitoring</p>
+          </div>
+          <div className="self-start sm:self-auto">
+            <FreshnessBadge value={health?.timestamp ?? null} staleAfterSeconds={20} />
+          </div>
         </div>
-        <p className="text-anchor-text text-sm font-medium">{session.label}</p>
-        <p className="text-anchor-muted text-sm mt-0.5">{session.sub}</p>
+        <div className="grid gap-3 md:grid-cols-3">
+          <StatusCard
+            title="Engine"
+            value={healthLoading ? 'Checking' : healthError || !health ? 'Unknown' : botHealthy ? 'Healthy' : 'Degraded'}
+            detail={healthError || !health ? 'The dashboard could not confirm backend health.' : `Stream ${health.stream_connected ? 'connected' : 'disconnected'} · reconciliation ${health.last_reconciliation ? ageText(health.last_reconciliation) : 'unknown'}.`}
+            tone={healthLoading ? 'amber' : botHealthy ? 'green' : 'red'}
+            freshness={health?.timestamp ?? null}
+          />
+          <StatusCard
+            title="Live Feed"
+            value={!wsConnected ? 'Disconnected' : feedSeconds != null && feedSeconds > 30 ? 'Delayed' : 'Live'}
+            detail={!wsConnected ? 'Browser websocket transport is disconnected.' : `Last heartbeat ${feedAge}.`}
+            tone={!wsConnected ? 'red' : feedSeconds != null && feedSeconds > 30 ? 'amber' : 'green'}
+            freshness={lastHeartbeat}
+          />
+          <StatusCard
+            title="Trading State"
+            value={enabledEngines == null ? 'Unverified' : enabledEngines === 0 ? 'Paused' : 'Enabled'}
+            detail={enabledEngines == null ? 'The API does not expose a definitive halt flag.' : enabledEngines === 0 ? 'No engines are enabled in rollout config.' : `${enabledEngines} engine${enabledEngines === 1 ? '' : 's'} enabled in rollout config.`}
+            tone={enabledEngines == null || enabledEngines === 0 ? 'amber' : 'green'}
+            freshness={health?.last_reconciliation ?? null}
+          />
+        </div>
+        {statusMeta && (
+          <p className="text-anchor-muted/60 text-xs px-1">{statusMeta}</p>
+        )}
       </div>
 
       {/* Strategy rollout */}
@@ -231,122 +330,68 @@ export default function Activity() {
 
       {/* LCR pair status */}
       {pairStatuses && (
-        <LCRPairStatusCard
-          statuses={pairStatuses.pairs}
-          daysLive={pairStatuses.days_since_live}
-          history={pairHistory?.snapshots ?? []}
-        />
-      )}
-
-      {/* Is it working — precommitted checks (set 2026-03-23, before live trades) */}
-      <div className="rounded-2xl bg-anchor-surface p-5 space-y-4">
-        <div>
-          <p className="text-anchor-muted text-xs mb-1">Is it working?</p>
-          <p className="text-anchor-text text-sm font-medium">This setup is not proven yet.</p>
-          <p className="text-anchor-muted text-xs mt-1">
-            We need at least 50 live trades before we can judge. Until then, the honest answer is: we do not know.
-          </p>
-        </div>
-
-        <div className="border-t border-anchor-border/40 pt-4 space-y-3">
-          <p className="text-anchor-muted text-xs">Stop using it after 50 live trades if any of these are true</p>
-          {[
-            'It is losing more money than it makes',
-            'It wins less than 40% of trades (test results were 48–51%)',
-            'One pair is responsible for most of the losses and has no wins at all',
-            'Trades are closing much faster or much slower than expected',
-          ].map(criterion => (
-            <div key={criterion} className="flex items-start gap-2.5">
-              <span className="text-anchor-muted text-xs mt-0.5 shrink-0">—</span>
-              <p className="text-anchor-muted text-xs">{criterion}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className="border-t border-anchor-border/40 pt-4 space-y-3">
-          <p className="text-anchor-muted text-xs">Early warning signs to watch</p>
-          {[
-            'Stops get hit too often — more than half the time (currently 44% on 9 trades)',
-            'The real cost to trade is more than twice what we expected on any pair',
-            'AUD/USD or USD/CAD still has no trades after 60 days',
-            'Any pair with 15 or more trades and no wins',
-          ].map(criterion => (
-            <div key={criterion} className="flex items-start gap-2.5">
-              <span className="text-anchor-muted text-xs mt-0.5 shrink-0">—</span>
-              <p className="text-anchor-muted text-xs">{criterion}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className="border-t border-anchor-border/40 pt-4 space-y-3">
-          <p className="text-anchor-muted text-xs">
-            Stress test results — locked 2026-03-23, before any live trades
-          </p>
-          <p className="text-anchor-muted/70 text-xs">
-            How each pair holds up when trading costs are doubled and orders slip. Based on 8 years of data.
-          </p>
-          <div className="font-mono text-xs space-y-1.5">
-            {[
-              { pair: 'EUR/USD', base: '1.384', stress2x: '1.360', combined: '1.214', fragile: false },
-              { pair: 'NZD/USD', base: '1.341', stress2x: '1.263', combined: '1.142', fragile: false },
-              { pair: 'AUD/USD', base: '1.242', stress2x: '1.129', combined: '0.992', fragile: true  },
-              { pair: 'EUR/JPY', base: '1.162', stress2x: '1.038', combined: '0.966', fragile: true  },
-              { pair: 'USD/CAD', base: '1.143', stress2x: '1.034', combined: '0.933', fragile: true  },
-            ].map(r => (
-              <div key={r.pair} className="grid grid-cols-[4rem_1fr_1fr_1fr_auto] gap-2 items-center">
-                <span className="text-anchor-text">{r.pair}</span>
-                <span className="text-anchor-muted text-right">{r.base}</span>
-                <span className="text-anchor-muted text-right">{r.stress2x}</span>
-                <span className={`text-right ${r.fragile ? 'text-amber-400' : 'text-anchor-muted'}`}>{r.combined}</span>
-                <span className={`text-[10px] ${r.fragile ? 'text-amber-400' : 'text-anchor-green'}`}>
-                  {r.fragile ? 'weak' : 'strong'}
-                </span>
-              </div>
-            ))}
-            <div className="grid grid-cols-[4rem_1fr_1fr_1fr_auto] gap-2 items-center pt-1 border-t border-anchor-border/30">
-              <span className="text-anchor-muted/50" />
-              <span className="text-anchor-muted/50 text-right text-[10px]">normal</span>
-              <span className="text-anchor-muted/50 text-right text-[10px]">double costs</span>
-              <span className="text-anchor-muted/50 text-right text-[10px]">worst case</span>
-              <span />
+        <div className="space-y-2">
+          <div className="flex flex-col gap-2 px-1 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-anchor-muted font-mono">Live controls</p>
+            <div className="self-start sm:self-auto">
+              <FreshnessBadge value={pairStatuses.evaluated_at} staleAfterSeconds={300} />
             </div>
           </div>
+          <LCRPairStatusCard
+            statuses={pairStatuses.pairs}
+            daysLive={pairStatuses.days_since_live}
+            history={pairHistory?.snapshots ?? []}
+          />
         </div>
-
-        <div className="border-t border-anchor-border/40 pt-4 space-y-2">
-          <p className="text-anchor-muted text-xs">Strategies we have ruled out</p>
-          <p className="text-anchor-muted/60 text-xs">Mean reversion — did not work in testing. Turned off.</p>
-          <p className="text-anchor-muted/60 text-xs">London trend — never placed a trade live. Turned off.</p>
-        </div>
-      </div>
+      )}
 
       {/* Today's snapshot */}
       <div className="bg-anchor-surface rounded-2xl p-5">
         <p className="text-anchor-muted text-xs mb-4">Today's Activity</p>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <p className="text-anchor-text text-3xl font-semibold font-mono">{signalsToday}</p>
+            <p className="text-anchor-text text-3xl font-semibold font-mono">
+              {todayLoading ? '…' : signalsToday ?? '—'}
+            </p>
             <p className="text-anchor-muted text-xs mt-1">setups checked</p>
           </div>
           <div>
-            <p className="text-anchor-text text-3xl font-semibold font-mono">{tradesToday}</p>
-            <p className="text-anchor-muted text-xs mt-1">trades placed</p>
+            <p className="text-anchor-text text-3xl font-semibold font-mono">
+              {todayLoading ? '…' : tradesToday ?? '—'}
+            </p>
+            <p className="text-anchor-muted text-xs mt-1">trades closed</p>
           </div>
         </div>
+        {todayError && (
+          <p className="text-anchor-red text-xs mt-3">Today&apos;s activity is unavailable.</p>
+        )}
       </div>
 
       {/* Latest AI brief — plain text summary */}
       {brief?.content && (
-        <div className="bg-anchor-surface rounded-2xl p-5">
-          <p className="text-anchor-muted text-xs mb-3">Latest Summary</p>
+        <div className="bg-anchor-surface rounded-2xl p-5 border border-anchor-border">
+          <div className="flex flex-col gap-3 mb-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-anchor-muted text-xs">Latest Summary</p>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-amber-300 font-mono mt-1">Reference</p>
+            </div>
+            <div className="self-start sm:self-auto">
+              <FreshnessBadge value={brief.created_at} staleAfterSeconds={300} />
+            </div>
+          </div>
           <p className="text-anchor-text text-sm leading-relaxed whitespace-pre-line">{brief.content}</p>
         </div>
       )}
 
       {/* Upcoming news */}
       {events.length > 0 && (
-        <div className="bg-anchor-surface rounded-2xl p-5">
-          <p className="text-anchor-muted text-xs mb-4">Upcoming News</p>
+        <div className="bg-anchor-surface rounded-2xl p-5 border border-anchor-border">
+          <div className="flex flex-col gap-3 mb-4 sm:flex-row sm:items-start sm:justify-between">
+            <p className="text-anchor-muted text-xs">Upcoming News</p>
+            <div className="self-start sm:self-auto">
+              <FreshnessBadge value={health?.timestamp ?? null} staleAfterSeconds={300} />
+            </div>
+          </div>
           <div className="space-y-3">
             {events.map((ev, i) => (
               <div key={i} className="flex items-start justify-between gap-3">

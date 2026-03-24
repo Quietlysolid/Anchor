@@ -22,7 +22,7 @@ async def get_today_activity(session: AsyncSession = Depends(get_db)):
     signals_count = (await session.execute(
         select(func.count()).select_from(Signal).where(
             Signal.created_at >= utc_midnight,
-            Signal.session.in_(["LONDON", "NY_LCR"]),
+            Signal.session.in_(["LONDON", "NY_LCR", "LDN_FIX", "NFP_DRIFT"]),
         )
     )).scalar_one()
 
@@ -36,6 +36,7 @@ async def get_today_activity(session: AsyncSession = Depends(get_db)):
 @router.get("/signals/weights")
 async def get_signal_weights():
     from anchor.signals.engine import WEIGHTS
+    from anchor.signals.fix_continuation import FIX_CONFLUENCE_THRESHOLD
     from anchor.signals.london_close_reversion import LCR_CONFLUENCE_THRESHOLD, LCR_WEIGHTS
     from anchor.config import get_settings
     cfg = get_settings()
@@ -45,8 +46,13 @@ async def get_signal_weights():
         "thresholds": {
             "london": cfg.min_confluence_score,
             "lcr":    LCR_CONFLUENCE_THRESHOLD,
+            "fix":    FIX_CONFLUENCE_THRESHOLD,
+            "nfp":    0.80,
         },
         "instruments": cfg.instruments,
+        "trend_instruments": cfg.trend_instruments,
+        "fix_instruments": cfg.fix_instruments,
+        "nfp_instruments": cfg.nfp_instruments,
         "risk": {
             "max_risk_per_trade":    cfg.max_risk_per_trade,
             "drawdown_reduce_pct":   cfg.drawdown_reduce_pct,
@@ -135,6 +141,22 @@ def _signal_to_dict(s: Signal) -> dict:
         "london_low":            float(meta["london_low"])            if meta.get("london_low")            is not None else None,
         "london_mid":            float(meta["london_mid"])            if meta.get("london_mid")            is not None else None,
         "position_in_range":     float(meta["position_in_range"])     if meta.get("position_in_range")     is not None else None,
+        "fix_time_utc":          meta.get("fix_time_utc"),
+        "expected_exit_time_utc": meta.get("expected_exit_time_utc"),
+        "month_end_tag":         meta.get("month_end_tag"),
+        "pre_move_pips":         float(meta["pre_move_pips"])         if meta.get("pre_move_pips")         is not None else None,
+        "atr_pips":              float(meta["atr_pips"])              if meta.get("atr_pips")              is not None else None,
+        "actual_entry_time_utc": meta.get("actual_entry_time_utc"),
+        "actual_exit_time_utc":  meta.get("actual_exit_time_utc"),
+        "actual_entry_price":    float(meta["actual_entry_price"])    if meta.get("actual_entry_price")    is not None else None,
+        "actual_exit_price":     float(meta["actual_exit_price"])     if meta.get("actual_exit_price")     is not None else None,
+        "entry_slippage_pips":   float(meta["entry_slippage_pips"])   if meta.get("entry_slippage_pips")   is not None else None,
+        "realized_ret_pips":     float(meta["realized_ret_pips"])     if meta.get("realized_ret_pips")     is not None else None,
+        "max_favorable_pips":    float(meta["max_favorable_pips"])    if meta.get("max_favorable_pips")    is not None else None,
+        "max_adverse_pips":      float(meta["max_adverse_pips"])      if meta.get("max_adverse_pips")      is not None else None,
+        "continuation_success":  meta.get("continuation_success"),
+        "macro_state_overlay":   meta.get("macro_state_overlay"),
+        "positioning_overlay":   meta.get("positioning_overlay"),
         "ml_confidence":         float(s.ml_confidence) if s.ml_confidence else None,
         "regime_state":          s.regime_state,
         "session":               s.session,

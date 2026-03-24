@@ -1,6 +1,8 @@
 """Monitoring tasks: live performance check, edge confidence, fit-weights trigger."""
 from __future__ import annotations
 
+from datetime import timezone
+
 import structlog
 
 from anchor.scheduler.celery_app import celery_app
@@ -21,10 +23,335 @@ _FW_RETRIGGER_EVERY = 200
 _PERF_BENCH = {
     "LCR":    {"wr": 0.44, "pf": 1.40},   # worst qualifying LCR pair (GBP_USD)
     "LONDON": {"wr": 0.50, "pf": 1.20},   # London Trend OOS result
+    # Conservative floor from stressed fix continuation validation.
+    # Worst stressed survivor (GBP_USD): WR 61.6%, PF 2.219.
+    "FIX":    {"wr": 0.61, "pf": 2.20},
+    "NFP":    {"wr": 0.70, "pf": 1.50},
 }
 _PERF_WR_MARGIN    = 0.08   # 8pp below benchmark WR → warning
 _PERF_MIN_TRADES   = 20     # minimum closed trades before comparing
 _PERF_WIN_DROUGHT  = 30     # days since last win → alert
+
+
+@celery_app.task(name="anchor.scheduler.jobs.score_fix_paper_signals", bind=True, max_retries=1)
+def score_fix_paper_signals(self):
+    """
+    Backfill realized paper outcomes for matured LDN_FIX signals.
+
+    For each non-suppressed fix signal whose expected 1h hold window has elapsed,
+    compute:
+      - actual first tradable entry price (open of the first bar at/after fix)
+      - slippage proxy vs expected entry price
+      - realized 1h return in pips
+      - whether the continuation thesis completed positively
+
+    Stored back into signal_metadata so the sleeve can be evaluated from real
+    paper signals before any live execution path exists.
+    """
+    async def _inner():
+        import pandas as pd
+        from sqlalchemy import select, text as _text
+
+        from anchor.database.engine import init_db
+        import anchor.database.engine as _db_engine
+        from anchor.database.models import Signal
+        from anchor.database.repositories.market_data import MarketDataRepository
+        from anchor.utils.math_utils import get_pip_size
+        from anchor.utils.time_utils import utcnow
+
+        await init_db()
+        now = utcnow()
+        scored = 0
+        skipped = 0
+
+        async with _db_engine.AsyncSessionFactory() as session:
+            market_repo = MarketDataRepository(session)
+            result = await session.execute(
+                select(Signal)
+                .where(
+                    Signal.session == "LDN_FIX",
+                    Signal.suppressed == False,  # noqa: E712
+                )
+                .order_by(Signal.created_at.desc())
+                .limit(200)
+            )
+            signals = list(result.scalars().all())
+
+            for signal in signals:
+                meta = dict(signal.signal_metadata or {})
+                if meta.get("paper_result_version") == 1:
+                    continue
+
+                exit_iso = meta.get("expected_exit_time_utc")
+                fix_iso = meta.get("fix_time_utc")
+                expected_entry = meta.get("entry_price")
+                direction = signal.direction
+                if not exit_iso or not fix_iso or expected_entry is None or direction not in {"LONG", "SHORT"}:
+                    skipped += 1
+                    continue
+
+                exit_ts = pd.Timestamp(exit_iso)
+                fix_ts = pd.Timestamp(fix_iso)
+                if exit_ts.tzinfo is None:
+                    exit_ts = exit_ts.tz_localize("UTC")
+                else:
+                    exit_ts = exit_ts.tz_convert("UTC")
+                if fix_ts.tzinfo is None:
+                    fix_ts = fix_ts.tz_localize("UTC")
+                else:
+                    fix_ts = fix_ts.tz_convert("UTC")
+
+                if exit_ts.to_pydatetime() > now:
+                    continue
+
+                candles = await market_repo.get_candles(
+                    signal.instrument,
+                    "H1",
+                    start=fix_ts.to_pydatetime(),
+                    end=(exit_ts + pd.Timedelta(hours=1)).to_pydatetime(),
+                    limit=10,
+                )
+                if len(candles) < 2:
+                    skipped += 1
+                    continue
+
+                entry_bar = next((c for c in candles if c.time >= fix_ts.to_pydatetime()), None)
+                exit_bar = next((c for c in candles if c.time >= exit_ts.to_pydatetime()), None)
+                if entry_bar is None or exit_bar is None:
+                    skipped += 1
+                    continue
+
+                pip = get_pip_size(signal.instrument)
+                actual_entry = float(entry_bar.open)
+                actual_exit = float(exit_bar.close)
+                signed = 1.0 if direction == "LONG" else -1.0
+                realized_ret_pips = signed * (actual_exit - actual_entry) / pip
+                entry_slippage_pips = signed * (actual_entry - float(expected_entry)) / pip
+                mfe_pips = signed * (float(exit_bar.high) - actual_entry) / pip
+                mae_pips = signed * (float(exit_bar.low) - actual_entry) / pip
+                if direction == "SHORT":
+                    mfe_pips = signed * (float(exit_bar.low) - actual_entry) / pip
+                    mae_pips = signed * (float(exit_bar.high) - actual_entry) / pip
+
+                telemetry = {
+                    "paper_result_version": 1,
+                    "paper_scored_at": now.isoformat(),
+                    "actual_entry_time_utc": entry_bar.time.isoformat(),
+                    "actual_exit_time_utc": exit_bar.time.isoformat(),
+                    "actual_entry_price": round(actual_entry, 5),
+                    "actual_exit_price": round(actual_exit, 5),
+                    "entry_slippage_pips": round(entry_slippage_pips, 2),
+                    "realized_ret_pips": round(realized_ret_pips, 2),
+                    "continuation_success": realized_ret_pips > 0,
+                    "max_favorable_pips": round(mfe_pips, 2),
+                    "max_adverse_pips": round(mae_pips, 2),
+                }
+                meta.update(telemetry)
+                signal.signal_metadata = meta
+                scored += 1
+
+            await session.commit()
+
+        if scored > 0:
+            async with _db_engine.AsyncSessionFactory() as summary_session:
+                rows = (await summary_session.execute(_text("""
+                    SELECT
+                        instrument,
+                        COUNT(*) AS n_scored,
+                        AVG(CAST(signal_metadata->>'realized_ret_pips' AS double precision)) AS mean_ret_pips,
+                        AVG(CASE WHEN (signal_metadata->>'continuation_success')::boolean THEN 1.0 ELSE 0.0 END) AS wr,
+                        AVG(CAST(signal_metadata->>'entry_slippage_pips' AS double precision)) AS avg_entry_slippage_pips
+                    FROM signals
+                    WHERE session = 'LDN_FIX'
+                      AND suppressed = false
+                      AND signal_metadata ? 'paper_result_version'
+                    GROUP BY instrument
+                    ORDER BY instrument
+                """))).fetchall()
+                pair_summary = [
+                    {
+                        "instrument": r[0],
+                        "n_scored": int(r[1] or 0),
+                        "mean_ret_pips": round(float(r[2] or 0.0), 2),
+                        "win_rate": round(float(r[3] or 0.0) * 100.0, 1),
+                        "avg_entry_slippage_pips": round(float(r[4] or 0.0), 2),
+                    }
+                    for r in rows
+                ]
+                await summary_session.execute(_text("""
+                    INSERT INTO system_events
+                        (event_at, event_type, severity, component, message, metadata)
+                    VALUES
+                        (NOW(), 'FIX_PAPER_SCORE', 'INFO', 'score_fix_paper_signals',
+                         :msg, CAST(:meta AS jsonb))
+                """), {
+                    "msg": f"Scored {scored} fix paper signals",
+                    "meta": __import__("json").dumps({
+                        "scored": scored,
+                        "skipped": skipped,
+                        "pair_summary": pair_summary,
+                    }),
+                })
+                await summary_session.commit()
+
+        logger.info("fix_paper_signals_scored", scored=scored, skipped=skipped)
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("fix_paper_signal_scoring_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=300)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.score_nfp_paper_signals", bind=True, max_retries=1)
+def score_nfp_paper_signals(self):
+    """Backfill realized paper outcomes for matured NFP_DRIFT signals."""
+    async def _inner():
+        import pandas as pd
+        from sqlalchemy import select, text as _text
+
+        from anchor.database.engine import init_db
+        import anchor.database.engine as _db_engine
+        from anchor.database.models import Signal
+        from anchor.database.repositories.market_data import MarketDataRepository
+        from anchor.utils.math_utils import get_pip_size
+        from anchor.utils.time_utils import utcnow
+
+        await init_db()
+        now = utcnow()
+        scored = 0
+        skipped = 0
+
+        async with _db_engine.AsyncSessionFactory() as session:
+            market_repo = MarketDataRepository(session)
+            result = await session.execute(
+                select(Signal)
+                .where(
+                    Signal.session == "NFP_DRIFT",
+                    Signal.suppressed == False,  # noqa: E712
+                )
+                .order_by(Signal.created_at.desc())
+                .limit(100)
+            )
+            signals = list(result.scalars().all())
+
+            for signal in signals:
+                meta = dict(signal.signal_metadata or {})
+                if meta.get("paper_result_version") == 1:
+                    continue
+
+                exit_iso = meta.get("expected_exit_time_utc")
+                entry_iso = meta.get("entry_time_utc")
+                direction = signal.direction
+                if not exit_iso or not entry_iso or direction not in {"LONG", "SHORT"}:
+                    skipped += 1
+                    continue
+
+                entry_ts = pd.Timestamp(entry_iso)
+                exit_ts = pd.Timestamp(exit_iso)
+                if entry_ts.tzinfo is None:
+                    entry_ts = entry_ts.tz_localize("UTC")
+                else:
+                    entry_ts = entry_ts.tz_convert("UTC")
+                if exit_ts.tzinfo is None:
+                    exit_ts = exit_ts.tz_localize("UTC")
+                else:
+                    exit_ts = exit_ts.tz_convert("UTC")
+                if exit_ts.to_pydatetime() > now:
+                    continue
+
+                candles = await market_repo.get_candles(
+                    signal.instrument,
+                    "H1",
+                    start=entry_ts.to_pydatetime(),
+                    end=(exit_ts + pd.Timedelta(hours=1)).to_pydatetime(),
+                    limit=40,
+                )
+                if len(candles) < 2:
+                    skipped += 1
+                    continue
+
+                entry_bar = next((c for c in candles if c.time >= entry_ts.to_pydatetime()), None)
+                exit_bar = next((c for c in candles if c.time >= exit_ts.to_pydatetime()), None)
+                if entry_bar is None or exit_bar is None:
+                    skipped += 1
+                    continue
+
+                pip = get_pip_size(signal.instrument)
+                actual_entry = float(entry_bar.open)
+                actual_exit = float(exit_bar.close)
+                signed = 1.0 if direction == "LONG" else -1.0
+                realized_ret_pips = signed * (actual_exit - actual_entry) / pip
+                mfe_pips = signed * (float(exit_bar.high) - actual_entry) / pip
+                mae_pips = signed * (float(exit_bar.low) - actual_entry) / pip
+                if direction == "SHORT":
+                    mfe_pips = signed * (float(exit_bar.low) - actual_entry) / pip
+                    mae_pips = signed * (float(exit_bar.high) - actual_entry) / pip
+
+                meta.update({
+                    "paper_result_version": 1,
+                    "paper_scored_at": now.isoformat(),
+                    "actual_entry_time_utc": entry_bar.time.isoformat(),
+                    "actual_exit_time_utc": exit_bar.time.isoformat(),
+                    "actual_entry_price": round(actual_entry, 5),
+                    "actual_exit_price": round(actual_exit, 5),
+                    "realized_ret_pips": round(realized_ret_pips, 2),
+                    "continuation_success": realized_ret_pips > 0,
+                    "max_favorable_pips": round(mfe_pips, 2),
+                    "max_adverse_pips": round(mae_pips, 2),
+                })
+                signal.signal_metadata = meta
+                scored += 1
+
+            await session.commit()
+
+        if scored > 0:
+            async with _db_engine.AsyncSessionFactory() as summary_session:
+                rows = (await summary_session.execute(_text("""
+                    SELECT
+                        instrument,
+                        COUNT(*) AS n_scored,
+                        AVG(CAST(signal_metadata->>'realized_ret_pips' AS double precision)) AS mean_ret_pips,
+                        AVG(CASE WHEN (signal_metadata->>'continuation_success')::boolean THEN 1.0 ELSE 0.0 END) AS wr
+                    FROM signals
+                    WHERE session = 'NFP_DRIFT'
+                      AND suppressed = false
+                      AND signal_metadata ? 'paper_result_version'
+                    GROUP BY instrument
+                    ORDER BY instrument
+                """))).fetchall()
+                pair_summary = [
+                    {
+                        "instrument": r[0],
+                        "n_scored": int(r[1] or 0),
+                        "mean_ret_pips": round(float(r[2] or 0.0), 2),
+                        "win_rate": round(float(r[3] or 0.0) * 100.0, 1),
+                    }
+                    for r in rows
+                ]
+                await summary_session.execute(_text("""
+                    INSERT INTO system_events
+                        (event_at, event_type, severity, component, message, metadata)
+                    VALUES
+                        (NOW(), 'NFP_PAPER_SCORE', 'INFO', 'score_nfp_paper_signals',
+                         :msg, CAST(:meta AS jsonb))
+                """), {
+                    "msg": f"Scored {scored} NFP paper signals",
+                    "meta": __import__("json").dumps({
+                        "scored": scored,
+                        "skipped": skipped,
+                        "pair_summary": pair_summary,
+                    }),
+                })
+                await summary_session.commit()
+
+        logger.info("nfp_paper_signals_scored", scored=scored, skipped=skipped)
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("nfp_paper_signal_scoring_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=300)
 
 
 @celery_app.task(name="anchor.scheduler.jobs.check_fit_weights_trigger", bind=True, max_retries=1)
@@ -130,16 +457,7 @@ def check_fit_weights_trigger(self):
         new_weights = _fit(df, C=1.0, sample_weight=sample_weight)
         logger.info("fw_time_weighted_fit", trade_count=len(df), half_life_days=90.0)
 
-        # ── Auto-apply: patch engine.py + fit_weights.py + write audit event ─
-        from anchor.backtesting.fit_weights import (
-            _patch_engine, _patch_current_weights, _log_system_event,
-        )
-        from pathlib import Path
-        _patch_engine(new_weights, Path("/app/anchor/signals/engine.py"))
-        _patch_current_weights(new_weights, Path("/app/anchor/backtesting/fit_weights.py"))
-        _log_system_event(new_weights, "live_trades_auto", len(df))
-
-        logger.info("fw_weights_applied", trade_count=trade_count, new_weights=new_weights)
+        logger.info("fw_weights_recommended", trade_count=trade_count, new_weights=new_weights)
 
         # Build Telegram summary
         wins = int((df["outcome"] == 1).sum())
@@ -157,7 +475,8 @@ def check_fit_weights_trigger(self):
             sign  = "+" if delta >= 0 else ""
             lines.append(f"{k:<22} {old_v:.4f}  {new_v:.4f}  {sign}{delta:.4f}")
         lines.append("```")
-        lines.append("engine.py patched and reloads on next signal scan.")
+        lines.append("No code was patched automatically.")
+        lines.append("Review before applying to production.")
 
         alert_msg = "\n".join(lines)
 
@@ -172,7 +491,7 @@ def check_fit_weights_trigger(self):
 
     # ── Step 5: send Telegram alert ───────────────────────────────────────────
     try:
-        _run_async(_alerts.send(alert_msg))
+        _run_async(_alerts.send_info(alert_msg))
     except Exception as exc:
         logger.warning("fw_trigger_alert_failed", error=str(exc))
 
@@ -248,6 +567,7 @@ def monitor_live_performance(self):
     # Split by strategy via session tag
     lcr_df    = df[df["session"] == "NY_LCR"].head(50)
     london_df = df[df["session"].isin(["LONDON"])].head(50)
+    fix_df    = df[df["session"] == "LDN_FIX"].head(50)
 
     alerts: list[str]    = []
     summaries: list[dict] = []
@@ -255,6 +575,7 @@ def monitor_live_performance(self):
     for label, bench, strat_df in [
         ("LCR",    _PERF_BENCH["LCR"],    lcr_df),
         ("LONDON", _PERF_BENCH["LONDON"], london_df),
+        ("FIX",    _PERF_BENCH["FIX"],    fix_df),
     ]:
         n = len(strat_df)
         if n < _PERF_MIN_TRADES:
@@ -310,6 +631,37 @@ def monitor_live_performance(self):
         summaries.append(summary)
         logger.info("live_perf_monitor", **summary)
 
+    # ── Per-pair 60-day PF breakdown by sleeve ───────────────────────────────
+    # Shows which pairs are approaching circuit-breaker territory.
+    pair_pf_60d: list[dict] = []
+    with db.connect() as conn:
+        for _strategy, _session_filter, _pairs in [
+            ("LCR", "NY_LCR", ["EUR_USD", "NZD_USD", "AUD_USD", "EUR_JPY", "USD_CAD"]),
+            ("FIX", "LDN_FIX", ["USD_JPY", "EUR_USD", "GBP_USD"]),
+        ]:
+            for _pair in _pairs:
+                _pair_rows = conn.execute(_text(
+                    "SELECT t.net_pl FROM trades t "
+                    "LEFT JOIN signals s ON s.id = t.signal_id "
+                    "WHERE t.instrument = :inst "
+                    "AND t.signal_id IS NOT NULL "
+                    "AND s.session = :session "
+                    "AND t.closed_at >= NOW() - INTERVAL '60 days'"
+                ), {"inst": _pair, "session": _session_filter}).fetchall()
+                _n = len(_pair_rows)
+                if _n > 0:
+                    _gw = sum(r[0] for r in _pair_rows if r[0] > 0)
+                    _gl = abs(sum(r[0] for r in _pair_rows if r[0] <= 0))
+                    _pf = round(_gw / _gl, 3) if _gl > 0 else None
+                    _cb_active = _pf is not None and _pf < 1.0 and _n >= 15
+                    pair_pf_60d.append({
+                        "strategy": _strategy,
+                        "pair": _pair,
+                        "trades": _n,
+                        "pf_60d": _pf,
+                        "circuit_breaker": _cb_active,
+                    })
+
     # Write to system_events
     severity = "WARNING" if alerts else "INFO"
     message  = "; ".join(alerts) if alerts else "Live performance within benchmarks"
@@ -323,7 +675,11 @@ def monitor_live_performance(self):
         """), {
             "sev":  severity,
             "msg":  message,
-            "meta": json.dumps({"summaries": summaries, "alerts": alerts}),
+            "meta": json.dumps({
+                "summaries": summaries,
+                "alerts": alerts,
+                "pair_pf_60d": pair_pf_60d,
+            }),
         })
 
     # Telegram alert if degrading
@@ -334,7 +690,7 @@ def monitor_live_performance(self):
                 + "\n".join(f"• {a}" for a in alerts)
                 + "\n\nCheck `make fit-weights-progress` and review recent trades."
             )
-            _run_async(_alerts.send(alert_text))
+            _run_async(_alerts.send_warning(alert_text))
         except Exception as exc:
             logger.warning("live_perf_alert_failed", error=str(exc))
 
@@ -350,7 +706,11 @@ def monitor_live_performance(self):
                         _lbl = s["strategy"]
                         _bench = _PERF_BENCH.get(_lbl, {})
                         # Gather per-pair breakdown from raw trades for this strategy
-                        _session_filter = "NY_LCR" if _lbl == "LCR" else "LONDON"
+                        _session_filter = {
+                            "LCR": "NY_LCR",
+                            "LONDON": "LONDON",
+                            "FIX": "LDN_FIX",
+                        }.get(_lbl, "LONDON")
                         _strat_rows = [
                             {
                                 "instrument":  r[3],
@@ -396,7 +756,7 @@ def assess_edge_confidence(self):
     from sqlalchemy import create_engine as _ce, text as _t
     import redis.asyncio as _redis_async
     from anchor.config import get_settings
-    from anchor.database.engine import AsyncSessionLocal
+    from anchor.database.engine import AsyncSessionFactory as AsyncSessionLocal
     from anchor.monitoring.edge_confidence import assess_edge_confidence as _assess, build_alert_message
 
     cfg = get_settings()

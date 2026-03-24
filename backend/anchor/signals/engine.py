@@ -235,6 +235,7 @@ class ConfluenceEngine:
         self._abl_econ_surprise  = ablation_econ_surprise
         self._abl_cross_asset    = ablation_cross_asset
         self._confluence_threshold = confluence_threshold
+        self._logged_missing_ml: set[str] = set()
 
     async def evaluate(
         self,
@@ -659,7 +660,9 @@ class ConfluenceEngine:
                     )
                     result.metadata["ml_fallback"] = True
         elif self._abl_ml and not self.ml_classifier:
-            logger.warning("ml_classifier_missing", instrument=instrument)
+            if instrument not in self._logged_missing_ml:
+                logger.warning("ml_classifier_missing", instrument=instrument)
+                self._logged_missing_ml.add(instrument)
             result.metadata["ml_skipped"] = "missing"
 
         # ── Step 6b: Macro dissonance penalty (Tier 2c) ──────────────────

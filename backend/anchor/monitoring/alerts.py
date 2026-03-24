@@ -21,6 +21,7 @@ class AlertService:
 
     async def send_info(self, message: str) -> None:
         await self._telegram(f"ℹ️ INFO\n{message}")
+        logger.info("alert_sent", message=message)
 
     async def _telegram(self, text: str) -> None:
         if not settings.telegram_bot_token or not settings.telegram_chat_id:
@@ -31,9 +32,8 @@ class AlertService:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(url, json={
-                    "chat_id":    settings.telegram_chat_id,
-                    "text":       text[:4096],
-                    "parse_mode": "HTML",
+                    "chat_id": settings.telegram_chat_id,
+                    "text":    text[:4096],
                 })
         except Exception as exc:
             logger.error("telegram_send_failed", error=str(exc))

@@ -18,7 +18,7 @@ FRED series: VIXCLS (daily closing VIX from CBOE, free, no auth needed)
   — Published by FRED: https://fred.stlouisfed.org/series/VIXCLS
   — Updates daily (Mon–Fri, US market hours)
 
-Redis key: vix_latest
+Redis key: vix_data
 TTL: 4 hours (VIX changes daily; intraday we just need one fresh read)
 """
 from __future__ import annotations
@@ -34,8 +34,10 @@ logger = structlog.get_logger(__name__)
 
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 _VIX_SERIES = "VIXCLS"
-_REDIS_KEY  = "vix_latest"
+_REDIS_KEY  = "vix_data"
+_LEGACY_KEY = "vix_latest"
 _TTL_SECS   = 4 * 3_600  # 4 hours
+_LOGGED_CACHE_MISS = False
 
 
 # VIX → position size multiplier lookup
@@ -101,7 +103,10 @@ async def fetch_and_store(redis_client, api_key: str) -> Optional[float]:
         "vix":        vix,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
-    await redis_client.set(_REDIS_KEY, json.dumps(payload), ex=_TTL_SECS)
+    payload_json = json.dumps(payload)
+    await redis_client.set(_REDIS_KEY, payload_json, ex=_TTL_SECS)
+    # Backward compatibility for any older readers that still look at the legacy key.
+    await redis_client.set(_LEGACY_KEY, payload_json, ex=_TTL_SECS)
 
     logger.info("vix_stored", vix=vix, multiplier=vix_size_multiplier(vix))
     return vix
@@ -109,9 +114,14 @@ async def fetch_and_store(redis_client, api_key: str) -> Optional[float]:
 
 async def get_cached_multiplier(redis_client) -> float:
     """Return cached VIX size multiplier, or 1.0 if cache is empty."""
+    global _LOGGED_CACHE_MISS
     raw = await redis_client.get(_REDIS_KEY)
     if not raw:
-        logger.debug("vix_cache_miss_using_full_size")
+        raw = await redis_client.get(_LEGACY_KEY)
+    if not raw:
+        if not _LOGGED_CACHE_MISS:
+            logger.debug("vix_cache_miss_using_full_size")
+            _LOGGED_CACHE_MISS = True
         return 1.0
     try:
         data = json.loads(raw)
@@ -123,6 +133,8 @@ async def get_cached_multiplier(redis_client) -> float:
 async def get_cached_vix(redis_client) -> Optional[float]:
     """Return the cached raw VIX value, or None."""
     raw = await redis_client.get(_REDIS_KEY)
+    if not raw:
+        raw = await redis_client.get(_LEGACY_KEY)
     if not raw:
         return None
     try:

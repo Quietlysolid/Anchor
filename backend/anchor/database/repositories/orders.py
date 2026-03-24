@@ -104,6 +104,34 @@ class OrderRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_fill_match_candidates(
+        self,
+        instrument: str,
+        direction: str,
+        opened_after: datetime,
+        opened_before: datetime,
+        limit: int = 10,
+    ) -> List[Order]:
+        """Return recent orders that could plausibly have opened the broker trade.
+
+        Reconciliation uses this as a fallback when OANDA does not expose the
+        opening order ID on the trade payload we have available.
+        """
+        result = await self.session.execute(
+            select(Order)
+            .where(
+                and_(
+                    Order.instrument == instrument,
+                    Order.direction == direction,
+                    Order.created_at >= opened_after,
+                    Order.created_at <= opened_before,
+                )
+            )
+            .order_by(desc(Order.created_at))
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def get_pending(self) -> List[Order]:
         result = await self.session.execute(
             select(Order).where(

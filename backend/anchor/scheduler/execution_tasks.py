@@ -100,7 +100,7 @@ def close_stale_trades(self):
                     )
                     try:
                         await broker.close_trade(pos.oanda_trade_id)
-                        await repo.mark_closed(pos.id, price, now)
+                        await repo.mark_closed(pos.id, "STALE_12H", now, exit_price=price)
                     except Exception as exc:
                         logger.error("stale_close_failed", trade_id=pos.oanda_trade_id, error=str(exc))
 

@@ -2,11 +2,16 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../client'
 import type {
   SystemHealth, RolloutConfig,
-  PerformanceSummary, EquityPoint, MonteCarloResult, Trade, EconomicEvent
+  PerformanceSummary, EquityPoint, MonteCarloResult, Trade, EconomicEvent, SystemEvent
 } from '../../types'
 
 export const useSystemHealth = () =>
-  useQuery({ queryKey: ['system-health'], queryFn: () => api.get<SystemHealth>('/system/health'), refetchInterval: 60_000 })
+  useQuery({
+    queryKey: ['system-health'],
+    queryFn: () => api.get<SystemHealth>('/system/health'),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  })
 
 export const useRolloutConfig = () =>
   useQuery({
@@ -26,7 +31,12 @@ export const useMonteCarlo = () =>
   useQuery({ queryKey: ['monte-carlo'], queryFn: () => api.get<MonteCarloResult>('/performance/monte-carlo'), staleTime: 5 * 60_000 })
 
 export const useTradeJournal = () =>
-  useQuery({ queryKey: ['trade-journal'], queryFn: () => api.get<Trade[]>('/performance/trade-journal'), staleTime: 60_000 })
+  useQuery({
+    queryKey: ['trade-journal'],
+    queryFn: () => api.get<Trade[]>('/performance/trade-journal'),
+    refetchInterval: 60_000,
+    staleTime: 55_000,
+  })
 
 export const useRegime = () =>
   useQuery({
@@ -249,4 +259,12 @@ export const useIntelligenceHistory = (limit = 20) =>
     },
     refetchInterval: 5 * 60_000,
     staleTime: 4 * 60_000,
+  })
+
+export const useSystemEvents = (severity = 'WARNING,ERROR', limit = 20) =>
+  useQuery({
+    queryKey: ['system-events', severity, limit],
+    queryFn: () => api.get<SystemEvent[]>(`/system/events?severity=${encodeURIComponent(severity)}&limit=${limit}`),
+    refetchInterval: 60_000,
+    staleTime: 55_000,
   })

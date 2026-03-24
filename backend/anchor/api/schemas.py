@@ -29,6 +29,7 @@ class EngineConfigResponse(BaseModel):
     enabled: bool
     paper_only: bool
     risk_pct: float
+    instruments: Optional[List[str]] = None
 
 
 class PilotConfigResponse(BaseModel):
@@ -44,6 +45,8 @@ class RolloutConfigResponse(BaseModel):
     trend: EngineConfigResponse
     mean_reversion: EngineConfigResponse
     lcr: EngineConfigResponse
+    fix: EngineConfigResponse
+    nfp: EngineConfigResponse
     m15: EngineConfigResponse
     expected_pilot: PilotConfigResponse
     max_risk_per_trade_fallback: float

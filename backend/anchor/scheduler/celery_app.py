@@ -41,11 +41,18 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.run_partial_tp": {"queue": "default"},
         "anchor.scheduler.jobs.check_fit_weights_trigger":  {"queue": "default"},
         "anchor.scheduler.jobs.monitor_live_performance":   {"queue": "default"},
+        "anchor.scheduler.jobs.score_fix_paper_signals":    {"queue": "default"},
+        "anchor.scheduler.jobs.score_nfp_paper_signals":    {"queue": "default"},
         "anchor.scheduler.jobs.assess_edge_confidence":       {"queue": "default"},
         "anchor.scheduler.jobs.run_backtest":                  {"queue": "default"},
         "anchor.scheduler.jobs.generate_presession_brief":    {"queue": "default"},
         "anchor.scheduler.jobs.generate_postsession_debrief": {"queue": "default"},
         "anchor.scheduler.jobs.generate_weekly_synthesis":    {"queue": "default"},
+        "anchor.scheduler.jobs.snapshot_lcr_pair_status":     {"queue": "default"},
+        "anchor.scheduler.jobs.update_economic_surprise":      {"queue": "default"},
+        "anchor.scheduler.jobs.generate_trade_explanations":   {"queue": "default"},
+        "anchor.scheduler.jobs.analyze_journal_patterns":      {"queue": "default"},
+        "anchor.scheduler.jobs.run_intrabar_anomaly_check":    {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -129,6 +136,14 @@ celery_app.conf.update(
             "task": "anchor.scheduler.jobs.monitor_live_performance",
             "schedule": 86_400.0,  # daily — compares rolling WR/PF vs backtest benchmarks
         },
+        "score-fix-paper-signals-every-15-min": {
+            "task": "anchor.scheduler.jobs.score_fix_paper_signals",
+            "schedule": 900.0,  # lightweight metadata backfill for matured fix paper signals
+        },
+        "score-nfp-paper-signals-every-30-min": {
+            "task": "anchor.scheduler.jobs.score_nfp_paper_signals",
+            "schedule": 1800.0,
+        },
         "assess-edge-confidence-daily": {
             "task": "anchor.scheduler.jobs.assess_edge_confidence",
             "schedule": 86_400.0,  # daily after London close — detects macro dislocation
@@ -174,5 +189,10 @@ celery_app.conf.update(
 
 @celery_app.on_after_finalize.connect
 def _schedule_startup_diagnostics(sender, **kwargs):
-    """Fire startup_diagnostics immediately when the worker process is ready."""
+    """Prime critical diagnostics and external-data caches on worker startup."""
     sender.send_task("anchor.scheduler.jobs.startup_diagnostics")
+    sender.send_task("anchor.scheduler.jobs.import_candles")
+    sender.send_task("anchor.scheduler.jobs.update_fred_rates")
+    sender.send_task("anchor.scheduler.jobs.update_vix")
+    sender.send_task("anchor.scheduler.jobs.update_cot_data")
+    sender.send_task("anchor.scheduler.jobs.update_cross_asset")
