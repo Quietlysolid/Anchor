@@ -1,31 +1,31 @@
 import { NavLink } from 'react-router-dom'
-import { Home, Clock, Radio } from 'lucide-react'
+import { Activity, BookOpen, Zap } from 'lucide-react'
 
 const TABS = [
-  { to: '/',             Icon: Home,  label: 'Home',    end: true  },
-  { to: '/trades',       Icon: Clock, label: 'History', end: false },
-  { to: '/intelligence', Icon: Radio, label: 'Activity', end: false },
+  { to: '/',             label: 'Now',   end: true,  Icon: Activity },
+  { to: '/trades',       label: 'Log',   end: false, Icon: BookOpen },
+  { to: '/intelligence', label: 'Intel', end: false, Icon: Zap      },
 ]
 
 export function BottomNav() {
   return (
-    <nav className="fixed bottom-0 inset-x-0 z-30 bg-anchor-surface border-t border-anchor-border md:hidden">
-      <div className="flex items-center justify-around h-16">
-        {TABS.map(({ to, Icon, label, end }) => (
+    <nav className="fixed bottom-0 inset-x-0 z-30 bg-anchor-spine border-t border-white/[0.06] md:hidden">
+      <div className="flex items-center justify-around h-[60px]">
+        {TABS.map(({ to, label, end, Icon }) => (
           <NavLink
             key={to}
             to={to}
             end={end}
             className={({ isActive }) =>
-              `flex flex-col items-center gap-1 flex-1 py-2 transition-colors ${
-                isActive ? 'text-anchor-green' : 'text-anchor-muted'
+              `flex flex-col items-center gap-1.5 flex-1 py-3 transition-all ${
+                isActive ? 'text-anchor-chartblue' : 'text-white/25'
               }`
             }
           >
             {({ isActive }) => (
               <>
-                <Icon size={22} strokeWidth={isActive ? 2 : 1.5} />
-                <span className="text-[10px] font-medium">{label}</span>
+                <Icon size={16} strokeWidth={isActive ? 2.2 : 1.5} />
+                <span className="font-mono text-[8px] tracking-[0.2em] uppercase">{label}</span>
               </>
             )}
           </NavLink>

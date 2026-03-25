@@ -1,10 +1,6 @@
-import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Home, Clock, Radio, PanelLeftClose, PanelLeftOpen, X } from 'lucide-react'
-import { StatusDot } from '../ui/StatusDot'
-import { useSystemHealth } from '../../api/hooks'
+import { X, Activity, BookOpen, Zap } from 'lucide-react'
 
-// The Anchor mark — custom, not from any library
 function AnchorMark({ size = 20, className = '' }: { size?: number; className?: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 20 20" fill="none" className={className}>
@@ -18,120 +14,73 @@ function AnchorMark({ size = 20, className = '' }: { size?: number; className?: 
 }
 
 const NAV = [
-  { to: '/',             Icon: Home,  label: 'Home',     end: true  },
-  { to: '/trades',       Icon: Clock, label: 'History',  end: false },
-  { to: '/intelligence', Icon: Radio, label: 'Activity', end: false },
+  { to: '/',             label: 'Now',   end: true,  Icon: Activity },
+  { to: '/trades',       label: 'Log',   end: false, Icon: BookOpen },
+  { to: '/intelligence', label: 'Intel', end: false, Icon: Zap      },
 ]
 
 interface Props { onClose?: () => void }
 
 export function Sidebar({ onClose }: Props) {
-  const [collapsed, setCollapsed] = useState(false)
-  const { data: health, isLoading, isError } = useSystemHealth()
-
-  const healthConnected = health?.status === 'ok' && health.stream_connected
-  const footerLabel = isLoading
-    ? 'Checking'
-    : isError || !health
-      ? 'Unknown'
-      : healthConnected
-        ? 'Running'
-        : 'Degraded'
-
   return (
-    <aside className={`
-      h-full bg-anchor-surface border-r border-anchor-border
-      flex flex-col shrink-0 transition-all duration-200
-      ${collapsed ? 'w-[60px]' : 'w-[220px]'}
-    `}>
+    <aside className="h-full w-[180px] shrink-0 bg-anchor-spine flex flex-col border-r border-white/[0.06]">
 
-      {/* Logo */}
-      <div className={`
-        flex items-center border-b border-anchor-border h-[56px]
-        ${collapsed ? 'justify-center px-0' : 'px-5 gap-3'}
-      `}>
-        <AnchorMark size={18} className="text-anchor-green shrink-0" />
-        {!collapsed && (
-          <span className="font-mono font-semibold text-anchor-text tracking-[0.15em] text-sm">
-            ANCHOR
-          </span>
-        )}
-        {onClose && !collapsed && (
+      {/* Brand */}
+      <div className="px-5 pt-7 pb-6 flex items-start justify-between border-b border-white/[0.05]">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <AnchorMark size={20} className="text-anchor-rule shrink-0" />
+            <span className="font-mono text-[11px] tracking-[0.28em] text-white/60 uppercase font-medium">anchor</span>
+          </div>
+          <p className="mt-2 text-[9px] text-white/20 font-mono tracking-[0.2em] uppercase">algo · fx</p>
+        </div>
+        {onClose && (
           <button
             type="button"
             onClick={onClose}
-            className="md:hidden ml-auto text-anchor-muted hover:text-anchor-text transition-colors"
+            className="md:hidden text-white/20 hover:text-white/50 transition-colors mt-0.5"
           >
-            <X size={15} />
+            <X size={14} />
           </button>
         )}
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 p-2 space-y-0.5 pt-3">
-        {NAV.map(({ to, Icon, label, end }) => (
+      <nav className="flex-1 px-3 pt-4 space-y-0.5">
+        {NAV.map(({ to, label, end, Icon }) => (
           <NavLink
             key={to}
             to={to}
             end={end}
-            title={collapsed ? label : undefined}
-            className={({ isActive }) => `
-              relative flex items-center rounded-lg transition-all duration-150
-              ${collapsed ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'}
-              ${isActive
-                ? 'text-anchor-green bg-anchor-green/8'
-                : 'text-anchor-muted hover:text-anchor-text hover:bg-white/[0.04]'
-              }
-            `}
+            className={({ isActive }) =>
+              `group flex items-center gap-3 px-3 py-2.5 transition-all duration-150 border-l-2 ${
+                isActive
+                  ? 'bg-white/[0.06] text-white border-anchor-chartblue'
+                  : 'text-white/30 hover:text-white/55 hover:bg-white/[0.03] border-transparent'
+              }`
+            }
           >
             {({ isActive }) => (
               <>
-                {isActive && (
-                  <span className="absolute left-0 inset-y-2 w-[3px] bg-anchor-green rounded-r-full" />
-                )}
-                <Icon size={16} strokeWidth={isActive ? 2 : 1.75} />
-                {!collapsed && (
-                  <span className={`text-sm ${isActive ? 'text-anchor-text font-medium' : ''}`}>
-                    {label}
-                  </span>
-                )}
+                <Icon
+                  size={13}
+                  strokeWidth={isActive ? 2.2 : 1.6}
+                  className={`shrink-0 transition-all ${isActive ? 'text-anchor-chartblue' : 'text-white/25 group-hover:text-white/50'}`}
+                />
+                <span className="font-mono text-[10px] tracking-[0.18em] uppercase">{label}</span>
               </>
             )}
           </NavLink>
         ))}
       </nav>
 
-      {/* Footer */}
-      <div className={`
-        border-t border-anchor-border p-3
-        flex ${collapsed ? 'flex-col items-center gap-3' : 'items-center justify-between'}
-      `}>
-        <div className={`flex items-center gap-2 ${collapsed ? 'flex-col gap-1.5' : ''}`}>
-          <StatusDot connected={healthConnected} />
-          {!collapsed && (
-            <span className={`text-[11px] font-mono ${
-              isLoading ? 'text-anchor-muted' : healthConnected ? 'text-anchor-green' : 'text-anchor-red'
-            }`}>
-              {footerLabel}
-            </span>
-          )}
+      {/* Status footer */}
+      <div className="px-5 py-5 border-t border-white/[0.05]">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="w-1.5 h-1.5 bg-anchor-chartblue/80 shrink-0" />
+          <span className="font-mono text-[9px] tracking-[0.22em] uppercase text-white/40">running</span>
         </div>
-
-        {!collapsed && (
-          <span className="text-[10px] font-mono text-anchor-muted/30 tracking-widest">v2</span>
-        )}
-
-        <button
-          type="button"
-          onClick={() => setCollapsed(v => !v)}
-          className="text-anchor-muted hover:text-anchor-text transition-colors hidden md:block"
-          title={collapsed ? 'Expand' : 'Collapse'}
-        >
-          {collapsed
-            ? <PanelLeftOpen size={15} strokeWidth={1.5} />
-            : <PanelLeftClose size={15} strokeWidth={1.5} />
-          }
-        </button>
+        <p className="font-mono text-[8px] tracking-[0.14em] text-white/15 uppercase">paper · no real cash</p>
       </div>
     </aside>
   )

@@ -1,76 +1,82 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Manrope:wght@400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 100%;
-    --card: 240 5% 11%;
-    --card-foreground: 0 0% 100%;
-    --border: 240 3% 23%;
-    --input: 240 3% 23%;
-    --primary: 142 68% 51%;
-    --primary-foreground: 0 0% 0%;
-    --muted: 240 3% 23%;
-    --muted-foreground: 240 4% 56%;
-    --accent: 240 3% 23%;
+    --background:   44 40% 88%;
+    --foreground:  224 40% 18%;
+    --card:         46 33% 96%;
+    --card-foreground: 224 40% 18%;
+    --border:       38 20% 76%;
+    --input:        38 20% 76%;
+    --primary:     224 40% 18%;
+    --primary-foreground: 0 0% 100%;
+    --muted:        44 30% 84%;
+    --muted-foreground: 38 12% 50%;
+    --accent:      214 58% 42%;
     --accent-foreground: 0 0% 100%;
-    --destructive: 4 90% 61%;
-    --ring: 142 68% 51%;
+    --destructive:   0 64% 34%;
+    --ring:        214 58% 42%;
   }
-}
 
-* { box-sizing: border-box; }
+  * {
+    box-sizing: border-box;
+  }
 
-html { background-color: #000000; }
+  html {
+    min-height: 100%;
+    /* Nautical chart coordinate grid on aged parchment */
+    background-color: #eeead8;
+    background-image:
+      linear-gradient(rgba(26, 39, 68, 0.055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(26, 39, 68, 0.055) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
 
-body {
-  background-color: #000000;
-  color: #FFFFFF;
-  font-family: 'Inter', system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  margin: 0;
-}
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: transparent;
+    color: #1a2744;
+    font-family: 'Manrope', 'Avenir Next', 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: #000000; }
-::-webkit-scrollbar-thumb { background: #3A3A3C; border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: #636366; }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
 
-@keyframes shimmer {
-  0%   { background-position: -400px 0; }
-  100% { background-position:  400px 0; }
-}
+  ::selection {
+    background: rgba(43, 94, 167, 0.2);
+    color: #1a2744;
+  }
 
-.skeleton {
-  background: linear-gradient(90deg, #1C1C1E 0%, #2C2C2E 50%, #1C1C1E 100%);
-  background-size: 400px 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
-  border-radius: 6px;
-}
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
 
-@keyframes fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
 
-.animate-fade-in { animation: fade-in 0.2s ease-out both; }
+  ::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(26, 39, 68, 0.2);
+  }
 
-.typewriter-cursor::after {
-  content: '|';
-  color: #30D158;
-  animation: blink 1s step-end infinite;
-  margin-left: 1px;
-  font-weight: 300;
-}
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(26, 39, 68, 0.35);
+  }
 
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0; }
-}
-
-@keyframes glow-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.3; }
+  #root {
+    min-height: 100vh;
+  }
 }
