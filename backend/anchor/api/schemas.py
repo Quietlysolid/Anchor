@@ -54,6 +54,28 @@ class RolloutConfigResponse(BaseModel):
     min_ml_confidence: float
 
 
+class OperatorWindowResponse(BaseModel):
+    engine: str
+    label: str
+    starts_at: datetime
+    ends_at: datetime
+
+
+class OperatorStateResponse(BaseModel):
+    as_of: datetime
+    operator_state: str
+    session_status: str
+    working_orders_count: int
+    open_positions_count: int
+    active_window: Optional[OperatorWindowResponse] = None
+    next_window: Optional[OperatorWindowResponse] = None
+    active_engines: List[str] = []
+    blocker_code: Optional[str] = None
+    blocker_reason: Optional[str] = None
+    blocker_instrument: Optional[str] = None
+    blocker_at: Optional[datetime] = None
+
+
 # ── LCR Pair Status ───────────────────────────────────────────────────────────
 class LCRPairStatusResponse(BaseModel):
     instrument: str

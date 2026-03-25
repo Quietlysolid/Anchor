@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../client'
 import type {
   SystemHealth, RolloutConfig,
-  PerformanceSummary, EquityPoint, MonteCarloResult, Trade, EconomicEvent, SystemEvent
+  PerformanceSummary, EquityPoint, MonteCarloResult, Trade, EconomicEvent, SystemEvent, OperatorState, HomepageSnapshot
 } from '../../types'
 
 export const useSystemHealth = () =>
@@ -19,6 +19,22 @@ export const useRolloutConfig = () =>
     queryFn: () => api.get<RolloutConfig>('/system/config'),
     refetchInterval: 60_000,
     staleTime: 55_000,
+  })
+
+export const useOperatorState = () =>
+  useQuery({
+    queryKey: ['operator-state'],
+    queryFn: () => api.get<OperatorState>('/system/operator-state'),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  })
+
+export const useHomepageSnapshot = () =>
+  useQuery({
+    queryKey: ['homepage-snapshot'],
+    queryFn: () => api.get<HomepageSnapshot>('/system/homepage-snapshot'),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
   })
 
 export const usePerformance = () =>
@@ -59,7 +75,11 @@ export const usePositions = () =>
   useQuery({ queryKey: ['positions'], queryFn: () => api.get<import('../../types').Position[]>('/positions'), refetchInterval: 10_000 })
 
 export const usePendingOrders = () =>
-  useQuery({ queryKey: ['pending-orders'], queryFn: () => api.get<import('../../types').Order[]>('/orders'), refetchInterval: 10_000 })
+  useQuery({
+    queryKey: ['pending-orders'],
+    queryFn: () => api.get<import('../../types').Order[]>('/orders?status=PENDING,SUBMITTED,ACKNOWLEDGED,PARTIAL'),
+    refetchInterval: 10_000,
+  })
 
 export const useCandles = (instrument: string, timeframe: string) => {
   // Refresh rate based on candle duration — no need to poll faster than the candle closes

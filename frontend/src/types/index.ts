@@ -150,12 +150,128 @@ export interface SystemHealth {
   timestamp: string
   deployed_sha: string | null
   deployed_at: string | null
+  account_mode: 'paper' | 'live'
+  account_environment: 'practice' | 'live' | string
   last_reconciliation: string | null
   stream_connected: boolean
   open_positions: number
   account_balance: number
   account_equity: number
   today_pl: number | null
+}
+
+export interface OperatorWindow {
+  engine: string
+  label: string
+  starts_at: string
+  ends_at: string
+}
+
+export interface OperatorState {
+  as_of: string
+  operator_state: 'DEGRADED' | 'MANAGING_POSITIONS' | 'WAITING_ON_ORDERS' | 'SCANNING' | 'OFF_WINDOW'
+  session_status: 'OPEN' | 'CLOSED' | 'NO_WINDOW'
+  working_orders_count: number
+  open_positions_count: number
+  active_window: OperatorWindow | null
+  next_window: OperatorWindow | null
+  active_engines: string[]
+  blocker_code: string | null
+  blocker_reason: string | null
+  blocker_instrument: string | null
+  blocker_at: string | null
+}
+
+export interface HomepageSnapshotActivity {
+  id: string
+  occurred_at: string
+  kind: string
+  tone: 'good' | 'warn' | 'bad' | 'info'
+  badge: string
+  instrument: string | null
+  reason_code: string | null
+  title: string
+  detail: string
+}
+
+export interface HomepageSnapshotExposurePosition {
+  id: string
+  instrument: string
+  direction: Direction
+  units: number
+  avg_entry_price: number
+  current_price: number | null
+  unrealized_pl: number | null
+  stop_loss: number | null
+  take_profit: number | null
+  opened_at: string
+}
+
+export interface HomepageSnapshotExposureOrder {
+  id: string
+  instrument: string
+  direction: Direction
+  order_type: string
+  units: number
+  state: OrderState
+  created_at: string
+  stop_loss: number | null
+  take_profit: number | null
+}
+
+export interface HomepageSnapshotWatchItem {
+  instrument: string
+  status: string
+  reason_codes: string[]
+  regime: string | null
+  confidence: number | null
+}
+
+export interface HomepageSnapshotResult {
+  id: string
+  instrument: string
+  direction: Direction
+  opened_at: string
+  closed_at: string
+  net_pl: number
+  close_reason: string | null
+}
+
+export interface HomepageSnapshotCalendarItem {
+  event_time: string
+  currency: string
+  impact: 'HIGH' | 'MEDIUM'
+  event_name: string
+}
+
+export interface HomepageSnapshot {
+  as_of: string
+  operator: OperatorState
+  account: {
+    mode: 'paper' | 'live'
+    environment: string
+    balance: number
+    equity: number
+    today_pl: number
+    stream_connected: boolean
+    last_reconciliation: string | null
+  }
+  strategies: Array<{
+    engine: string
+    label: string
+    status: 'running' | 'enabled' | 'off'
+    paper_only: boolean
+    readiness: 'live_ready' | 'paper_trial' | 'paper_validated' | 'no_go' | 'research_only' | 'unknown'
+    readiness_label: string
+  }>
+  activity: HomepageSnapshotActivity[]
+  exposure: {
+    positions: HomepageSnapshotExposurePosition[]
+    orders: HomepageSnapshotExposureOrder[]
+  }
+  watchlist: HomepageSnapshotWatchItem[]
+  recent_results: HomepageSnapshotResult[]
+  calendar: HomepageSnapshotCalendarItem[]
 }
 
 export interface SystemEvent {
@@ -183,6 +299,8 @@ export interface PilotRolloutConfig {
 }
 
 export interface RolloutConfig {
+  account_mode?: 'paper' | 'live'
+  account_environment?: 'practice' | 'live' | string
   instruments: string[]
   trend: EngineRolloutConfig
   mean_reversion: EngineRolloutConfig
