@@ -70,7 +70,8 @@ export interface Position {
   stop_loss: number | null
   take_profit: number | null
   opened_at: string
-  oanda_trade_id: string
+  broker_trade_id: string
+  record_origin?: 'current_broker_state' | 'anchor_audit_history'
 }
 
 export interface Order {
@@ -81,9 +82,10 @@ export interface Order {
   order_type: string
   units: number
   state: OrderState
-  oanda_order_id: string | null
+  broker_order_id: string | null
   stop_loss: number | null
   take_profit: number | null
+  record_origin?: 'current_broker_state' | 'anchor_audit_history'
 }
 
 export interface Trade {
@@ -248,14 +250,16 @@ export interface HomepageSnapshot {
   as_of: string
   operator: OperatorState
   account: {
+    provider?: string
     mode: 'paper' | 'live'
     environment: string
     balance: number
     equity: number
-    today_pl: number
+    today_pl: number | null
     stream_connected: boolean
     last_reconciliation: string | null
   }
+  history_notice?: string
   strategies: Array<{
     engine: string
     label: string

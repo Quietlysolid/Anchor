@@ -1,7 +1,7 @@
 .PHONY: up down dev logs shell-engine shell-db migrate upgrade seed backtest backtest-all lint test \
         download-history ablation walk-forward fit-weights instrument-confidence monte-carlo lcr-backtest lcr-backtest-all \
         arb-backtest arb-backtest-all event-study event-study-nfp nfp-drift nfp-signal-backtest fix-flow-backtest fix-signal-backtest month-end-rebalancing combined-sleeve-validation london-funnel-diagnostics london-rescue-matrix eurusd-london-direct-entry sleeve-validate-nfp sleeve-validate-fix calendar-backfill calendar-cleanup \
-        lcr-walkforward lcr-walkforward-all london-walk-forward london-walk-forward-all \
+        lcr-walkforward lcr-walkforward-all london-walk-forward london-walk-forward-all v2-backtest v2-carry v2-cpi v2-value v2-sweep \
         threshold-sweep threshold-sweep-london portfolio-backtest live-perf-check
 
 up:
@@ -38,7 +38,7 @@ redis-cli:
 	docker compose exec redis redis-cli
 
 import-history:
-	docker compose exec engine python -m anchor.data.oanda_history
+	docker compose exec engine python -m anchor.data.bootstrap_history
 
 import-dukascopy:
 	docker compose exec engine python -m anchor.data.dukascopy
@@ -528,6 +528,79 @@ portfolio-backtest:
 		--pairs EUR_USD,GBP_USD,NZD_USD,USD_CAD,EUR_JPY,AUD_USD \
 		--data-dir data \
 		--balance 10000
+
+v2-backtest:
+	docker compose exec engine python -m anchor.backtesting.v2_portfolio_backtest \
+		--data-dir /app/data \
+		--currencies '$(if $(CURRENCIES),$(CURRENCIES),EUR,JPY,GBP,CHF,CAD,AUD,NZD,SEK,NOK)' \
+		$(if $(CARRY_CSV),--carry-csv $(CARRY_CSV),) \
+		$(if $(VALUE_CSV),--value-csv $(VALUE_CSV),) \
+		--balance $(or $(BALANCE),100000)
+
+v2-carry:
+	docker compose exec engine python -m anchor.data.v2_carry \
+		--api-key $(FRED_API_KEY) \
+		$(if $(SERIES_MAP_JSON),--series-map-json $(SERIES_MAP_JSON),) \
+		--output $(or $(OUTPUT),/app/data/v2_carry.csv)
+
+v2-cpi:
+	docker compose exec engine python -m anchor.data.v2_cpi \
+		--api-key $(FRED_API_KEY) \
+		$(if $(SERIES_MAP_JSON),--series-map-json $(SERIES_MAP_JSON),) \
+		--output $(or $(OUTPUT),/app/data/v2_cpi.csv)
+
+v2-value:
+	docker compose exec engine python -m anchor.data.v2_value \
+		--data-dir /app/data \
+		--cpi-csv $(or $(CPI_CSV),/app/data/v2_cpi.csv) \
+		--currencies '$(if $(CURRENCIES),$(CURRENCIES),EUR,JPY,GBP,CHF,CAD,AUD,NZD,SEK,NOK)' \
+		--lookback-months $(or $(LOOKBACK_MONTHS),60) \
+		--output $(or $(OUTPUT),/app/data/v2_value.csv)
+
+v2-sweep:
+	docker compose exec engine python -m anchor.backtesting.v2_experiment_sweep \
+		--data-dir /app/data \
+		--currencies '$(if $(CURRENCIES),$(CURRENCIES),EUR,JPY,GBP,CAD,AUD,NZD)' \
+		$(if $(CARRY_CSV),--carry-csv $(CARRY_CSV),) \
+		$(if $(VALUE_CSV),--value-csv $(VALUE_CSV),) \
+		--balance $(or $(BALANCE),100000)
+
+v2-pair-momentum:
+	docker compose exec engine python -m anchor.backtesting.v2_pair_momentum_backtest \
+		--data-dir /app/data \
+		--pairs '$(if $(PAIRS),$(PAIRS),EUR_USD,USD_JPY,GBP_USD,USD_CNY,USD_CAD,AUD_USD,USD_CHF,EUR_JPY,EUR_GBP,NZD_USD)' \
+		--momentum-lookback-months $(or $(LOOKBACK_MONTHS),6) \
+		--rebalance-frequency $(or $(REBALANCE_FREQUENCY),quarterly) \
+		--top-n $(or $(TOP_N),3) \
+		--balance $(or $(BALANCE),100000) \
+		$(if $(EXPORT_JSON),--export-json $(EXPORT_JSON),) \
+		$(if $(EXPORT_MONTHLY),--export-monthly $(EXPORT_MONTHLY),)
+
+futures-v1-backtest:
+	docker compose exec engine python -m anchor.backtesting.futures_v1_backtest \
+		--data-dir /app/data \
+		--markets '$(if $(MARKETS),$(MARKETS),MES,MNQ,ZN,MGC,MCL)' \
+		--balance $(or $(BALANCE),100000) \
+		--trend-lookback-days $(or $(TREND_LOOKBACK_DAYS),126) \
+		--vol-lookback-days $(or $(VOL_LOOKBACK_DAYS),20) \
+		--rebalance-frequency $(or $(REBALANCE_FREQUENCY),weekly) \
+		--threshold $(or $(THRESHOLD),0.0) \
+		$(if $(EXPORT_JSON),--export-json $(EXPORT_JSON),) \
+		$(if $(EXPORT_DAILY),--export-daily $(EXPORT_DAILY),)
+
+futures-v1-sweep:
+	PYTHONPATH=/opt/anchor/backend /opt/anchor/.venv/bin/python -m anchor.backtesting.futures_v1_experiment_sweep \
+		--data-dir /opt/anchor/data \
+		--markets '$(if $(MARKETS),$(MARKETS),MES,MNQ,ZN,MGC,MCL)' \
+		--balance $(or $(BALANCE),100000) \
+		--export-csv /opt/anchor/data/futures_v1_sweep.csv \
+		--export-json /opt/anchor/data/futures_v1_sweep.json
+
+futures-history:
+	PYTHONPATH=/opt/anchor/backend /opt/anchor/.venv/bin/python -m anchor.data.futures_history \
+		--markets '$(if $(MARKETS),$(MARKETS),MES,MNQ,ZN,MGC,MCL)' \
+		--output-dir /opt/anchor/data \
+		--period $(or $(PERIOD),10y)
 
 ## ── Live performance check ───────────────────────────────────────────────────
 

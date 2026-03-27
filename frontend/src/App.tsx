@@ -5,38 +5,15 @@ import { DisconnectedBanner } from './components/layout/DisconnectedBanner'
 import Home from './pages/Home'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { wsClient } from './api/websocket'
-import { useLatestSignals, usePositions, useRegime } from './api/hooks'
-import { useMarketStore, usePositionStore, useSignalStore, useSystemStore, useWeightsStore } from './store'
-import type { LivePrice, Position, Signal } from './types'
+import { usePositions } from './api/hooks'
+import { usePositionStore, useSystemStore } from './store'
+import type { Position } from './types'
 
 function WsBootstrap() {
-  const setPrice = useMarketStore((s) => s.setPrice)
-  const { setWsConnected, setHeartbeat, setRegime, setAccount } = useSystemStore()
-  const pushSignal = useSignalStore((s) => s.pushSignal)
+  const { setWsConnected, setHeartbeat, setAccount } = useSystemStore()
   const setPositions = usePositionStore((s) => s.setPositions)
-  const fetchWeights = useWeightsStore((s) => s.fetchWeights)
   const queryClient = useQueryClient()
-  const { data: seedSignals } = useLatestSignals()
-  const { data: seedRegime } = useRegime()
   const { data: seedPositions } = usePositions()
-
-  useEffect(() => {
-    fetchWeights()
-  }, [fetchWeights])
-
-  useEffect(() => {
-    if (seedSignals?.length && useSignalStore.getState().signals.length === 0) {
-      seedSignals.forEach((signal) => pushSignal(signal))
-    }
-  }, [pushSignal, seedSignals])
-
-  useEffect(() => {
-    if (seedRegime && Object.keys(seedRegime).length > 0) {
-      if (Object.keys(useSystemStore.getState().currentRegime).length === 0) {
-        setRegime(seedRegime)
-      }
-    }
-  }, [seedRegime, setRegime])
 
   useEffect(() => {
     if (seedPositions) {
@@ -49,9 +26,6 @@ function WsBootstrap() {
 
     const unsubs = [
       wsClient.onStatus((connected) => setWsConnected(connected)),
-      wsClient.on('ticks', (d) => setPrice(d as LivePrice)),
-      wsClient.on('signals', (d) => pushSignal(d as Signal)),
-      wsClient.on('regime', (d) => setRegime(d as Record<string, { state: string; confidence: number }>)),
       wsClient.on('heartbeat', () => setHeartbeat()),
       wsClient.on('account', (d) => {
         const { balance, equity } = d as { balance: number; equity: number }
@@ -73,7 +47,7 @@ function WsBootstrap() {
       wsClient.disconnect()
       setWsConnected(false)
     }
-  }, [pushSignal, queryClient, setAccount, setHeartbeat, setPositions, setPrice, setRegime, setWsConnected])
+  }, [queryClient, setAccount, setHeartbeat, setPositions, setWsConnected])
 
   return null
 }

@@ -28,18 +28,23 @@
 
   html {
     min-height: 100%;
-    /* Nautical chart coordinate grid on aged parchment */
     background-color: #eeead8;
     background-image:
+      radial-gradient(circle at top left, rgba(43, 94, 167, 0.08), transparent 28%),
+      radial-gradient(circle at top right, rgba(45, 106, 79, 0.06), transparent 24%),
+      radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.24) 0, rgba(255, 255, 255, 0) 34%),
+      radial-gradient(circle at 80% 30%, rgba(26, 39, 68, 0.035) 0, rgba(26, 39, 68, 0) 28%),
       linear-gradient(rgba(26, 39, 68, 0.055) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(26, 39, 68, 0.055) 1px, transparent 1px);
-    background-size: 48px 48px;
+      linear-gradient(90deg, rgba(26, 39, 68, 0.055) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(26, 39, 68, 0.015));
+    background-size: auto, auto, auto, auto, 48px 48px, 48px 48px, auto;
   }
 
   body {
     margin: 0;
     min-height: 100vh;
-    background: transparent;
+    background:
+      linear-gradient(180deg, rgba(250, 249, 243, 0.8) 0%, rgba(238, 234, 216, 0.93) 100%);
     color: #1a2744;
     font-family: 'Manrope', 'Avenir Next', 'Segoe UI', sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -78,5 +83,10 @@
 
   #root {
     min-height: 100vh;
+  }
+
+  .panel-glass {
+    background: rgba(250, 249, 243, 0.82);
+    backdrop-filter: blur(8px);
   }
 }

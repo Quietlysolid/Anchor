@@ -1,0 +1,372 @@
+{
+  "universe": [
+    "EUR",
+    "JPY",
+    "GBP",
+    "CHF",
+    "CAD",
+    "AUD",
+    "NZD",
+    "SEK",
+    "NOK",
+    "CNY"
+  ],
+  "pairs": {
+    "EUR": "EUR_USD",
+    "JPY": "USD_JPY",
+    "GBP": "GBP_USD",
+    "CHF": "USD_CHF",
+    "CAD": "USD_CAD",
+    "AUD": "AUD_USD",
+    "NZD": "NZD_USD",
+    "SEK": "USD_SEK",
+    "NOK": "USD_NOK",
+    "CNY": "USD_CNY"
+  },
+  "parameters": {
+    "recipe": "BER",
+    "signal": "prior_month_return_vs_usd",
+    "rebalance_frequency": "monthly",
+    "weighting": "equal_weight"
+  },
+  "metrics": {
+    "months": 97,
+    "final_balance": 80297.4,
+    "net_return_pct": -19.7,
+    "annualized_return_pct": -2.68,
+    "annualized_vol_pct": 5.58,
+    "sharpe": -0.485,
+    "profit_factor": 0.691,
+    "max_drawdown_pct": -25.34,
+    "positive_months_pct": 41.24
+  },
+  "rebalances": [
+    {
+      "date": "2025-04-30",
+      "aggregate_weights": {
+        "AUD": 0.1,
+        "CAD": 0.1,
+        "CHF": 0.1,
+        "CNY": 0.1,
+        "EUR": 0.1,
+        "GBP": 0.1,
+        "JPY": 0.1,
+        "NOK": 0.1,
+        "NZD": 0.1,
+        "SEK": 0.1
+      },
+      "longs": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "GBP",
+        "JPY",
+        "NOK",
+        "NZD",
+        "SEK"
+      ],
+      "shorts": []
+    },
+    {
+      "date": "2025-05-31",
+      "aggregate_weights": {
+        "AUD": 0.111111,
+        "CAD": 0.111111,
+        "CHF": 0.111111,
+        "EUR": 0.111111,
+        "GBP": 0.111111,
+        "JPY": 0.111111,
+        "NOK": 0.111111,
+        "NZD": 0.111111,
+        "SEK": 0.111111,
+        "CNY": -1.0
+      },
+      "longs": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "EUR",
+        "GBP",
+        "JPY",
+        "NOK",
+        "NZD",
+        "SEK"
+      ],
+      "shorts": [
+        "CNY"
+      ]
+    },
+    {
+      "date": "2025-06-30",
+      "aggregate_weights": {
+        "AUD": 0.111111,
+        "CAD": 0.111111,
+        "CHF": 0.111111,
+        "CNY": 0.111111,
+        "EUR": 0.111111,
+        "GBP": 0.111111,
+        "NOK": 0.111111,
+        "NZD": 0.111111,
+        "SEK": 0.111111,
+        "JPY": -1.0
+      },
+      "longs": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "GBP",
+        "NOK",
+        "NZD",
+        "SEK"
+      ],
+      "shorts": [
+        "JPY"
+      ]
+    },
+    {
+      "date": "2025-07-31",
+      "aggregate_weights": {
+        "AUD": 0.1,
+        "CAD": 0.1,
+        "CHF": 0.1,
+        "CNY": 0.1,
+        "EUR": 0.1,
+        "GBP": 0.1,
+        "JPY": 0.1,
+        "NOK": 0.1,
+        "NZD": 0.1,
+        "SEK": 0.1
+      },
+      "longs": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "GBP",
+        "JPY",
+        "NOK",
+        "NZD",
+        "SEK"
+      ],
+      "shorts": []
+    },
+    {
+      "date": "2025-08-31",
+      "aggregate_weights": {
+        "AUD": -0.1,
+        "CAD": -0.1,
+        "CHF": -0.1,
+        "CNY": -0.1,
+        "EUR": -0.1,
+        "GBP": -0.1,
+        "JPY": -0.1,
+        "NOK": -0.1,
+        "NZD": -0.1,
+        "SEK": -0.1
+      },
+      "longs": [],
+      "shorts": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "GBP",
+        "JPY",
+        "NOK",
+        "NZD",
+        "SEK"
+      ]
+    },
+    {
+      "date": "2025-09-30",
+      "aggregate_weights": {
+        "AUD": 0.1,
+        "CAD": 0.1,
+        "CHF": 0.1,
+        "CNY": 0.1,
+        "EUR": 0.1,
+        "GBP": 0.1,
+        "JPY": 0.1,
+        "NOK": 0.1,
+        "NZD": 0.1,
+        "SEK": 0.1
+      },
+      "longs": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "GBP",
+        "JPY",
+        "NOK",
+        "NZD",
+        "SEK"
+      ],
+      "shorts": []
+    },
+    {
+      "date": "2025-10-31",
+      "aggregate_weights": {
+        "AUD": 0.166667,
+        "CHF": 0.166667,
+        "CNY": 0.166667,
+        "EUR": 0.166667,
+        "NOK": 0.166667,
+        "SEK": 0.166667,
+        "CAD": -0.25,
+        "GBP": -0.25,
+        "JPY": -0.25,
+        "NZD": -0.25
+      },
+      "longs": [
+        "AUD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "NOK",
+        "SEK"
+      ],
+      "shorts": [
+        "CAD",
+        "GBP",
+        "JPY",
+        "NZD"
+      ]
+    },
+    {
+      "date": "2025-11-30",
+      "aggregate_weights": {
+        "CNY": 1.0,
+        "AUD": -0.111111,
+        "CAD": -0.111111,
+        "CHF": -0.111111,
+        "EUR": -0.111111,
+        "GBP": -0.111111,
+        "JPY": -0.111111,
+        "NOK": -0.111111,
+        "NZD": -0.111111,
+        "SEK": -0.111111
+      },
+      "longs": [
+        "CNY"
+      ],
+      "shorts": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "EUR",
+        "GBP",
+        "JPY",
+        "NOK",
+        "NZD",
+        "SEK"
+      ]
+    },
+    {
+      "date": "2025-12-31",
+      "aggregate_weights": {
+        "AUD": 0.125,
+        "CAD": 0.125,
+        "CHF": 0.125,
+        "CNY": 0.125,
+        "EUR": 0.125,
+        "GBP": 0.125,
+        "NZD": 0.125,
+        "SEK": 0.125,
+        "JPY": -0.5,
+        "NOK": -0.5
+      },
+      "longs": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "GBP",
+        "NZD",
+        "SEK"
+      ],
+      "shorts": [
+        "JPY",
+        "NOK"
+      ]
+    },
+    {
+      "date": "2026-01-31",
+      "aggregate_weights": {
+        "AUD": 0.111111,
+        "CAD": 0.111111,
+        "CHF": 0.111111,
+        "CNY": 0.111111,
+        "EUR": 0.111111,
+        "GBP": 0.111111,
+        "NOK": 0.111111,
+        "NZD": 0.111111,
+        "SEK": 0.111111,
+        "JPY": -1.0
+      },
+      "longs": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "GBP",
+        "NOK",
+        "NZD",
+        "SEK"
+      ],
+      "shorts": [
+        "JPY"
+      ]
+    },
+    {
+      "date": "2026-02-28",
+      "aggregate_weights": {
+        "AUD": 0.1,
+        "CAD": 0.1,
+        "CHF": 0.1,
+        "CNY": 0.1,
+        "EUR": 0.1,
+        "GBP": 0.1,
+        "JPY": 0.1,
+        "NOK": 0.1,
+        "NZD": 0.1,
+        "SEK": 0.1
+      },
+      "longs": [
+        "AUD",
+        "CAD",
+        "CHF",
+        "CNY",
+        "EUR",
+        "GBP",
+        "JPY",
+        "NOK",
+        "NZD",
+        "SEK"
+      ],
+      "shorts": []
+    },
+    {
+      "date": "2026-03-31",
+      "aggregate_weights": {
+        "CNY": 1.0,
+        "NZD": -1.0
+      },
+      "longs": [
+        "CNY"
+      ],
+      "shorts": [
+        "NZD"
+      ]
+    }
+  ]
+}

@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from anchor.build_info import DEPLOYED_AT, DEPLOYED_SHA
 from anchor.config import get_settings
@@ -14,11 +15,13 @@ from anchor.api.schemas import (
     RolloutConfigResponse,
 )
 from anchor.database.models import EconomicEvent, Order, Position, RegimeHistory, Signal, SystemEvent, Trade
-from anchor.signals.session_filter import ASIAN_SESSION_END, ASIAN_SESSION_START
+from anchor.execution.broker_client import BrokerClient
+from anchor.futures.strategy import build_futures_v1_targets
 from anchor.utils.time_utils import utcnow
 
 router = APIRouter()
 settings = get_settings()
+logger = structlog.get_logger(__name__)
 
 # Set by main.py lifespan after stream starts
 _stream_connected: bool = False
@@ -50,65 +53,110 @@ def _window_payload(engine: str, label: str, starts_at: datetime, ends_at: datet
     }
 
 
+async def _broker_runtime_snapshot() -> dict:
+    broker = BrokerClient()
+    account = await broker.get_account_summary()
+    positions = await broker.get_open_positions()
+    pending_orders = await broker.get_pending_orders()
+    account["openTradeCount"] = len(positions)
+    return {
+        "account": account,
+        "positions": positions,
+        "pending_orders": pending_orders,
+    }
+
+
+def _instrument_label(raw: str) -> str:
+    return raw.replace("_", "/")
+
+
+def _next_futures_rebalance(now_utc: datetime) -> datetime:
+    hour, minute = [int(part) for part in settings.futures_daily_signal_time_utc.split(":", 1)]
+    candidate = now_utc.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    while candidate <= now_utc or candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+        candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return candidate
+
+
+def _futures_window(now_utc: datetime) -> tuple[dict | None, dict | None]:
+    if not settings.futures_v1_enabled:
+        return None, None
+    next_rebalance = _next_futures_rebalance(now_utc)
+    active = _window_payload(
+        "futures_v1",
+        "Futures portfolio",
+        now_utc - timedelta(hours=1),
+        next_rebalance,
+    )
+    return active, _window_payload(
+        "futures_v1",
+        "Next rebalance",
+        next_rebalance,
+        next_rebalance + timedelta(minutes=15),
+    )
+
+
+def _live_position_payload(position: dict) -> dict:
+    current_units = float(position.get("currentUnits", 0.0) or 0.0)
+    return {
+        "id": str(position.get("id") or position.get("instrument")),
+        "instrument": str(position.get("instrument", "")),
+        "direction": "LONG" if current_units > 0 else "SHORT",
+        "units": abs(current_units),
+        "avg_entry_price": float(position.get("price", 0.0) or 0.0),
+        "current_price": None,
+        "unrealized_pl": float(position.get("unrealizedPL", 0.0) or 0.0),
+        "stop_loss": None,
+        "take_profit": None,
+        "opened_at": _last_reconciliation or utcnow().isoformat(),
+    }
+
+
+def _live_order_payload(order: dict) -> dict:
+    return {
+        "id": str(order.get("id")),
+        "instrument": str(order.get("instrument", "")),
+        "direction": str(order.get("direction", "LONG")),
+        "order_type": str(order.get("order_type", "MARKET")),
+        "units": float(order.get("units", 0.0) or 0.0),
+        "state": str(order.get("state", "")),
+        "created_at": utcnow().isoformat(),
+        "stop_loss": None,
+        "take_profit": None,
+    }
+
+
 def _candidate_windows(now_utc: datetime) -> list[dict]:
-    weekday = now_utc.weekday()
-    candidates: list[dict] = []
+    return []
 
-    def day_anchor(offset_days: int = 0) -> datetime:
-        return datetime(
-            now_utc.year,
-            now_utc.month,
-            now_utc.day,
-            tzinfo=timezone.utc,
-        ) + timedelta(days=offset_days)
 
-    if settings.enable_trend_engine or settings.enable_mr_engine or settings.enable_m15_engine:
-        for offset in range(-1, 8):
-            base = day_anchor(offset)
-            wd = base.weekday()
-            if wd >= 5:
-                continue
-            london_start = base.replace(hour=7, minute=15)
-            london_end = base.replace(hour=12, minute=0)
-            candidates.append(_window_payload("trend", "London core", london_start, london_end))
+async def _current_day_pl(session: AsyncSession) -> float | None:
+    from anchor.database.models import EquityCurvePoint
 
-            has_jpy = any("JPY" in instrument for instrument in settings.instruments)
-            if has_jpy:
-                asian_start_hour = 2 if wd == 0 else ASIAN_SESSION_START
-                asian_start = base.replace(hour=asian_start_hour, minute=0)
-                asian_end = base.replace(hour=ASIAN_SESSION_END, minute=0)
-                if asian_start < asian_end:
-                    candidates.append(_window_payload("trend", "Tokyo JPY watch", asian_start, asian_end))
+    now_utc = utcnow()
+    now_et = now_utc.astimezone(ZoneInfo("America/New_York"))
+    et_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+    utc_midnight = et_midnight.astimezone(ZoneInfo("UTC"))
 
-    if settings.enable_lcr_engine:
-        for offset in range(-1, 8):
-            base = day_anchor(offset)
-            wd = base.weekday()
-            if wd >= 5:
-                continue
-            lcr_start = base.replace(hour=17, minute=0)
-            lcr_end = base.replace(hour=18 if wd == 4 else 20, minute=0)
-            candidates.append(_window_payload("lcr", "London close", lcr_start, lcr_end))
+    try:
+        result = await session.execute(
+            select(EquityCurvePoint.account_equity)
+            .where(EquityCurvePoint.time < utc_midnight)
+            .order_by(EquityCurvePoint.time.desc())
+            .limit(1)
+        )
+        start_of_day_equity = result.scalar_one_or_none()
+    except Exception:
+        start_of_day_equity = None
 
-    if settings.enable_fix_engine:
-        from anchor.backtesting.fix_calendar import london_fix_time_utc
-        import pandas as pd
-
-        for offset in range(-1, 8):
-            base = day_anchor(offset)
-            if base.weekday() >= 5:
-                continue
-            fix_time = london_fix_time_utc(pd.Timestamp(base))
-            candidates.append(_window_payload("fix", "London fix", fix_time.to_pydatetime(), (fix_time + pd.Timedelta(hours=1)).to_pydatetime()))
-
-    return sorted(candidates, key=lambda item: item["starts_at"])
+    if start_of_day_equity is None:
+        return None
+    return _account_equity - float(start_of_day_equity)
 
 
 def _active_and_next_window(now_utc: datetime) -> tuple[dict | None, dict | None]:
-    candidates = _candidate_windows(now_utc)
-    active = next((window for window in candidates if window["starts_at"] <= now_utc < window["ends_at"]), None)
-    next_window = next((window for window in candidates if window["starts_at"] > now_utc), None)
-    return active, next_window
+    return _futures_window(now_utc)
 
 
 def _operator_state_code(
@@ -131,49 +179,14 @@ def _operator_state_code(
 
 
 def _strategy_states(active_window: dict | None) -> list[dict]:
-    def readiness_for(engine: str) -> tuple[str, str]:
-        if engine == "lcr":
-            return "live_ready", "live-ready"
-        if engine == "trend":
-            return "paper_trial", "paper trial"
-        if engine == "fix":
-            return "paper_validated", "validated, paper-only"
-        if engine == "nfp":
-            return "paper_validated", "validated, paper-only"
-        if engine == "mean_reversion":
-            return "no_go", "no-go"
-        if engine == "m15":
-            return "research_only", "research only"
-        return "unknown", "unknown"
-
-    configured = [
-        ("trend", "TREND", settings.enable_trend_engine, settings.trend_paper_only),
-        ("lcr", "London close", settings.enable_lcr_engine, settings.lcr_paper_only),
-        ("fix", "London fix", settings.enable_fix_engine, settings.fix_paper_only),
-        ("nfp", "NFP", settings.enable_nfp_engine, settings.nfp_paper_only),
-        ("mean_reversion", "Mean reversion", settings.enable_mr_engine, settings.mr_paper_only),
-        ("m15", "M15", settings.enable_m15_engine, settings.m15_paper_only),
-    ]
-
-    states = []
-    active_engine = active_window["engine"] if active_window else None
-    for key, label, enabled, paper_only in configured:
-        readiness, readiness_label = readiness_for(key)
-        if not enabled:
-            status = "off"
-        elif active_engine == key:
-            status = "running"
-        else:
-            status = "enabled"
-        states.append({
-            "engine": key,
-            "label": label,
-            "status": status,
-            "paper_only": paper_only,
-            "readiness": readiness,
-            "readiness_label": readiness_label,
-        })
-    return states
+    return [{
+        "engine": "futures_v1",
+        "label": "Trend / TSMOM",
+        "status": "running" if settings.futures_v1_enabled else "off",
+        "paper_only": settings.futures_v1_paper_only,
+        "readiness": "paper_trial" if settings.futures_v1_paper_only else "live_ready",
+        "readiness_label": "paper portfolio" if settings.futures_v1_paper_only else "live-ready",
+    }]
 
 
 def _signal_activity(signal: Signal) -> dict:
@@ -252,6 +265,8 @@ def _is_interesting_system_event(event: SystemEvent) -> bool:
     severity = event.severity.upper()
     if event_type == "HEARTBEAT":
         return False
+    if settings.trading_domain == "futures" and event_type == "STARTUP_DIAGNOSTICS":
+        return False
     if severity in {"ERROR", "CRITICAL", "WARNING", "WARN"}:
         return True
     return event_type in {"RECONCILIATION", "LIVE_PERF_CHECK", "EDGE_CONFIDENCE_CHECK"}
@@ -308,12 +323,9 @@ def _collapse_activity(rows: list[dict]) -> list[dict]:
 async def health_check(session: AsyncSession = Depends(get_db)):
     """System health endpoint. Used by Docker healthcheck and monitoring."""
     from sqlalchemy import text, select, func
-    from anchor.database.models import Position, EquityCurvePoint
+    from anchor.database.models import Position
 
     now_utc = utcnow()
-    now_et = now_utc.astimezone(ZoneInfo("America/New_York"))
-    et_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
-    utc_midnight = et_midnight.astimezone(ZoneInfo("UTC"))
 
     try:
         await session.execute(text("SELECT 1"))
@@ -321,28 +333,23 @@ async def health_check(session: AsyncSession = Depends(get_db)):
     except Exception:
         db_ok = False
 
-    try:
-        result = await session.execute(
-            select(func.count()).select_from(Position).where(Position.status == "OPEN")
-        )
-        open_positions = result.scalar() or 0
-    except Exception:
-        open_positions = 0
+    open_positions = 0
+    if settings.trading_domain == "futures":
+        try:
+            runtime = await _broker_runtime_snapshot()
+            open_positions = len(runtime["positions"])
+        except Exception:
+            open_positions = 0
+    else:
+        try:
+            result = await session.execute(
+                select(func.count()).select_from(Position).where(Position.status == "OPEN")
+            )
+            open_positions = result.scalar() or 0
+        except Exception:
+            open_positions = 0
 
-    try:
-        result = await session.execute(
-            select(EquityCurvePoint.account_equity)
-            .where(EquityCurvePoint.time < utc_midnight)
-            .order_by(EquityCurvePoint.time.desc())
-            .limit(1)
-        )
-        start_of_day_equity = result.scalar_one_or_none()
-    except Exception:
-        start_of_day_equity = None
-
-    today_pl = None
-    if start_of_day_equity is not None:
-        today_pl = _account_equity - float(start_of_day_equity)
+    today_pl = await _current_day_pl(session)
 
     return {
         "status":              "ok" if db_ok else "degraded",
@@ -350,8 +357,9 @@ async def health_check(session: AsyncSession = Depends(get_db)):
         "timestamp":           now_utc.isoformat(),
         "deployed_sha":        DEPLOYED_SHA,
         "deployed_at":         DEPLOYED_AT,
-        "account_mode":        "paper" if settings.oanda_environment == "practice" else "live",
-        "account_environment": settings.oanda_environment,
+        "broker_provider":     settings.broker_provider,
+        "account_mode":        settings.account_mode,
+        "account_environment": settings.account_environment,
         "stream_connected":    _stream_connected,
         "account_balance":     _account_balance,
         "account_equity":      _account_equity,
@@ -371,26 +379,32 @@ async def get_operator_state(session: AsyncSession = Depends(get_db)):
     except Exception:
         db_ok = False
 
-    open_positions_count = (
-        await session.execute(
-            select(func.count()).select_from(Position).where(Position.status == "OPEN")
-        )
-    ).scalar() or 0
+    if settings.trading_domain == "futures":
+        runtime = await _broker_runtime_snapshot()
+        open_positions_count = len(runtime["positions"])
+        working_orders_count = len(runtime["pending_orders"])
+        latest_blocker = None
+    else:
+        open_positions_count = (
+            await session.execute(
+                select(func.count()).select_from(Position).where(Position.status == "OPEN")
+            )
+        ).scalar() or 0
 
-    working_orders_count = (
-        await session.execute(
-            select(func.count()).select_from(Order).where(Order.state.in_(_WORKING_ORDER_STATES))
-        )
-    ).scalar() or 0
+        working_orders_count = (
+            await session.execute(
+                select(func.count()).select_from(Order).where(Order.state.in_(_WORKING_ORDER_STATES))
+            )
+        ).scalar() or 0
 
-    latest_blocker = (
-        await session.execute(
-            select(Signal)
-            .where(Signal.suppressed.is_(True))
-            .order_by(desc(Signal.created_at))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+        latest_blocker = (
+            await session.execute(
+                select(Signal)
+                .where(Signal.suppressed.is_(True))
+                .order_by(desc(Signal.created_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
 
     active_window, next_window = _active_and_next_window(now_utc)
     operator_state = _operator_state_code(
@@ -401,18 +415,22 @@ async def get_operator_state(session: AsyncSession = Depends(get_db)):
         active_window=active_window,
     )
 
-    active_engines = [
-        engine
-        for engine, enabled in (
-            ("trend", settings.enable_trend_engine),
-            ("mean_reversion", settings.enable_mr_engine),
-            ("lcr", settings.enable_lcr_engine),
-            ("fix", settings.enable_fix_engine),
-            ("nfp", settings.enable_nfp_engine),
-            ("m15", settings.enable_m15_engine),
-        )
-        if enabled
-    ]
+    active_engines = (
+        ["futures_v1"]
+        if settings.trading_domain == "futures" and settings.futures_v1_enabled
+        else [
+            engine
+            for engine, enabled in (
+                ("trend", settings.enable_trend_engine),
+                ("mean_reversion", settings.enable_mr_engine),
+                ("lcr", settings.enable_lcr_engine),
+                ("fix", settings.enable_fix_engine),
+                ("nfp", settings.enable_nfp_engine),
+                ("m15", settings.enable_m15_engine),
+            )
+            if enabled
+        ]
+    )
 
     blocker_code = latest_blocker.suppression_reason if latest_blocker else None
     blocker_reason = blocker_code.split(":", 1)[0] if blocker_code else None
@@ -436,38 +454,49 @@ async def get_operator_state(session: AsyncSession = Depends(get_db)):
 @router.get("/system/homepage-snapshot")
 async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
     now_utc = utcnow()
+    today_pl = await _current_day_pl(session)
 
     operator = await get_operator_state(session)
 
-    recent_signals = (
-        await session.execute(
-            select(Signal).order_by(desc(Signal.created_at)).limit(12)
-        )
-    ).scalars().all()
+    runtime = await _broker_runtime_snapshot() if settings.trading_domain == "futures" else None
 
-    working_orders = (
-        await session.execute(
-            select(Order)
-            .where(Order.state.in_(_WORKING_ORDER_STATES))
-            .order_by(desc(Order.created_at))
-            .limit(12)
-        )
-    ).scalars().all()
+    recent_signals = []
+    if settings.trading_domain != "futures":
+        recent_signals = (
+            await session.execute(
+                select(Signal).order_by(desc(Signal.created_at)).limit(12)
+            )
+        ).scalars().all()
 
-    open_positions = (
-        await session.execute(
-            select(Position)
-            .where(Position.status == "OPEN")
-            .order_by(desc(Position.opened_at))
-            .limit(12)
-        )
-    ).scalars().all()
+    if settings.trading_domain == "futures":
+        working_orders = []
+        open_positions = []
+    else:
+        working_orders = (
+            await session.execute(
+                select(Order)
+                .where(Order.state.in_(_WORKING_ORDER_STATES))
+                .order_by(desc(Order.created_at))
+                .limit(12)
+            )
+        ).scalars().all()
 
-    recent_trades = (
-        await session.execute(
-            select(Trade).order_by(desc(Trade.closed_at)).limit(8)
-        )
-    ).scalars().all()
+        open_positions = (
+            await session.execute(
+                select(Position)
+                .where(Position.status == "OPEN")
+                .order_by(desc(Position.opened_at))
+                .limit(12)
+            )
+        ).scalars().all()
+
+    recent_trades = []
+    if settings.trading_domain != "futures":
+        recent_trades = (
+            await session.execute(
+                select(Trade).order_by(desc(Trade.closed_at)).limit(8)
+            )
+        ).scalars().all()
 
     recent_events = (
         await session.execute(
@@ -477,24 +506,26 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
         )
     ).scalars().all()
 
-    regime_subq = (
-        select(
-            RegimeHistory.instrument,
-            func.max(RegimeHistory.time).label("max_time"),
-        )
-        .where(RegimeHistory.instrument.in_(settings.instruments))
-        .group_by(RegimeHistory.instrument)
-        .subquery()
-    )
-    regimes = (
-        await session.execute(
-            select(RegimeHistory).join(
-                regime_subq,
-                (RegimeHistory.instrument == regime_subq.c.instrument)
-                & (RegimeHistory.time == regime_subq.c.max_time),
+    regimes = []
+    if settings.trading_domain != "futures":
+        regime_subq = (
+            select(
+                RegimeHistory.instrument,
+                func.max(RegimeHistory.time).label("max_time"),
             )
+            .where(RegimeHistory.instrument.in_(settings.instruments))
+            .group_by(RegimeHistory.instrument)
+            .subquery()
         )
-    ).scalars().all()
+        regimes = (
+            await session.execute(
+                select(RegimeHistory).join(
+                    regime_subq,
+                    (RegimeHistory.instrument == regime_subq.c.instrument)
+                    & (RegimeHistory.time == regime_subq.c.max_time),
+                )
+            )
+        ).scalars().all()
 
     upcoming_calendar = (
         await session.execute(
@@ -509,12 +540,8 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
         )
     ).scalars().all()
 
-    from anchor.signals.lcr_pair_status import load_lcr_pair_statuses
-    pair_statuses = await load_lcr_pair_statuses(session)
-    pair_rows = list(pair_statuses.values())
-
     activity = [
-        *[_signal_activity(signal) for signal in recent_signals],
+        *([] if settings.trading_domain == "futures" else [_signal_activity(signal) for signal in recent_signals]),
         *[_order_activity(order) for order in working_orders],
         *[_trade_activity(trade) for trade in recent_trades],
         *[_system_event_activity(event) for event in recent_events if _is_interesting_system_event(event)],
@@ -522,86 +549,105 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
     activity.sort(key=lambda row: row["occurred_at"], reverse=True)
     activity = _collapse_activity(activity)
 
-    regime_map = {row.instrument: row for row in regimes}
-    watchlist = []
-    for pair in pair_rows[:6]:
-        regime = regime_map.get(pair.instrument)
-        watchlist.append({
-            "instrument": pair.instrument,
-            "status": pair.status.value,
-            "reason_codes": pair.reasons,
-            "regime": regime.regime if regime else None,
-            "confidence": float(regime.confidence) if regime and regime.confidence is not None else None,
-        })
-
-    if not watchlist:
-        for regime in regimes[:6]:
+    if settings.trading_domain == "futures":
+        target_map = {target.market: target for target in build_futures_v1_targets("/app/data", markets=list(settings.futures_v1_markets))}
+        live_markets = {str(position.get("instrument", "")).split("-", 1)[0] for position in runtime["positions"]}
+        watchlist = []
+        for market in settings.futures_v1_markets:
+            target = target_map.get(market)
+            reason_codes = []
+            status = "active" if market in live_markets else "watchlist"
+            if target:
+                reason_codes.append(f"signal_{'long' if target.signal > 0 else 'short'}")
+                reason_codes.append(f"weight_{abs(target.weight):.3f}")
+            else:
+                reason_codes.append("flat_signal")
             watchlist.append({
-                "instrument": regime.instrument,
-                "status": "watchlist",
-                "reason_codes": [],
-                "regime": regime.regime,
-                "confidence": float(regime.confidence) if regime.confidence is not None else None,
+                "instrument": market,
+                "status": status,
+                "reason_codes": reason_codes,
+                "regime": None,
+                "confidence": abs(target.weight) if target else 0.0,
             })
+    else:
+        watchlist = []
 
     return {
         "as_of": now_utc.isoformat(),
         "operator": operator,
         "account": {
-          "mode": "paper" if settings.oanda_environment == "practice" else "live",
-          "environment": settings.oanda_environment,
+          "provider": settings.broker_provider,
+          "mode": settings.account_mode,
+          "environment": settings.account_environment,
           "balance": _account_balance,
           "equity": _account_equity,
-          "today_pl": (_account_equity - _account_balance) if _account_balance else 0.0,
+          "today_pl": today_pl,
           "stream_connected": _stream_connected,
           "last_reconciliation": _last_reconciliation,
         },
+        "history_notice": (
+            "This dashboard is now futures-only. Closed trades will appear here once the futures paper track record builds."
+            if settings.trading_domain == "futures"
+            else "Closed-trade history still comes from Anchor's local audit database. Open positions and working orders come directly from IBKR futures paper."
+        ),
         "activity": activity[:14],
         "strategies": _strategy_states(operator.get("active_window")),
         "exposure": {
-            "positions": [
-                {
-                    "id": str(position.id),
-                    "instrument": position.instrument,
-                    "direction": position.direction,
-                    "units": float(position.units),
-                    "avg_entry_price": float(position.avg_entry_price),
-                    "current_price": float(position.current_price) if position.current_price is not None else None,
-                    "unrealized_pl": float(position.unrealized_pl) if position.unrealized_pl is not None else None,
-                    "stop_loss": float(position.stop_loss) if position.stop_loss is not None else None,
-                    "take_profit": float(position.take_profit) if position.take_profit is not None else None,
-                    "opened_at": position.opened_at.isoformat(),
-                }
-                for position in open_positions
-            ],
-            "orders": [
-                {
-                    "id": str(order.id),
-                    "instrument": order.instrument,
-                    "direction": order.direction,
-                    "order_type": order.order_type,
-                    "units": float(order.requested_units),
-                    "state": order.state,
-                    "created_at": order.created_at.isoformat(),
-                    "stop_loss": float(order.stop_loss) if order.stop_loss is not None else None,
-                    "take_profit": float(order.take_profit) if order.take_profit is not None else None,
-                }
-                for order in working_orders
-            ],
+            "positions": (
+                [_live_position_payload(position) for position in runtime["positions"]]
+                if settings.trading_domain == "futures"
+                else [
+                    {
+                        "id": str(position.id),
+                        "instrument": position.instrument,
+                        "direction": position.direction,
+                        "units": float(position.units),
+                        "avg_entry_price": float(position.avg_entry_price),
+                        "current_price": float(position.current_price) if position.current_price is not None else None,
+                        "unrealized_pl": float(position.unrealized_pl) if position.unrealized_pl is not None else None,
+                        "stop_loss": float(position.stop_loss) if position.stop_loss is not None else None,
+                        "take_profit": float(position.take_profit) if position.take_profit is not None else None,
+                        "opened_at": position.opened_at.isoformat(),
+                    }
+                    for position in open_positions
+                ]
+            ),
+            "orders": (
+                [_live_order_payload(order) for order in runtime["pending_orders"]]
+                if settings.trading_domain == "futures"
+                else [
+                    {
+                        "id": str(order.id),
+                        "instrument": order.instrument,
+                        "direction": order.direction,
+                        "order_type": order.order_type,
+                        "units": float(order.requested_units),
+                        "state": order.state,
+                        "created_at": order.created_at.isoformat(),
+                        "stop_loss": float(order.stop_loss) if order.stop_loss is not None else None,
+                        "take_profit": float(order.take_profit) if order.take_profit is not None else None,
+                    }
+                    for order in working_orders
+                ]
+            ),
         },
         "watchlist": watchlist,
-        "recent_results": [
-            {
-                "id": str(trade.id),
-                "instrument": trade.instrument,
-                "direction": trade.direction,
-                "opened_at": trade.opened_at.isoformat(),
-                "closed_at": trade.closed_at.isoformat(),
-                "net_pl": float(trade.net_pl),
-                "close_reason": trade.close_reason,
-            }
-            for trade in recent_trades
-        ],
+        "recent_results": (
+            []
+            if settings.trading_domain == "futures"
+            else [
+                {
+                    "id": str(trade.id),
+                    "instrument": trade.instrument,
+                    "direction": trade.direction,
+                    "opened_at": trade.opened_at.isoformat(),
+                    "closed_at": trade.closed_at.isoformat(),
+                    "net_pl": float(trade.net_pl),
+                    "close_reason": trade.close_reason,
+                }
+                for trade in recent_trades
+            ]
+        ),
         "calendar": [
             {
                 "event_time": event.event_time.isoformat(),
@@ -618,9 +664,9 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
 async def get_system_config():
     """Return the active trading rollout configuration."""
     return {
-        "account_mode": "paper" if settings.oanda_environment == "practice" else "live",
-        "account_environment": settings.oanda_environment,
-        "instruments": settings.instruments,
+        "account_mode": settings.account_mode,
+        "account_environment": settings.account_environment,
+        "instruments": settings.futures_v1_markets if settings.trading_domain == "futures" else settings.instruments,
         "trend": {
             "enabled": settings.enable_trend_engine,
             "paper_only": settings.trend_paper_only,
@@ -681,238 +727,6 @@ async def get_system_config():
         "min_confluence_score": settings.min_confluence_score,
         "min_ml_confidence": settings.min_ml_confidence,
     }
-
-
-@router.get("/system/lcr-pair-status", response_model=LCRPairStatusesResponse)
-async def get_lcr_pair_status(session: AsyncSession = Depends(get_db)):
-    """
-    Evaluate per-pair LCR status using precommitted rules.
-    Returns status (active/watchlist/disabled), machine-readable reasons, and metrics for each pair.
-    """
-    from datetime import datetime, timezone
-    from anchor.signals.lcr_pair_status import load_lcr_pair_statuses, LCR_LIVE_DATE
-
-    now = datetime.now(timezone.utc)
-    days_since_live = max(0, (now.date() - LCR_LIVE_DATE).days)
-
-    pair_statuses = await load_lcr_pair_statuses(session)
-
-    results = [
-        {
-            "instrument": r.instrument,
-            "status":     r.status.value,
-            "reasons":    r.reasons,
-            "metrics":    r.metrics,
-        }
-        for r in pair_statuses.values()
-    ]
-
-    return {
-        "pairs":           results,
-        "evaluated_at":    now.isoformat(),
-        "days_since_live": days_since_live,
-    }
-
-
-@router.get("/system/lcr-pair-status/history")
-async def get_lcr_pair_status_history(
-    days: int = 30,
-    session: AsyncSession = Depends(get_db),
-):
-    """
-    Return daily LCR pair-status snapshots for the last N days.
-    Each snapshot is one LCR_PAIR_STATUS_SNAPSHOT system event written at 21:05 UTC.
-    """
-    from datetime import datetime, timezone, timedelta
-    from sqlalchemy import text
-
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    rows = (await session.execute(
-        text("""
-            SELECT event_at, metadata
-            FROM system_events
-            WHERE event_type = 'LCR_PAIR_STATUS_SNAPSHOT'
-              AND event_at >= :cutoff
-            ORDER BY event_at DESC
-            LIMIT :limit
-        """),
-        {"cutoff": cutoff, "limit": days},
-    )).fetchall()
-
-    snapshots = []
-    for r in rows:
-        meta = dict(r[1] or {})
-        snapshots.append({
-            "date":         r[0].strftime("%Y-%m-%d"),
-            "evaluated_at": r[0].isoformat(),
-            "pairs":        meta.get("pairs", []),
-            "summary":      meta.get("summary", {}),
-        })
-
-    return {"snapshots": snapshots}
-
-
-@router.get("/system/edge-confidence")
-async def get_edge_confidence(session: AsyncSession = Depends(get_db)):
-    """Latest edge confidence assessment."""
-    from sqlalchemy import select, desc
-    from anchor.database.models import SystemEvent
-
-    result = await session.execute(
-        select(SystemEvent)
-        .where(SystemEvent.event_type == "EDGE_CONFIDENCE_CHECK")
-        .order_by(desc(SystemEvent.event_at))
-        .limit(1)
-    )
-    event = result.scalars().first()
-    if not event:
-        return {"confidence": None, "assessed_at": None, "signals": None, "flag_count": 0, "message": None}
-
-    meta = dict(event.metadata_ or {})
-    return {
-        "confidence":  meta.get("confidence"),
-        "assessed_at": event.event_at.isoformat(),
-        "flag_count":  meta.get("flag_count", 0),
-        "message":     event.message,
-        "signals":     meta.get("signals"),
-        "previous_confidence": meta.get("previous_confidence"),
-    }
-
-
-@router.get("/system/fix-paper-summary")
-async def get_fix_paper_summary(session: AsyncSession = Depends(get_db)):
-    """Aggregate scored LDN_FIX paper signals into a sleeve summary."""
-    overall_row = (await session.execute(text("""
-        SELECT
-            COUNT(*) AS n_scored,
-            AVG(CAST(signal_metadata->>'realized_ret_pips' AS double precision)) AS mean_ret_pips,
-            AVG(CASE WHEN (signal_metadata->>'continuation_success')::boolean THEN 1.0 ELSE 0.0 END) AS wr,
-            AVG(CAST(signal_metadata->>'entry_slippage_pips' AS double precision)) AS avg_entry_slippage_pips,
-            AVG(CAST(signal_metadata->>'max_favorable_pips' AS double precision)) AS avg_mfe_pips,
-            AVG(CAST(signal_metadata->>'max_adverse_pips' AS double precision)) AS avg_mae_pips
-        FROM signals
-        WHERE session = 'LDN_FIX'
-          AND suppressed = false
-          AND signal_metadata ? 'paper_result_version'
-    """))).fetchone()
-
-    pair_rows = (await session.execute(text("""
-        SELECT
-            instrument,
-            COUNT(*) AS n_scored,
-            AVG(CAST(signal_metadata->>'realized_ret_pips' AS double precision)) AS mean_ret_pips,
-            AVG(CASE WHEN (signal_metadata->>'continuation_success')::boolean THEN 1.0 ELSE 0.0 END) AS wr,
-            AVG(CAST(signal_metadata->>'entry_slippage_pips' AS double precision)) AS avg_entry_slippage_pips,
-            AVG(CAST(signal_metadata->>'pre_move_pips' AS double precision)) AS avg_pre_move_pips
-        FROM signals
-        WHERE session = 'LDN_FIX'
-          AND suppressed = false
-          AND signal_metadata ? 'paper_result_version'
-        GROUP BY instrument
-        ORDER BY AVG(CAST(signal_metadata->>'realized_ret_pips' AS double precision)) DESC NULLS LAST,
-                 instrument
-    """))).fetchall()
-
-    recent_events = (await session.execute(text("""
-        SELECT event_at, message, metadata
-        FROM system_events
-        WHERE event_type = 'FIX_PAPER_SCORE'
-        ORDER BY event_at DESC
-        LIMIT 5
-    """))).fetchall()
-
-    overall = {
-        "n_scored": int(overall_row[0] or 0) if overall_row else 0,
-        "mean_ret_pips": round(float(overall_row[1] or 0.0), 2) if overall_row else 0.0,
-        "win_rate": round(float(overall_row[2] or 0.0) * 100.0, 1) if overall_row else 0.0,
-        "avg_entry_slippage_pips": round(float(overall_row[3] or 0.0), 2) if overall_row else 0.0,
-        "avg_mfe_pips": round(float(overall_row[4] or 0.0), 2) if overall_row else 0.0,
-        "avg_mae_pips": round(float(overall_row[5] or 0.0), 2) if overall_row else 0.0,
-    }
-    pairs = [
-        {
-            "instrument": r[0],
-            "n_scored": int(r[1] or 0),
-            "mean_ret_pips": round(float(r[2] or 0.0), 2),
-            "win_rate": round(float(r[3] or 0.0) * 100.0, 1),
-            "avg_entry_slippage_pips": round(float(r[4] or 0.0), 2),
-            "avg_pre_move_pips": round(float(r[5] or 0.0), 2),
-        }
-        for r in pair_rows
-    ]
-    events = [
-        {
-            "event_at": r[0].isoformat(),
-            "message": r[1],
-            "metadata": dict(r[2] or {}),
-        }
-        for r in recent_events
-    ]
-
-    return {"overall": overall, "pairs": pairs, "recent_scoring_events": events}
-
-
-@router.get("/system/nfp-paper-summary")
-async def get_nfp_paper_summary(session: AsyncSession = Depends(get_db)):
-    overall_row = (await session.execute(text("""
-        SELECT
-            COUNT(*) AS n_scored,
-            AVG(CAST(signal_metadata->>'realized_ret_pips' AS double precision)) AS mean_ret_pips,
-            AVG(CASE WHEN (signal_metadata->>'continuation_success')::boolean THEN 1.0 ELSE 0.0 END) AS wr,
-            AVG(CAST(signal_metadata->>'max_favorable_pips' AS double precision)) AS avg_mfe_pips,
-            AVG(CAST(signal_metadata->>'max_adverse_pips' AS double precision)) AS avg_mae_pips
-        FROM signals
-        WHERE session = 'NFP_DRIFT'
-          AND suppressed = false
-          AND signal_metadata ? 'paper_result_version'
-    """))).fetchone()
-
-    pair_rows = (await session.execute(text("""
-        SELECT
-            instrument,
-            COUNT(*) AS n_scored,
-            AVG(CAST(signal_metadata->>'realized_ret_pips' AS double precision)) AS mean_ret_pips,
-            AVG(CASE WHEN (signal_metadata->>'continuation_success')::boolean THEN 1.0 ELSE 0.0 END) AS wr
-        FROM signals
-        WHERE session = 'NFP_DRIFT'
-          AND suppressed = false
-          AND signal_metadata ? 'paper_result_version'
-        GROUP BY instrument
-        ORDER BY AVG(CAST(signal_metadata->>'realized_ret_pips' AS double precision)) DESC NULLS LAST,
-                 instrument
-    """))).fetchall()
-
-    recent_events = (await session.execute(text("""
-        SELECT event_at, message, metadata
-        FROM system_events
-        WHERE event_type = 'NFP_PAPER_SCORE'
-        ORDER BY event_at DESC
-        LIMIT 5
-    """))).fetchall()
-
-    overall = {
-        "n_scored": int(overall_row[0] or 0) if overall_row else 0,
-        "mean_ret_pips": round(float(overall_row[1] or 0.0), 2) if overall_row else 0.0,
-        "win_rate": round(float(overall_row[2] or 0.0) * 100.0, 1) if overall_row else 0.0,
-        "avg_mfe_pips": round(float(overall_row[3] or 0.0), 2) if overall_row else 0.0,
-        "avg_mae_pips": round(float(overall_row[4] or 0.0), 2) if overall_row else 0.0,
-    }
-    pairs = [
-        {
-            "instrument": r[0],
-            "n_scored": int(r[1] or 0),
-            "mean_ret_pips": round(float(r[2] or 0.0), 2),
-            "win_rate": round(float(r[3] or 0.0) * 100.0, 1),
-        }
-        for r in pair_rows
-    ]
-    events = [
-        {"event_at": r[0].isoformat(), "message": r[1], "metadata": dict(r[2] or {})}
-        for r in recent_events
-    ]
-    return {"overall": overall, "pairs": pairs, "recent_scoring_events": events}
-
-
 @router.get("/system/events")
 async def get_system_events(
     severity: str | None = None,

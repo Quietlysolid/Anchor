@@ -124,12 +124,8 @@ class PartialTPManager:
         # 1. Partial close at market
         await self.broker.close_trade(pos.oanda_trade_id, units=str(close_units))
 
-        # 2. Move SL to breakeven on OANDA via a trade modify (trailing stop would
-        #    be set here, but OANDA's REST API for modifying SL on an existing trade
-        #    requires a PATCH to /v3/accounts/{id}/trades/{tradeID}/orders).
-        #    We update our DB record so reconciler and risk monitors are accurate.
-        #    The SL-to-breakeven OANDA call is best-effort — if it fails the DB
-        #    update still records the intent for the reconciler.
+        # 2. Best-effort broker-side stop move. Phase 1 IBKR support logs/skips this
+        #    and keeps the DB state authoritative until attached-order management lands.
         await self._move_sl_to_breakeven(pos, entry)
 
         # 3. Mark partial TP done in DB
@@ -145,32 +141,17 @@ class PartialTPManager:
         return True
 
     async def _move_sl_to_breakeven(self, pos, breakeven_price: float) -> None:
-        """Move the stop loss to breakeven on OANDA and in the DB."""
-        import oandapyV20.endpoints.trades as trades_ep
-
-        body = {
-            "stopLoss": {
-                "price": str(round(breakeven_price, 5)),
-                "timeInForce": "GTC",
-            }
-        }
-
+        """Move the stop loss to breakeven at the broker when supported."""
         try:
-            ep = trades_ep.TradeCRCDO(
-                self.broker._account_id,
-                pos.oanda_trade_id,
-                data=body,
-            )
-            await self.broker._run(ep)
+            await self.broker.move_stop_loss_to_breakeven(pos.oanda_trade_id, breakeven_price)
             logger.info(
                 "sl_moved_to_breakeven",
                 trade_id=pos.oanda_trade_id,
                 breakeven=breakeven_price,
             )
         except Exception as exc:
-            # Non-fatal — reconciler will pick up the position state next cycle
             logger.warning(
-                "sl_breakeven_oanda_failed",
+                "sl_breakeven_broker_failed",
                 trade_id=pos.oanda_trade_id,
                 error=str(exc),
             )

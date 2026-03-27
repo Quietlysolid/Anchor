@@ -30,9 +30,9 @@ export function Sidebar({ onClose }: Props) {
         <div>
           <div className="flex items-center gap-2.5">
             <AnchorMark size={20} className="text-anchor-rule shrink-0" />
-            <span className="font-mono text-[11px] tracking-[0.28em] text-white/60 uppercase font-medium">anchor</span>
+            <span className="font-mono text-[11px] tracking-[0.28em] text-white/60 uppercase font-medium">anchor futures</span>
           </div>
-          <p className="mt-2 text-[9px] text-white/20 font-mono tracking-[0.2em] uppercase">algo · fx</p>
+          <p className="mt-2 text-[9px] text-white/20 font-mono tracking-[0.2em] uppercase">systematic · futures</p>
         </div>
         {onClose && (
           <button
@@ -80,7 +80,7 @@ export function Sidebar({ onClose }: Props) {
           <span className="w-1.5 h-1.5 bg-anchor-chartblue/80 shrink-0" />
           <span className="font-mono text-[9px] tracking-[0.22em] uppercase text-white/40">running</span>
         </div>
-        <p className="font-mono text-[8px] tracking-[0.14em] text-white/15 uppercase">paper · no real cash</p>
+        <p className="font-mono text-[8px] tracking-[0.14em] text-white/15 uppercase">paper futures · no real cash</p>
       </div>
     </aside>
   )

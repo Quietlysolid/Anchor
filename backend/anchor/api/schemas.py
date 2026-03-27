@@ -143,7 +143,7 @@ class PositionResponse(BaseModel):
     unrealized_pl: Optional[float]
     stop_loss: Optional[float]
     take_profit: Optional[float]
-    oanda_trade_id: Optional[str]
+    broker_trade_id: Optional[str]
     status: str
     opened_at: Optional[datetime] = None
 
@@ -184,7 +184,7 @@ class OrderResponse(BaseModel):
     stop_loss: Optional[float]
     take_profit: Optional[float]
     state: str
-    oanda_order_id: Optional[str]
+    broker_order_id: Optional[str]
     filled_units: int
     avg_fill_price: Optional[float]
     signal_id: Optional[UUID]

@@ -1636,6 +1636,17 @@ socks = ["socksio (==1.*)"]
 zstd = ["zstandard (>=0.18.0)"]
 
 [[package]]
+name = "ibapi"
+version = "9.81.1.post1"
+description = "Official Interactive Brokers API"
+optional = false
+python-versions = ">=3.1"
+groups = ["main"]
+files = [
+    {file = "ibapi-9.81.1.post1.tar.gz", hash = "sha256:49f6678bf4cced996920f32ad4b48e6897749ac30ba14a661082285f4ec09cd6"},
+]
+
+[[package]]
 name = "idna"
 version = "3.11"
 description = "Internationalized Domain Names in Applications (IDNA)"
@@ -4707,4 +4718,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "26bea4912b77e8878c1911dedd7eaad3f20a5b831c75f28ff1bbfc02474fc3b1"
+content-hash = "822234e04f2686f93e0d549bbe908acf6dcd492933cb8a6ff3738d944976ef45"

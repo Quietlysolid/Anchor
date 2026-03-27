@@ -10,12 +10,14 @@ import os
 # Provide defaults so Settings doesn't fail validation during import
 os.environ.setdefault("DB_PASSWORD", "test")
 os.environ.setdefault("SECRET_KEY", "test_secret_key_for_unit_tests_only")
-os.environ.setdefault("OANDA_API_KEY", "test_key")
-os.environ.setdefault("OANDA_ACCOUNT_ID", "test_account")
+os.environ.setdefault("BROKER_PROVIDER", "ibkr")
+os.environ.setdefault("IBKR_HOST", "127.0.0.1")
+os.environ.setdefault("IBKR_PORT", "4002")
+os.environ.setdefault("IBKR_CLIENT_ID", "1")
 os.environ.setdefault("DB_HOST", "localhost")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("APP_ENV", "development")
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "live: requires live OANDA connection and real database")
+    config.addinivalue_line("markers", "live: requires live broker connection and real database")

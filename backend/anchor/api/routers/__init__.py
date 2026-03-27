@@ -1,19 +1,5 @@
-from anchor.api.routers import (
-    market_data,
-    signals,
-    positions,
-    orders,
-    performance,
-    regime,
-    system,
-    calendar,
-    backtest,
-    market,
-    intelligence,
-)
+from anchor.api.routers import positions, orders, performance, system, calendar
 
 __all__ = [
-    "market_data", "signals", "positions", "orders",
-    "performance", "regime", "system", "calendar", "backtest", "market",
-    "intelligence",
+    "positions", "orders", "performance", "system", "calendar",
 ]

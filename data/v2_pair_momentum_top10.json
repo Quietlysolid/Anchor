@@ -1,0 +1,284 @@
+{
+  "pairs": [
+    "EUR_USD",
+    "USD_JPY",
+    "GBP_USD",
+    "USD_CNY",
+    "USD_CAD",
+    "AUD_USD",
+    "USD_CHF",
+    "EUR_JPY",
+    "EUR_GBP",
+    "NZD_USD"
+  ],
+  "parameters": {
+    "momentum_lookback_months": 6,
+    "rebalance_frequency": "quarterly",
+    "top_n": 3
+  },
+  "metrics": {
+    "months": 90,
+    "final_balance": 78033.85,
+    "net_return_pct": -21.97,
+    "annualized_return_pct": -3.25,
+    "annualized_vol_pct": 10.81,
+    "sharpe": -0.265,
+    "profit_factor": 0.811,
+    "max_drawdown_pct": -27.46,
+    "positive_months_pct": 41.11
+  },
+  "rebalances": [
+    {
+      "date": "2023-03-31",
+      "aggregate_weights": {
+        "AUD_USD": -0.301079,
+        "EUR_USD": 0.300353,
+        "GBP_USD": 0.281302,
+        "USD_CAD": 0.418345,
+        "USD_CHF": -0.430918,
+        "USD_JPY": -0.268003
+      },
+      "longs": [
+        "GBP_USD",
+        "USD_CAD",
+        "EUR_USD"
+      ],
+      "shorts": [
+        "USD_CHF",
+        "USD_JPY",
+        "AUD_USD"
+      ]
+    },
+    {
+      "date": "2023-06-30",
+      "aggregate_weights": {
+        "AUD_USD": -0.324266,
+        "EUR_JPY": 0.355292,
+        "EUR_USD": 0.33707,
+        "GBP_USD": 0.307639,
+        "NZD_USD": -0.236108,
+        "USD_CHF": -0.439626
+      },
+      "longs": [
+        "EUR_USD",
+        "GBP_USD",
+        "EUR_JPY"
+      ],
+      "shorts": [
+        "NZD_USD",
+        "AUD_USD",
+        "USD_CHF"
+      ]
+    },
+    {
+      "date": "2023-09-30",
+      "aggregate_weights": {
+        "AUD_USD": -0.319755,
+        "EUR_JPY": 0.373572,
+        "GBP_USD": 0.3808,
+        "NZD_USD": -0.235822,
+        "USD_CHF": -0.444422,
+        "USD_JPY": 0.245627
+      },
+      "longs": [
+        "GBP_USD",
+        "USD_JPY",
+        "EUR_JPY"
+      ],
+      "shorts": [
+        "USD_CHF",
+        "AUD_USD",
+        "NZD_USD"
+      ]
+    },
+    {
+      "date": "2023-12-31",
+      "aggregate_weights": {
+        "EUR_JPY": 0.4014,
+        "NZD_USD": 0.300451,
+        "USD_CAD": -0.369559,
+        "USD_CHF": -0.298843,
+        "USD_CNY": -0.331598,
+        "USD_JPY": 0.298149
+      },
+      "longs": [
+        "NZD_USD",
+        "USD_JPY",
+        "EUR_JPY"
+      ],
+      "shorts": [
+        "USD_CHF",
+        "USD_CNY",
+        "USD_CAD"
+      ]
+    },
+    {
+      "date": "2024-03-31",
+      "aggregate_weights": {
+        "EUR_JPY": 0.376288,
+        "EUR_USD": -0.320855,
+        "GBP_USD": -0.316759,
+        "NZD_USD": 0.311112,
+        "USD_CNY": -0.362386,
+        "USD_JPY": 0.3126
+      },
+      "longs": [
+        "NZD_USD",
+        "EUR_JPY",
+        "USD_JPY"
+      ],
+      "shorts": [
+        "USD_CNY",
+        "GBP_USD",
+        "EUR_USD"
+      ]
+    },
+    {
+      "date": "2024-06-30",
+      "aggregate_weights": {
+        "EUR_GBP": -0.587303,
+        "EUR_JPY": 0.386785,
+        "EUR_USD": -0.268155,
+        "NZD_USD": -0.144542,
+        "USD_CHF": 0.311539,
+        "USD_JPY": 0.301676
+      },
+      "longs": [
+        "USD_CHF",
+        "EUR_JPY",
+        "USD_JPY"
+      ],
+      "shorts": [
+        "EUR_GBP",
+        "EUR_USD",
+        "NZD_USD"
+      ]
+    },
+    {
+      "date": "2024-09-30",
+      "aggregate_weights": {
+        "AUD_USD": 0.339686,
+        "EUR_GBP": -0.650509,
+        "GBP_USD": 0.412455,
+        "NZD_USD": 0.247858,
+        "USD_CHF": -0.196039,
+        "USD_JPY": -0.153453
+      },
+      "longs": [
+        "NZD_USD",
+        "AUD_USD",
+        "GBP_USD"
+      ],
+      "shorts": [
+        "USD_CHF",
+        "EUR_GBP",
+        "USD_JPY"
+      ]
+    },
+    {
+      "date": "2024-12-31",
+      "aggregate_weights": {
+        "AUD_USD": -0.407378,
+        "EUR_JPY": -0.379328,
+        "GBP_USD": 0.282021,
+        "NZD_USD": -0.213294,
+        "USD_CAD": 0.24231,
+        "USD_CNY": 0.475669
+      },
+      "longs": [
+        "GBP_USD",
+        "USD_CNY",
+        "USD_CAD"
+      ],
+      "shorts": [
+        "NZD_USD",
+        "EUR_JPY",
+        "AUD_USD"
+      ]
+    },
+    {
+      "date": "2025-03-31",
+      "aggregate_weights": {
+        "AUD_USD": -0.331597,
+        "EUR_USD": -0.535557,
+        "NZD_USD": -0.132846,
+        "USD_CAD": 0.378328,
+        "USD_CHF": 0.400031,
+        "USD_JPY": 0.221641
+      },
+      "longs": [
+        "USD_JPY",
+        "USD_CHF",
+        "USD_CAD"
+      ],
+      "shorts": [
+        "NZD_USD",
+        "AUD_USD",
+        "EUR_USD"
+      ]
+    },
+    {
+      "date": "2025-06-30",
+      "aggregate_weights": {
+        "EUR_USD": 0.396246,
+        "GBP_USD": 0.453737,
+        "NZD_USD": 0.150017,
+        "USD_CHF": -0.253917,
+        "USD_CNY": -0.564837,
+        "USD_JPY": -0.181246
+      },
+      "longs": [
+        "GBP_USD",
+        "EUR_USD",
+        "NZD_USD"
+      ],
+      "shorts": [
+        "USD_CHF",
+        "USD_JPY",
+        "USD_CNY"
+      ]
+    },
+    {
+      "date": "2025-09-30",
+      "aggregate_weights": {
+        "EUR_JPY": 0.331414,
+        "EUR_USD": 0.311398,
+        "GBP_USD": 0.357187,
+        "USD_CAD": -0.403922,
+        "USD_CHF": -0.326077,
+        "USD_JPY": -0.270001
+      },
+      "longs": [
+        "GBP_USD",
+        "EUR_JPY",
+        "EUR_USD"
+      ],
+      "shorts": [
+        "USD_CHF",
+        "USD_CAD",
+        "USD_JPY"
+      ]
+    },
+    {
+      "date": "2025-12-31",
+      "aggregate_weights": {
+        "EUR_GBP": 0.551498,
+        "EUR_JPY": 0.273084,
+        "NZD_USD": -0.147202,
+        "USD_CHF": -0.201905,
+        "USD_CNY": -0.650894,
+        "USD_JPY": 0.175417
+      },
+      "longs": [
+        "EUR_GBP",
+        "USD_JPY",
+        "EUR_JPY"
+      ],
+      "shorts": [
+        "NZD_USD",
+        "USD_CHF",
+        "USD_CNY"
+      ]
+    }
+  ]
+}

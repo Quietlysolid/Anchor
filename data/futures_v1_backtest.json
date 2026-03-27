@@ -1,0 +1,266 @@
+{
+  "markets": [
+    "MES",
+    "MNQ",
+    "ZN",
+    "MGC",
+    "MCL"
+  ],
+  "market_specs": {
+    "MES": {
+      "description": "Micro E-mini S&P 500",
+      "sector": "equity_index",
+      "tick_size": 0.25,
+      "tick_value_usd": 1.25
+    },
+    "MNQ": {
+      "description": "Micro E-mini Nasdaq-100",
+      "sector": "equity_index",
+      "tick_size": 0.25,
+      "tick_value_usd": 0.5
+    },
+    "ZN": {
+      "description": "10-Year U.S. Treasury Note",
+      "sector": "rates",
+      "tick_size": 0.015625,
+      "tick_value_usd": 15.625
+    },
+    "MGC": {
+      "description": "Micro Gold",
+      "sector": "metals",
+      "tick_size": 0.1,
+      "tick_value_usd": 1.0
+    },
+    "MCL": {
+      "description": "Micro WTI Crude Oil",
+      "sector": "energy",
+      "tick_size": 0.01,
+      "tick_value_usd": 1.0
+    }
+  },
+  "parameters": {
+    "trend_lookback_days": 126,
+    "vol_lookback_days": 20,
+    "rebalance_frequency": "weekly",
+    "threshold": 0.0,
+    "weighting": "inverse_volatility",
+    "signal_rule": "sign_of_trailing_return"
+  },
+  "metrics": {
+    "days": 2391,
+    "final_balance": 204840.07,
+    "net_return_pct": 104.84,
+    "annualized_return_pct": 7.85,
+    "annualized_vol_pct": 7.78,
+    "sharpe": 1.01,
+    "profit_factor": 1.213,
+    "max_drawdown_pct": -9.07,
+    "positive_days_pct": 55.75
+  },
+  "rebalances": [
+    {
+      "date": "2026-01-09",
+      "weights": {
+        "MCL": -0.06574,
+        "MES": 0.159417,
+        "MGC": 0.075107,
+        "MNQ": 0.113833,
+        "ZN": 0.585903
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": 1.0,
+        "MGC": 1.0,
+        "MCL": -1.0
+      }
+    },
+    {
+      "date": "2026-01-16",
+      "weights": {
+        "MCL": -0.052876,
+        "MES": 0.164097,
+        "MGC": 0.069914,
+        "MNQ": 0.116816,
+        "ZN": 0.596297
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": 1.0,
+        "MGC": 1.0,
+        "MCL": -1.0
+      }
+    },
+    {
+      "date": "2026-01-23",
+      "weights": {
+        "MCL": -0.054755,
+        "MES": 0.164008,
+        "MGC": 0.064966,
+        "MNQ": 0.137124,
+        "ZN": 0.579147
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": 1.0,
+        "MGC": 1.0,
+        "MCL": -1.0
+      }
+    },
+    {
+      "date": "2026-01-30",
+      "weights": {
+        "MCL": -0.0519,
+        "MES": 0.165047,
+        "MGC": 0.07422,
+        "MNQ": 0.133619,
+        "ZN": 0.575213
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": 1.0,
+        "MGC": 1.0,
+        "MCL": -1.0
+      }
+    },
+    {
+      "date": "2026-02-06",
+      "weights": {
+        "MCL": -0.050955,
+        "MES": 0.174961,
+        "MGC": 0.037555,
+        "MNQ": 0.125226,
+        "ZN": 0.611303
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": 1.0,
+        "MGC": 1.0,
+        "MCL": -1.0
+      }
+    },
+    {
+      "date": "2026-02-13",
+      "weights": {
+        "MCL": -0.059596,
+        "MES": 0.158116,
+        "MGC": 0.041489,
+        "MNQ": 0.121047,
+        "ZN": 0.619752
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": 1.0,
+        "MGC": 1.0,
+        "MCL": -1.0
+      }
+    },
+    {
+      "date": "2026-02-20",
+      "weights": {
+        "MCL": 0.05202,
+        "MES": 0.168126,
+        "MGC": 0.035682,
+        "MNQ": 0.117294,
+        "ZN": 0.626879
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": 1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-02-27",
+      "weights": {
+        "MCL": 0.060655,
+        "MES": 0.162054,
+        "MGC": 0.039233,
+        "MNQ": 0.113805,
+        "ZN": 0.624254
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": 1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-03-06",
+      "weights": {
+        "MCL": 0.05358,
+        "MES": 0.186069,
+        "MGC": 0.084218,
+        "MNQ": 0.143306,
+        "ZN": -0.532827
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-03-13",
+      "weights": {
+        "MCL": 0.030912,
+        "MES": 0.203091,
+        "MGC": 0.085042,
+        "MNQ": 0.149671,
+        "ZN": -0.531284
+      },
+      "signals": {
+        "MES": 1.0,
+        "MNQ": 1.0,
+        "ZN": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-03-20",
+      "weights": {
+        "MCL": 0.030737,
+        "MES": -0.198931,
+        "MGC": 0.077933,
+        "MNQ": -0.15402,
+        "ZN": -0.538379
+      },
+      "signals": {
+        "MES": -1.0,
+        "MNQ": -1.0,
+        "ZN": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-03-27",
+      "weights": {
+        "MCL": 0.029184,
+        "MES": -0.215577,
+        "MGC": 0.076899,
+        "MNQ": -0.170298,
+        "ZN": -0.508041
+      },
+      "signals": {
+        "MES": -1.0,
+        "MNQ": -1.0,
+        "ZN": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    }
+  ]
+}

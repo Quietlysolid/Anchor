@@ -10,66 +10,47 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from anchor.config import get_settings
 from anchor.database.engine import init_db, close_db
 from anchor.utils.logging import configure_logging
-from anchor.api.routers import (
-    market_data,
-    signals,
-    positions,
-    orders,
-    performance,
-    regime,
-    system,
-    calendar,
-    backtest,
-    market,
-    intelligence,
-)
+from anchor.api.routers import positions, orders, performance, system, calendar
 from anchor.api.websocket import router as ws_router, manager as ws_manager
 from anchor.monitoring.heartbeat import HeartbeatService
-from anchor.data.oanda_stream import OANDAStreamClient
 from anchor.api.routers.system import set_stream_status, set_account_info
 from anchor.scheduler._shared import _spread_monitor as _shared_spread_monitor
 from anchor.risk.weekend_guard import WeekendGuard
+from anchor.execution.broker_client import BrokerClient
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 
-async def _reconcile_account(stream_client: OANDAStreamClient, redis_client=None) -> None:
-    """Poll OANDA REST API every 30s — update balance/equity and broadcast positions via WS."""
-    from oandapyV20 import API
-    from oandapyV20.endpoints.accounts import AccountDetails
+async def _reconcile_account(broker_client, stream_client, redis_client=None) -> None:
+    """Poll the configured broker every 30s and broadcast account/position state."""
     from anchor.utils.time_utils import utcnow
 
-    client = API(access_token=settings.oanda_api_key, environment=settings.oanda_environment)
     while stream_client._running:
         try:
-            r = AccountDetails(settings.oanda_account_id)
-            client.request(r)
-            acc     = r.response["account"]
-            balance = float(acc["balance"])
-            equity  = float(acc["NAV"])
+            acc = await broker_client.get_account_summary()
+            balance = float(acc.get("balance", 0))
+            equity = float(acc.get("NAV", balance))
             set_account_info(balance=balance, equity=equity, reconciled_at=utcnow().isoformat())
 
             if redis_client:
-                # Push balance/equity to dashboard without REST polling
                 await redis_client.publish("account", json.dumps({
                     "channel": "account",
                     "data": {"balance": balance, "equity": equity},
                 }))
-                # Push open positions with live unrealized P&L straight from OANDA
-                raw_trades = acc.get("trades", [])
+                raw_trades = await broker_client.get_open_trades()
                 positions = []
                 for t in raw_trades:
-                    units = float(t.get("currentUnits", 0))
+                    units = float(t.get("currentUnits", t.get("initialUnits", 0)) or 0)
                     positions.append({
-                        "oanda_trade_id":  t.get("id"),
+                        "broker_trade_id": t.get("id"),
                         "instrument":      t.get("instrument"),
                         "direction":       "LONG" if units > 0 else "SHORT",
                         "units":           abs(units),
                         "avg_entry_price": float(t.get("price", 0)),
                         "current_price":   float(t.get("price", 0)),
                         "unrealized_pl":   float(t.get("unrealizedPL", 0)),
-                        "stop_loss":       float(t["stopLossOrder"]["price"])   if "stopLossOrder"   in t else None,
+                        "stop_loss":       float(t["stopLossOrder"]["price"]) if "stopLossOrder" in t else None,
                         "take_profit":     float(t["takeProfitOrder"]["price"]) if "takeProfitOrder" in t else None,
                         "status":          "OPEN",
                     })
@@ -91,7 +72,7 @@ async def lifespan(app: FastAPI):
     await init_db()
 
     heartbeat: HeartbeatService | None = None
-    stream_client: OANDAStreamClient | None = None
+    stream_client = None
     weekend_guard: WeekendGuard | None = None
 
     if settings.service_name == "engine":
@@ -99,70 +80,76 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(heartbeat.run())
         logger.info("heartbeat_started")
 
-        # Start OANDA price stream
-        if settings.oanda_api_key and settings.oanda_api_key != "your_oanda_api_key_here":
-            import redis.asyncio as aioredis
+        import redis.asyncio as aioredis
+        from anchor.data.ibkr_stream import IBKRStreamClient as StreamClient
 
-            redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
 
-            # Thin wrapper so the stream can persist ticks via a fresh session per write
-            class _TickRepo:
-                async def insert_tick(self, instrument, bid, ask, time):
-                    from anchor.database.engine import AsyncSessionFactory as _SF
-                    from anchor.database.models import TickData
-                    if _SF is None:
-                        return
-                    async with _SF() as session:
-                        session.add(TickData(instrument=instrument, bid=bid, ask=ask, time=time, source="oanda"))
-                        await session.commit()
+        class _TickRepo:
+            async def insert_tick(self, instrument, bid, ask, time):
+                from anchor.database.engine import AsyncSessionFactory as _SF
+                from anchor.database.models import TickData
+                if _SF is None:
+                    return
+                async with _SF() as session:
+                    session.add(TickData(instrument=instrument, bid=bid, ask=ask, time=time, source=settings.broker_provider))
+                    await session.commit()
 
-            stream_client = OANDAStreamClient(
-                redis_client=redis_client,
-                tick_repo=_TickRepo(),
-                spread_monitor=_shared_spread_monitor,
-            )
+        stream_client = StreamClient(
+            redis_client=redis_client,
+            tick_repo=_TickRepo(),
+            spread_monitor=_shared_spread_monitor,
+        )
 
-            async def _stream_with_status():
-                set_stream_status(True)
-                try:
+        async def _stream_with_status():
+            try:
+                while True:
+                    set_stream_status(stream_client.connected)
                     await stream_client.run()
-                finally:
-                    set_stream_status(False)
+                    if not stream_client._running:
+                        break
+            finally:
+                set_stream_status(False)
 
-            async def _redis_fanout():
-                """Subscribe to Redis channels and broadcast to WebSocket clients."""
-                pubsub = redis_client.pubsub()
-                await pubsub.subscribe("ticks", "regime", "signals", "positions", "orders", "account")
-                async for message in pubsub.listen():
-                    if message["type"] == "message":
-                        try:
-                            payload = json.loads(message["data"])
-                            await ws_manager.broadcast(
-                                payload.get("channel", "ticks"),
-                                payload.get("data", payload),
-                            )
-                        except Exception as exc:
-                            logger.warning("fanout_error", error=str(exc))
+        async def _stream_status_heartbeat():
+            while stream_client and stream_client._running:
+                set_stream_status(stream_client.connected)
+                await asyncio.sleep(1)
 
-            asyncio.create_task(_stream_with_status())
-            asyncio.create_task(_reconcile_account(stream_client, redis_client))
-            asyncio.create_task(_redis_fanout())
-            logger.info("oanda_stream_started")
+        async def _redis_fanout():
+            """Subscribe to Redis channels and broadcast to WebSocket clients."""
+            pubsub = redis_client.pubsub()
+            await pubsub.subscribe("ticks", "regime", "signals", "positions", "orders", "account")
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    try:
+                        payload = json.loads(message["data"])
+                        await ws_manager.broadcast(
+                            payload.get("channel", "ticks"),
+                            payload.get("data", payload),
+                        )
+                    except Exception as exc:
+                        logger.warning("fanout_error", error=str(exc))
 
-            # Start weekend gap guard — closes all positions by Friday 20:30 UTC
-            from anchor.execution.broker_client import BrokerClient as _BC
-            _wg_broker = _BC()
+        asyncio.create_task(_stream_with_status())
+        asyncio.create_task(_stream_status_heartbeat())
+        asyncio.create_task(_reconcile_account(BrokerClient(), stream_client, redis_client))
+        asyncio.create_task(_redis_fanout())
+        logger.info("broker_stream_started", provider=settings.broker_provider.lower())
 
-            class _WGPositionRepo:
-                """Thin adapter: opens its own session for each WeekendGuard call."""
-                async def get_open(self):
-                    from anchor.database.engine import AsyncSessionFactory as _SF
-                    from anchor.database.repositories.positions import PositionRepository as _PRepo
-                    if _SF is None:
-                        return []
-                    async with _SF() as session:
-                        return await _PRepo(session).get_open()
+        _wg_broker = BrokerClient()
 
+        class _WGPositionRepo:
+            """Thin adapter: opens its own session for each WeekendGuard call."""
+            async def get_open(self):
+                from anchor.database.engine import AsyncSessionFactory as _SF
+                from anchor.database.repositories.positions import PositionRepository as _PRepo
+                if _SF is None:
+                    return []
+                async with _SF() as session:
+                    return await _PRepo(session).get_open()
+
+        if settings.trading_domain != "futures" or settings.futures_weekend_guard_enabled:
             weekend_guard = WeekendGuard(broker_client=_wg_broker, position_repo=_WGPositionRepo())
             asyncio.create_task(weekend_guard.run())
             logger.info("weekend_guard_started")
@@ -185,7 +172,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Anchor — Autonomous Forex Trading System",
+        title="Anchor — Autonomous Futures Trading System",
         version="0.1.0",
         lifespan=lifespan,
         docs_url="/api/docs" if settings.app_env == "development" else None,
@@ -201,17 +188,11 @@ def create_app() -> FastAPI:
     )
 
     prefix = "/api/v1"
-    app.include_router(market_data.router, prefix=prefix, tags=["market-data"])
-    app.include_router(signals.router, prefix=prefix, tags=["signals"])
     app.include_router(positions.router, prefix=prefix, tags=["positions"])
     app.include_router(orders.router, prefix=prefix, tags=["orders"])
     app.include_router(performance.router, prefix=prefix, tags=["performance"])
-    app.include_router(regime.router, prefix=prefix, tags=["regime"])
     app.include_router(system.router, prefix=prefix, tags=["system"])
     app.include_router(calendar.router,  prefix=prefix, tags=["calendar"])
-    app.include_router(backtest.router,  prefix=prefix, tags=["backtest"])
-    app.include_router(market.router,       prefix=prefix, tags=["market"])
-    app.include_router(intelligence.router, prefix=prefix, tags=["intelligence"])
     app.include_router(ws_router)
 
     return app

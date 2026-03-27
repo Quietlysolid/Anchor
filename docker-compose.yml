@@ -33,6 +33,26 @@ services:
       timeout: 3s
       retries: 5
 
+  ib_gateway:
+    image: gnzsnz/ib-gateway:stable
+    container_name: anchor_ib_gateway
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TWS_USERID=${TWS_USERID}
+      - TWS_PASSWORD=${TWS_PASSWORD}
+      - TWS_ACCEPT_INCOMING=${TWS_ACCEPT_INCOMING:-accept}
+      - TRADING_MODE=${TRADING_MODE:-paper}
+      - READ_ONLY_API=${READ_ONLY_API:-no}
+      - VNC_SERVER_PASSWORD=${VNC_SERVER_PASSWORD:-}
+      - AUTO_RESTART_TIME=${AUTO_RESTART_TIME:-}
+      - RELOGIN_AFTER_2FA_TIMEOUT=${RELOGIN_AFTER_2FA_TIMEOUT:-no}
+      - TIME_ZONE=${TIME_ZONE:-Etc/UTC}
+    ports:
+      - "127.0.0.1:4001:4001"
+      - "127.0.0.1:4002:4002"
+      - "127.0.0.1:5900:5900"
+
   engine:
     build:
       context: ./backend
@@ -44,6 +64,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ib_gateway:
+        condition: service_started
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
@@ -70,6 +92,7 @@ services:
     depends_on:
       - redis
       - db
+      - ib_gateway
     env_file: .env
     environment:
       - SERVICE_NAME=celery
@@ -88,6 +111,7 @@ services:
     depends_on:
       - redis
       - db
+      - ib_gateway
     env_file: .env
     environment:
       - SERVICE_NAME=celery_beat
@@ -126,6 +150,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      ib_gateway:
+        condition: service_started
     env_file: .env
     environment:
       - SERVICE_NAME=watchdog
@@ -143,6 +169,7 @@ services:
       - engine
     ports:
       - "127.0.0.1:3000:3000"
+      - "127.0.0.1:5173:3000"
 
   nginx:
     image: nginx:1.27-alpine

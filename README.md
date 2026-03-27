@@ -1,8 +1,10 @@
-# Anchor — Autonomous Forex Trading System
+# Anchor — Autonomous Trading System
 
-Fully automated forex trading system running on OANDA practice account.
-Target: validate edge over 200+ live trades, then deploy to live $1,000 account.
-Private system, personal funds only.
+Anchor started as a forex system. The current primary rebuild path is now futures-first.
+
+Research directions:
+- Anchor v2 FX research: [docs/anchor-v2.md](./docs/anchor-v2.md)
+- Anchor Futures v1: [docs/anchor-futures-v1.md](./docs/anchor-futures-v1.md)
 
 ---
 

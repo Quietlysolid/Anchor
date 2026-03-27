@@ -1,0 +1,219 @@
+{
+  "markets": [
+    "MNQ",
+    "ZN",
+    "MGC",
+    "MCL"
+  ],
+  "market_specs": {
+    "MNQ": {
+      "description": "Micro E-mini Nasdaq-100",
+      "sector": "equity_index",
+      "tick_size": 0.25,
+      "tick_value_usd": 0.5
+    },
+    "ZN": {
+      "description": "10-Year U.S. Treasury Note",
+      "sector": "rates",
+      "tick_size": 0.015625,
+      "tick_value_usd": 15.625
+    },
+    "MGC": {
+      "description": "Micro Gold",
+      "sector": "metals",
+      "tick_size": 0.1,
+      "tick_value_usd": 1.0
+    },
+    "MCL": {
+      "description": "Micro WTI Crude Oil",
+      "sector": "energy",
+      "tick_size": 0.01,
+      "tick_value_usd": 1.0
+    }
+  },
+  "parameters": {
+    "trend_lookback_days": 63,
+    "vol_lookback_days": 20,
+    "rebalance_frequency": "weekly",
+    "threshold": 0.01,
+    "weighting": "inverse_volatility",
+    "signal_rule": "sign_of_trailing_return",
+    "transaction_cost_bps": 1.0,
+    "roll_cost_bps": 2.0
+  },
+  "metrics": {
+    "days": 2454,
+    "final_balance": 340196.96,
+    "net_return_pct": 240.2,
+    "annualized_return_pct": 13.4,
+    "annualized_vol_pct": 9.6,
+    "sharpe": 1.358,
+    "profit_factor": 1.301,
+    "max_drawdown_pct": -8.67,
+    "positive_days_pct": 54.28
+  },
+  "rebalances": [
+    {
+      "date": "2026-01-09",
+      "weights": {
+        "MCL": -0.258127,
+        "MGC": 0.294906,
+        "MNQ": 0.446966
+      },
+      "signals": {
+        "MNQ": 1.0,
+        "MGC": 1.0,
+        "MCL": -1.0
+      }
+    },
+    {
+      "date": "2026-01-16",
+      "weights": {
+        "MCL": 0.063256,
+        "MGC": 0.083639,
+        "MNQ": 0.139749,
+        "ZN": -0.713356
+      },
+      "signals": {
+        "MNQ": 1.0,
+        "ZN": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-01-23",
+      "weights": {
+        "MCL": 0.065497,
+        "MGC": 0.077712,
+        "MNQ": 0.164026,
+        "ZN": -0.692765
+      },
+      "signals": {
+        "MNQ": 1.0,
+        "ZN": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-01-30",
+      "weights": {
+        "MCL": 0.199817,
+        "MGC": 0.285749,
+        "MNQ": -0.514434
+      },
+      "signals": {
+        "MNQ": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-02-06",
+      "weights": {
+        "MCL": 0.2384,
+        "MGC": 0.175708,
+        "MNQ": -0.585892
+      },
+      "signals": {
+        "MNQ": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-02-13",
+      "weights": {
+        "MCL": 0.26829,
+        "MGC": 0.186776,
+        "MNQ": -0.544933
+      },
+      "signals": {
+        "MNQ": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-02-20",
+      "weights": {
+        "MCL": 0.25376,
+        "MGC": 0.174063,
+        "MNQ": 0.572178
+      },
+      "signals": {
+        "MNQ": 1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-02-27",
+      "weights": {
+        "MCL": 0.607232,
+        "MGC": 0.392768
+      },
+      "signals": {
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-03-06",
+      "weights": {
+        "MCL": 0.190604,
+        "MGC": 0.299598,
+        "MNQ": -0.509798
+      },
+      "signals": {
+        "MNQ": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-03-13",
+      "weights": {
+        "MCL": 0.116373,
+        "MGC": 0.320159,
+        "MNQ": -0.563469
+      },
+      "signals": {
+        "MNQ": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-03-20",
+      "weights": {
+        "MCL": 0.03837,
+        "MGC": 0.097286,
+        "MNQ": -0.192268,
+        "ZN": -0.672076
+      },
+      "signals": {
+        "MNQ": -1.0,
+        "ZN": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    },
+    {
+      "date": "2026-03-27",
+      "weights": {
+        "MCL": 0.037205,
+        "MGC": 0.098033,
+        "MNQ": -0.2171,
+        "ZN": -0.647662
+      },
+      "signals": {
+        "MNQ": -1.0,
+        "ZN": -1.0,
+        "MGC": 1.0,
+        "MCL": 1.0
+      }
+    }
+  ]
+}
