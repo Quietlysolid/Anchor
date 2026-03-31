@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "anchor"
 version = "0.1.0"
-description = "Autonomous Forex Trading System"
+description = "IBKR futures trading system"
 authors = []
 packages = [{ include = "anchor" }]
 
@@ -19,7 +19,6 @@ psycopg2-binary = "^2.9.0"
 alembic = "^1.14.0"
 
 # Broker APIs
-oandapyV20 = "^0.7.2"
 ibapi = "^9.81.1.post1"
 
 # Data processing
@@ -81,7 +80,7 @@ build-backend = "poetry.core.masonry.api"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "live: requires live OANDA connection and real database",
+    "live: requires live broker connection and real database",
     "timeout: test-level timeout marker",
 ]
 filterwarnings = [

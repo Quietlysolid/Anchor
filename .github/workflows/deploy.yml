@@ -29,7 +29,7 @@ jobs:
           cache: 'pip'
 
       - name: Install Poetry
-        run: pip install poetry==1.8.3
+        run: pip install poetry==2.3.2
 
       - name: Install backend dependencies
         working-directory: backend
