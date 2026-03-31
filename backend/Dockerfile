@@ -10,13 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Poetry
-RUN pip install --no-cache-dir poetry==1.8.3
+RUN pip install --no-cache-dir poetry==2.3.2
 
 # Copy dependency files
 COPY pyproject.toml poetry.lock* ./
 
 # Install Python deps (skip the local anchor package — source not copied yet)
 RUN poetry config virtualenvs.create false \
+    && poetry lock \
     && poetry install --only main --no-interaction --no-ansi --no-root
 
 # Copy source
