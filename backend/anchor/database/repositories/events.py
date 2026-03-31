@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import select, and_, desc, tuple_
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from anchor.database.models import SystemEvent, EconomicEvent, EventSeverity
+from anchor.database.models import EventSeverity, SystemEvent
 
 
 class SystemEventRepository:
@@ -23,7 +22,6 @@ class SystemEventRepository:
         message: str | None = None,
         metadata: dict | None = None,
     ) -> None:
-        """Accept either a pre-built SystemEvent or keyword args."""
         if event is None:
             event = SystemEvent(
                 event_type=event_type,
@@ -57,120 +55,6 @@ class SystemEventRepository:
             select(SystemEvent)
             .where(SystemEvent.severity == EventSeverity.ERROR)
             .order_by(desc(SystemEvent.event_at))
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-
-class EconomicCalendarRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def insert_many(self, events: List[EconomicEvent]) -> int:
-        """Insert events and update existing rows when released values arrive.
-
-        ForexFactory rows are often seen twice:
-          1. before release, with time/title but missing actual/forecast
-          2. after release, with the same identity and populated values
-
-        Pure duplicate-skipping leaves the DB permanently stuck with empty release
-        fields, which breaks all event-conditioned research and surprise logic.
-        """
-        if not events:
-            return 0
-
-        keys = [(e.event_time, e.currency, e.event_name) for e in events]
-        existing = await self.session.execute(
-            select(EconomicEvent)
-            .where(
-                tuple_(
-                    EconomicEvent.event_time,
-                    EconomicEvent.currency,
-                    EconomicEvent.event_name,
-                ).in_(keys)
-            )
-        )
-        existing_rows = {
-            (row.event_time, row.currency, row.event_name): row
-            for row in existing.scalars().all()
-        }
-
-        changed = 0
-        for event in events:
-            key = (event.event_time, event.currency, event.event_name)
-            current = existing_rows.get(key)
-            if current is None:
-                self.session.add(event)
-                changed += 1
-                continue
-
-            row_changed = False
-            for attr in ("impact", "forecast", "previous", "actual"):
-                incoming = getattr(event, attr)
-                if incoming in (None, ""):
-                    continue
-                if getattr(current, attr) != incoming:
-                    setattr(current, attr, incoming)
-                    row_changed = True
-
-            if row_changed:
-                changed += 1
-
-        if changed:
-            await self.session.flush()
-        return changed
-
-    async def get_upcoming(
-        self, start: datetime, end: datetime, impact: Optional[str] = None
-    ) -> List[EconomicEvent]:
-        filters = [
-            EconomicEvent.event_time >= start,
-            EconomicEvent.event_time <= end,
-        ]
-        if impact:
-            filters.append(EconomicEvent.impact == impact)
-        result = await self.session.execute(
-            select(EconomicEvent)
-            .where(and_(*filters))
-            .order_by(EconomicEvent.event_time)
-        )
-        return list(result.scalars().all())
-
-    async def get_affecting_currencies(
-        self,
-        currencies: List[str],
-        start: datetime,
-        end: datetime,
-        impact: str = "HIGH",
-    ) -> List[EconomicEvent]:
-        result = await self.session.execute(
-            select(EconomicEvent)
-            .where(
-                and_(
-                    EconomicEvent.currency.in_(currencies),
-                    EconomicEvent.impact == impact,
-                    EconomicEvent.event_time >= start,
-                    EconomicEvent.event_time <= end,
-                )
-            )
-            .order_by(EconomicEvent.event_time)
-        )
-        return list(result.scalars().all())
-
-    async def get_recent_releases(
-        self, currencies: List[str], limit: int = 6
-    ) -> List[EconomicEvent]:
-        """Return the most recent HIGH-impact events where actual was recorded."""
-        result = await self.session.execute(
-            select(EconomicEvent)
-            .where(
-                and_(
-                    EconomicEvent.currency.in_(currencies),
-                    EconomicEvent.impact == "HIGH",
-                    EconomicEvent.actual.isnot(None),
-                )
-            )
-            .order_by(desc(EconomicEvent.event_time))
             .limit(limit)
         )
         return list(result.scalars().all())

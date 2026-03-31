@@ -14,7 +14,7 @@ from anchor.api.schemas import (
     OperatorStateResponse,
     RolloutConfigResponse,
 )
-from anchor.database.models import EconomicEvent, Order, Position, RegimeHistory, Signal, SystemEvent, Trade
+from anchor.database.models import Order, Position, RegimeHistory, Signal, SystemEvent, Trade
 from anchor.execution.broker_client import BrokerClient
 from anchor.futures.strategy import build_futures_v1_targets
 from anchor.utils.time_utils import utcnow
@@ -527,18 +527,7 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
             )
         ).scalars().all()
 
-    upcoming_calendar = (
-        await session.execute(
-            select(EconomicEvent)
-            .where(
-                EconomicEvent.event_time >= now_utc,
-                EconomicEvent.event_time <= now_utc + timedelta(hours=48),
-                EconomicEvent.impact.in_(["HIGH", "MEDIUM"]),
-            )
-            .order_by(EconomicEvent.event_time)
-            .limit(4)
-        )
-    ).scalars().all()
+    upcoming_calendar = []
 
     activity = [
         *([] if settings.trading_domain == "futures" else [_signal_activity(signal) for signal in recent_signals]),

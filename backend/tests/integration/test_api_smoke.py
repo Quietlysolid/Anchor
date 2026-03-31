@@ -114,8 +114,8 @@ async def test_positions_endpoint_exists(client):
 # ── Signals endpoint ──────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_signals_endpoint_exists(client):
-    response = await client.get("/api/v1/signals/latest")
+async def test_orders_endpoint_exists(client):
+    response = await client.get("/api/v1/orders")
     assert response.status_code == 200
 
 

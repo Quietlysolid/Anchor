@@ -10,7 +10,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from anchor.config import get_settings
 from anchor.database.engine import init_db, close_db
 from anchor.utils.logging import configure_logging
-from anchor.api.routers import positions, orders, performance, system, calendar
+from anchor.api.routers import positions, orders, performance, system
 from anchor.api.websocket import router as ws_router, manager as ws_manager
 from anchor.monitoring.heartbeat import HeartbeatService
 from anchor.api.routers.system import set_stream_status, set_account_info
@@ -192,7 +192,6 @@ def create_app() -> FastAPI:
     app.include_router(orders.router, prefix=prefix, tags=["orders"])
     app.include_router(performance.router, prefix=prefix, tags=["performance"])
     app.include_router(system.router, prefix=prefix, tags=["system"])
-    app.include_router(calendar.router,  prefix=prefix, tags=["calendar"])
     app.include_router(ws_router)
 
     return app
