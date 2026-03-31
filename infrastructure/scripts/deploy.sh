@@ -55,12 +55,12 @@ ssh "$VPS_USER@$VPS_HOST" bash << EOF
   fi
 
   echo "==> Running DB migrations..."
-  # Attempt upgrade; if the DB has a stale revision stamp (e.g. after a
-  # volume wipe on a redeploy), clear alembic_version and re-stamp to head.
+  # If the revision table is stale after a reset, clear it and rerun the
+  # real upgrade instead of stamping success.
   if ! docker compose run --rm engine alembic upgrade head; then
-    echo "==> Stale revision — clearing alembic_version and re-stamping..."
+    echo "==> Migration failed. Clearing alembic_version and retrying upgrade..."
     docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d "\${DB_NAME:-anchor}" -c "DELETE FROM alembic_version;"
-    docker compose run --rm engine alembic stamp head
+    docker compose run --rm engine alembic upgrade head
   fi
 
   echo "==> Starting services..."

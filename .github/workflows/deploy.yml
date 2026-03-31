@@ -10,6 +10,9 @@ concurrency:
   group: production-deploy
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   smoke-test:
     runs-on: ubuntu-latest
@@ -23,13 +26,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
       - name: Install Poetry
-        run: pip install poetry
+        run: pip install poetry==1.8.3
 
       - name: Install backend dependencies
         working-directory: backend
         run: poetry install --with dev
+
+      - name: Verify app imports
+        working-directory: backend
+        run: poetry run python -c "from anchor.main import create_app; create_app()"
 
       - name: Run backend smoke tests
         working-directory: backend
@@ -59,6 +67,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Validate deploy secrets
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_VPS_HOST: ${{ secrets.DEPLOY_VPS_HOST }}
+          DEPLOY_VPS_USER: ${{ secrets.DEPLOY_VPS_USER }}
+        run: |
+          test -n "$DEPLOY_SSH_PRIVATE_KEY" || { echo "DEPLOY_SSH_PRIVATE_KEY is missing"; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo "DEPLOY_KNOWN_HOSTS is missing"; exit 1; }
+          test -n "$DEPLOY_VPS_HOST" || { echo "DEPLOY_VPS_HOST is missing"; exit 1; }
+          test -n "$DEPLOY_VPS_USER" || { echo "DEPLOY_VPS_USER is missing"; exit 1; }
+
       - name: Start SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -84,13 +104,17 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.DEPLOY_VPS_HOST }}
           VPS_USER: ${{ secrets.DEPLOY_VPS_USER }}
+          DEPLOY_SHA: ${{ github.sha }}
         run: |
           ssh "$VPS_USER@$VPS_HOST" '
             for i in 1 2 3 4 5 6; do
-              if curl -fsS http://127.0.0.1:8080/api/v1/system/health; then
+              response=$(curl -fsS http://127.0.0.1:8080/api/v1/system/health || true)
+              if [ -n "$response" ] && echo "$response" | grep -F "\"deployed_sha\":\"$DEPLOY_SHA\"" >/dev/null; then
+                echo "$response"
                 exit 0
               fi
               sleep 5
             done
+            echo "Health check failed or deployed SHA did not match"
             exit 1
           '
