@@ -49,10 +49,10 @@ async def client(app):
 @pytest.fixture(autouse=True)
 def mock_broker_calls(monkeypatch):
     """Keep smoke tests off the live broker."""
-    from anchor.execution.broker_client import BrokerClient
+    from anchor.execution.ibkr_client import IBKRBrokerClient
 
-    monkeypatch.setattr(BrokerClient, "get_open_positions", AsyncMock(return_value=[]))
-    monkeypatch.setattr(BrokerClient, "get_pending_orders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(IBKRBrokerClient, "get_open_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(IBKRBrokerClient, "get_pending_orders", AsyncMock(return_value=[]))
 
 
 # ── Health endpoint ───────────────────────────────────────────────────────────
