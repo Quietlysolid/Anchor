@@ -2739,17 +2739,6 @@ files = [
 ]
 
 [[package]]
-name = "oandapyv20"
-version = "0.7.2"
-description = "Python wrapper for the OANDA REST-V20 API"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "oandapyV20-0.7.2.tar.gz", hash = "sha256:5ca3990f824d0b16afd49d8e08f7403862d2b3c5a583470f777db7f76f04d073"},
-]
-
-[[package]]
 name = "opentelemetry-api"
 version = "1.40.0"
 description = "OpenTelemetry Python API"

@@ -39,7 +39,7 @@ class MarketDataRepository:
                 "close": float(row["close"]),
                 "volume": int(row["volume"]) if "volume" in row and row["volume"] else None,
                 "spread_avg": float(row["spread"]) if "spread" in row and row["spread"] else None,
-                "source": str(row["source"]) if "source" in row else "oanda",
+                "source": str(row["source"]) if "source" in row else "ibkr",
             })
         chunk_size = 500
         for i in range(0, len(rows), chunk_size):
@@ -65,7 +65,7 @@ class MarketDataRepository:
                 "close": c.close,
                 "volume": c.volume,
                 "spread_avg": c.spread_avg if hasattr(c, "spread_avg") else None,
-                "source": c.source if hasattr(c, "source") and c.source else "oanda",
+                "source": c.source if hasattr(c, "source") and c.source else "ibkr",
             }
             for c in candles
         ]

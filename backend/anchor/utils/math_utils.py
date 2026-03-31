@@ -2,22 +2,17 @@ import numpy as np
 
 
 def wilder_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
-    """Wilder's smoothed ATR as a full array. matches the `ta` library used in live trading.
-
-    Returns an array of length len(closes) where the first `period` values are NaN.
-    Use float(result[-1]) to get the current ATR value.
-    """
     n = len(closes)
     tr = np.zeros(n)
     for i in range(1, n):
         tr[i] = max(
             highs[i] - lows[i],
             abs(highs[i] - closes[i - 1]),
-            abs(lows[i]  - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
         )
     atr = np.full(n, np.nan)
     if n > period:
-        atr[period] = float(np.mean(tr[1: period + 1]))
+        atr[period] = float(np.mean(tr[1 : period + 1]))
         alpha = 1.0 / period
         for i in range(period + 1, n):
             atr[i] = alpha * tr[i] + (1.0 - alpha) * atr[i - 1]
@@ -25,7 +20,6 @@ def wilder_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: 
 
 
 def wilder_atr_scalar(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
-    """Returns the single current ATR value (last element of wilder_atr)."""
     prev_closes = np.roll(closes, 1)
     prev_closes[0] = closes[0]
     tr = np.maximum(highs - lows, np.maximum(np.abs(highs - prev_closes), np.abs(lows - prev_closes)))
@@ -36,18 +30,24 @@ def wilder_atr_scalar(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, p
     return atr
 
 
-PIP_SIZES: dict[str, float] = {
-    "EUR_USD": 0.0001, "GBP_USD": 0.0001, "AUD_USD": 0.0001,
-    "NZD_USD": 0.0001, "USD_CAD": 0.0001, "USD_CHF": 0.0001,
-    "EUR_GBP": 0.0001, "EUR_CAD": 0.0001, "GBP_CAD": 0.0001,
-    "USD_JPY": 0.01,   "EUR_JPY": 0.01,   "GBP_JPY": 0.01,
-    "AUD_JPY": 0.01,   "CHF_JPY": 0.01,   "CAD_JPY": 0.01,
-    "NZD_JPY": 0.01,
+PRICE_INCREMENTS: dict[str, float] = {
+    "ES": 0.25,
+    "MES": 0.25,
+    "NQ": 0.25,
+    "MNQ": 0.25,
+    "YM": 1.0,
+    "MYM": 1.0,
+    "RTY": 0.1,
+    "M2K": 0.1,
+    "CL": 0.01,
+    "MCL": 0.01,
+    "GC": 0.1,
+    "MGC": 0.1,
 }
 
 
 def get_pip_size(instrument: str) -> float:
-    return PIP_SIZES.get(instrument, 0.0001)
+    return PRICE_INCREMENTS.get(instrument.upper(), 0.25)
 
 
 def pips_to_price(instrument: str, pips: float) -> float:
@@ -55,8 +55,7 @@ def pips_to_price(instrument: str, pips: float) -> float:
 
 
 def price_to_pips(instrument: str, price_diff: float) -> float:
-    pip = get_pip_size(instrument)
-    return abs(price_diff) / pip
+    return abs(price_diff) / get_pip_size(instrument)
 
 
 def sharpe_ratio(returns: np.ndarray, risk_free: float = 0.0, periods: int = 252) -> float:

@@ -1,5 +1,5 @@
 """
-ATR-based market regime classifier for backtesting.
+ATR-based market regime classifier for historical and live analysis.
 
 Drop-in replacement for HMMRegimeDetector when no trained HMM model is
 available (e.g. new pairs without 2+ years of live history).
@@ -26,7 +26,7 @@ import pandas as pd
 class AtrRegimeClassifier:
     """Rule-based regime classifier derived from ATR and volatility features.
 
-    No training required — valid from the very first bar of backtest history.
+    No training required — valid from the very first bar of available history.
     Confidence is a heuristic measure of how far each metric is from its threshold.
     """
 

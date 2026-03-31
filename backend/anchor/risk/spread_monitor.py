@@ -8,7 +8,7 @@ Spread monitor. Suppresses entries if:
      TP is gone before the trade starts.
 
 Cross-process note: the in-memory `_current` dict is only populated when the
-OANDA stream runs in the same process (FastAPI). The Celery worker is a separate
+broker stream runs in the same process (FastAPI). The Celery worker is a separate
 process. To bridge the gap, `check()` reads from Redis key `spread:{instrument}`
 (written by the stream with a 30s TTL) when in-memory data is absent.
 Falls back to pass-through (returns True) if neither source has data.
@@ -108,3 +108,4 @@ class SpreadMonitor:
 
     def get_spread(self, instrument: str) -> float | None:
         return self._current.get(instrument)
+

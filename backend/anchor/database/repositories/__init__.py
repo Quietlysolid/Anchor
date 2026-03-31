@@ -3,7 +3,7 @@ from anchor.database.repositories.signals import SignalRepository
 from anchor.database.repositories.orders import OrderRepository
 from anchor.database.repositories.positions import PositionRepository, TradeRepository
 from anchor.database.repositories.equity import EquityRepository
-from anchor.database.repositories.events import SystemEventRepository, EconomicCalendarRepository
+from anchor.database.repositories.events import SystemEventRepository
 from anchor.database.repositories.regime import RegimeRepository
 
 __all__ = [
@@ -14,6 +14,5 @@ __all__ = [
     "TradeRepository",
     "EquityRepository",
     "SystemEventRepository",
-    "EconomicCalendarRepository",
     "RegimeRepository",
 ]

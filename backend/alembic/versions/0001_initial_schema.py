@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("close", sa.Numeric(18, 6), nullable=False),
         sa.Column("volume", sa.Integer()),
         sa.Column("spread_avg", sa.Numeric(10, 5)),
-        sa.Column("source", sa.String(20), nullable=False, server_default="oanda"),
+        sa.Column("source", sa.String(20), nullable=False, server_default="ibkr"),
     )
     op.create_index("ix_market_data_instrument_tf_time", "market_data", ["instrument", "timeframe", "time"])
     # UNIQUE constraint required for ON CONFLICT (time, instrument, timeframe) DO NOTHING.
@@ -54,7 +54,7 @@ def upgrade() -> None:
         sa.Column("instrument", sa.String(12), nullable=False, primary_key=True),
         sa.Column("bid", sa.Numeric(18, 6), nullable=False),
         sa.Column("ask", sa.Numeric(18, 6), nullable=False),
-        sa.Column("source", sa.String(20), nullable=False, server_default="oanda"),
+        sa.Column("source", sa.String(20), nullable=False, server_default="ibkr"),
     )
 
     try:
@@ -97,7 +97,7 @@ def upgrade() -> None:
         sa.Column("order_type", sa.String(12), nullable=False, server_default="MARKET"),
         sa.Column("requested_units", sa.Numeric(18, 2), nullable=False),
         sa.Column("state", sa.String(16), nullable=False, server_default="PENDING"),
-        sa.Column("oanda_order_id", sa.String(64)),
+        sa.Column("broker_order_id", sa.String(64)),
         sa.Column("limit_price", sa.Numeric(18, 6)),
         sa.Column("stop_price", sa.Numeric(18, 6)),
         sa.Column("take_profit", sa.Numeric(18, 6)),
@@ -138,7 +138,7 @@ def upgrade() -> None:
         sa.Column("commission", sa.Numeric(18, 6), server_default="0"),
         sa.Column("pl_realized", sa.Numeric(18, 6)),
         sa.Column("pl_currency", sa.String(3), nullable=False, server_default="USD"),
-        sa.Column("oanda_fill_id", sa.String(64)),
+        sa.Column("broker_fill_id", sa.String(64)),
         sa.Column("metadata", postgresql.JSONB()),
     )
 
@@ -158,7 +158,7 @@ def upgrade() -> None:
         sa.Column("stop_loss", sa.Numeric(18, 6)),
         sa.Column("take_profit", sa.Numeric(18, 6)),
         sa.Column("trailing_stop_distance", sa.Numeric(18, 6)),
-        sa.Column("oanda_trade_id", sa.String(64), unique=True),
+        sa.Column("broker_trade_id", sa.String(64), unique=True),
         sa.Column("status", sa.String(8), nullable=False, server_default="OPEN"),
         sa.Column("signal_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("signals.id")),
     )
@@ -220,21 +220,6 @@ def upgrade() -> None:
         sa.Column("metadata", postgresql.JSONB()),
     )
 
-    # ── economic_calendar ────────────────────────────────────────────────────────
-    op.create_table(
-        "economic_calendar",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("event_time", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("currency", sa.String(3), nullable=False),
-        sa.Column("impact", sa.String(6), nullable=False),
-        sa.Column("event_name", sa.Text(), nullable=False),
-        sa.Column("forecast", sa.Text()),
-        sa.Column("previous", sa.Text()),
-        sa.Column("actual", sa.Text()),
-        sa.Column("imported_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
-    op.create_index("ix_economic_calendar_time_currency", "economic_calendar", ["event_time", "currency"])
-
     # ── regime_history ───────────────────────────────────────────────────────────
     op.create_table(
         "regime_history",
@@ -267,7 +252,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("slippage_records")
     op.drop_table("regime_history")
-    op.drop_table("economic_calendar")
     op.drop_table("system_events")
     op.drop_table("equity_curve")
     op.drop_table("trades")
@@ -278,3 +262,4 @@ def downgrade() -> None:
     op.drop_table("signals")
     op.drop_table("tick_data")
     op.drop_table("market_data")
+

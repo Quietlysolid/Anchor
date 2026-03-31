@@ -64,7 +64,7 @@ class MarketData(Base):
     close:      Mapped[Decimal]  = mapped_column(Numeric(18, 6), nullable=False)
     volume:     Mapped[int | None]     = mapped_column(Integer)
     spread_avg: Mapped[Decimal | None] = mapped_column(Numeric(10, 5))
-    source:     Mapped[str]      = mapped_column(String(20), nullable=False, default="oanda")
+    source:     Mapped[str]      = mapped_column(String(20), nullable=False, default="ibkr")
 
 
 class TickData(Base):
@@ -74,7 +74,7 @@ class TickData(Base):
     instrument: Mapped[str]      = mapped_column(String(12), primary_key=True)
     bid:        Mapped[Decimal]  = mapped_column(Numeric(18, 6), nullable=False)
     ask:        Mapped[Decimal]  = mapped_column(Numeric(18, 6), nullable=False)
-    source:     Mapped[str]      = mapped_column(String(20), nullable=False, default="oanda")
+    source:     Mapped[str]      = mapped_column(String(20), nullable=False, default="ibkr")
 
 
 class Signal(Base):
@@ -113,7 +113,7 @@ class Order(Base):
     order_type:             Mapped[str]             = mapped_column(String(12), nullable=False, default="MARKET")
     requested_units:        Mapped[Decimal]         = mapped_column(Numeric(18, 2), nullable=False)
     state:                  Mapped[str]             = mapped_column(Enum(OrderState, name="order_state", create_type=False), nullable=False, default=OrderState.PENDING)
-    oanda_order_id:         Mapped[str | None]      = mapped_column(String(64))
+    broker_order_id:        Mapped[str | None]      = mapped_column(String(64))
     limit_price:            Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     stop_price:             Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     take_profit:            Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
@@ -159,7 +159,7 @@ class Fill(Base):
     commission:     Mapped[Decimal]        = mapped_column(Numeric(18, 6), default=0)
     pl_realized:    Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     pl_currency:    Mapped[str]            = mapped_column(String(3), nullable=False, default="USD")
-    oanda_fill_id:  Mapped[str | None]     = mapped_column(String(64))
+    broker_fill_id: Mapped[str | None]     = mapped_column(String(64))
     metadata_:      Mapped[dict | None]    = mapped_column("metadata", JSONB)
 
     order: Mapped["Order"] = relationship("Order", back_populates="fills")
@@ -181,7 +181,7 @@ class Position(Base):
     stop_loss:              Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     take_profit:            Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     trailing_stop_distance: Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
-    oanda_trade_id:         Mapped[str | None]      = mapped_column(String(64), unique=True)
+    broker_trade_id:        Mapped[str | None]      = mapped_column(String(64), unique=True)
     status:                 Mapped[str]             = mapped_column(String(8), nullable=False, default="OPEN")
     partial_tp_done:        Mapped[bool]            = mapped_column(Boolean, nullable=False, default=False)
     initial_units:          Mapped[Decimal | None]  = mapped_column(Numeric(18, 2))  # units at open, before partial close
@@ -243,20 +243,6 @@ class SystemEvent(Base):
     metadata_:  Mapped[dict | None] = mapped_column("metadata", JSONB)
 
 
-class EconomicEvent(Base):
-    __tablename__ = "economic_calendar"
-
-    id:          Mapped[int]         = mapped_column(BigInteger, primary_key=True)
-    event_time:  Mapped[datetime]    = mapped_column(DateTime(timezone=True), nullable=False)
-    currency:    Mapped[str]         = mapped_column(String(3), nullable=False)
-    impact:      Mapped[str]         = mapped_column(String(6), nullable=False)
-    event_name:  Mapped[str]         = mapped_column(Text, nullable=False)
-    forecast:    Mapped[str | None]  = mapped_column(Text)
-    previous:    Mapped[str | None]  = mapped_column(Text)
-    actual:      Mapped[str | None]  = mapped_column(Text)
-    imported_at: Mapped[datetime]    = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 class RegimeHistory(Base):
     __tablename__ = "regime_history"
 
@@ -265,19 +251,6 @@ class RegimeHistory(Base):
     regime:           Mapped[str]          = mapped_column(String(16), nullable=False)
     confidence:       Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
     transition_from:  Mapped[str | None]   = mapped_column(String(16))
-
-
-class IntelligenceReport(Base):
-    """LLM-generated pre/post-session briefs and weekly synthesis."""
-    __tablename__ = "intelligence_reports"
-
-    id:                Mapped[uuid.UUID]       = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    created_at:        Mapped[datetime]        = mapped_column(DateTime(timezone=True), server_default=func.now())
-    report_type:       Mapped[str]             = mapped_column(String(32), nullable=False)  # PRESESSION | POSTSESSION | WEEKLY | TRADE_EXPLANATION | JOURNAL_ANALYSIS
-    content:           Mapped[str]             = mapped_column(Text, nullable=False)
-    context_snapshot:  Mapped[dict | None]     = mapped_column(JSONB)
-    delivered_telegram: Mapped[bool]           = mapped_column(Boolean, nullable=False, default=False)
-    tokens_used:       Mapped[int | None]      = mapped_column(Integer)
 
 
 class SlippageRecord(Base):

@@ -1,1 +1,1 @@
-# Anchor — Autonomous Forex Trading System
+# Anchor — Autonomous Futures Trading System

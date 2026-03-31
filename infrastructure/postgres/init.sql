@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS market_data (
     close        NUMERIC(18,6) NOT NULL,
     volume       INTEGER,
     spread_avg   NUMERIC(10,5),
-    source       VARCHAR(20)   NOT NULL DEFAULT 'oanda'
+    source       VARCHAR(20)   NOT NULL DEFAULT 'ibkr'
 );
 
 SELECT create_hypertable('market_data', 'time',
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS tick_data (
     instrument   VARCHAR(12)   NOT NULL,
     bid          NUMERIC(18,6) NOT NULL,
     ask          NUMERIC(18,6) NOT NULL,
-    source       VARCHAR(20)   NOT NULL DEFAULT 'oanda'
+    source       VARCHAR(20)   NOT NULL DEFAULT 'ibkr'
 );
 
 SELECT create_hypertable('tick_data', 'time',
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS orders (
     order_type             VARCHAR(12)  NOT NULL DEFAULT 'MARKET',
     requested_units        NUMERIC(18,2) NOT NULL,
     state                  order_state  NOT NULL DEFAULT 'PENDING',
-    oanda_order_id         VARCHAR(64),
+    broker_order_id         VARCHAR(64),
     limit_price            NUMERIC(18,6),
     stop_price             NUMERIC(18,6),
     take_profit            NUMERIC(18,6),
@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS fills (
     commission      NUMERIC(18,6) DEFAULT 0,
     pl_realized     NUMERIC(18,6),
     pl_currency     VARCHAR(3)   NOT NULL DEFAULT 'USD',
-    oanda_fill_id   VARCHAR(64),
+    broker_fill_id   VARCHAR(64),
     metadata        JSONB
 );
 
@@ -185,7 +185,7 @@ CREATE TABLE IF NOT EXISTS positions (
     stop_loss              NUMERIC(18,6),
     take_profit            NUMERIC(18,6),
     trailing_stop_distance NUMERIC(18,6),
-    oanda_trade_id         VARCHAR(64)  UNIQUE,
+    broker_trade_id         VARCHAR(64)  UNIQUE,
     status                 VARCHAR(8)   NOT NULL DEFAULT 'OPEN'
                                CHECK (status IN ('OPEN','CLOSED')),
     signal_id              UUID         REFERENCES signals(id)
@@ -271,24 +271,6 @@ CREATE INDEX IF NOT EXISTS ix_sysevents_type_time
     ON system_events (event_type, event_at DESC);
 
 -- ============================================================
--- ECONOMIC CALENDAR
--- ============================================================
-CREATE TABLE IF NOT EXISTS economic_calendar (
-    id          BIGSERIAL    PRIMARY KEY,
-    event_time  TIMESTAMPTZ  NOT NULL,
-    currency    VARCHAR(3)   NOT NULL,
-    impact      VARCHAR(6)   NOT NULL CHECK (impact IN ('HIGH','MEDIUM','LOW')),
-    event_name  TEXT         NOT NULL,
-    forecast    TEXT,
-    previous    TEXT,
-    actual      TEXT,
-    imported_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS ix_calendar_time_impact
-    ON economic_calendar (event_time, impact);
-
--- ============================================================
 -- REGIME HISTORY
 -- ============================================================
 CREATE TABLE IF NOT EXISTS regime_history (
@@ -317,3 +299,4 @@ CREATE TABLE IF NOT EXISTS slippage_records (
     fill_price      NUMERIC(18,6) NOT NULL,
     slippage_pips   NUMERIC(10,4) NOT NULL
 );
+

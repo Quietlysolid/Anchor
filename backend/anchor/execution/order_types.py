@@ -79,4 +79,4 @@ class FillRecord:
     fill_at:        datetime
     expected_price: float | None = None
     spread_at_fill: float | None = None
-    oanda_fill_id:  str | None = None
+    broker_fill_id: str | None = None

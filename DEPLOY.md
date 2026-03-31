@@ -7,7 +7,7 @@ This guide now assumes a private deployment over Tailscale, not a public interne
 1. Go to https://console.hetzner.com
 2. New Project → `anchor`
 3. Add Server:
-   - **Location**: Nuremberg (EU) — closest to OANDA
+   - **Location**: Nuremberg (EU) — closest to IBKR
    - **Image**: Ubuntu 24.04
    - **Type**: CX22 (2 vCPU, 4GB RAM, ~€4.15/mo)
    - **SSH Key**: paste your `~/.ssh/id_ed25519.pub`
@@ -50,9 +50,9 @@ DATABASE_URL=postgresql+asyncpg://anchor:CHANGE_ME_STRONG_PASSWORD_HERE@db:5432/
 
 REDIS_URL=redis://redis:6379/0
 
-OANDA_API_KEY=your_oanda_api_key_here
-OANDA_ACCOUNT_ID=your_oanda_account_id_here
-OANDA_ENVIRONMENT=practice
+IBKR_API_KEY=your_ibkr_api_key_here
+IBKR_ACCOUNT_ID=your_ibkr_account_id_here
+BROKER_MODE=paper
 
 FRED_API_KEY=your_fred_api_key_here
 
@@ -192,7 +192,7 @@ curl http://localhost/api/v1/system/health
 
 ## After Deployment
 
-1. **Verify OANDA connection**: `GET /api/v1/system/health` should show broker connected
+1. **Verify IBKR connection**: `GET /api/v1/system/health` should show broker connected
 2. **Import historical data**: `docker compose exec engine python -m anchor.data.importer`
 3. **Run backtest**: Use the dashboard or `POST /api/v1/backtest`
 4. **Monitor logs**: `docker compose logs -f engine`
@@ -223,3 +223,5 @@ docker compose exec db psql -U anchor anchor
 # Redis CLI
 docker compose exec redis redis-cli
 ```
+
+

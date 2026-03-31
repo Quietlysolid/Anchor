@@ -5,10 +5,10 @@ from decimal import Decimal
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import select, and_, desc
+from sqlalchemy import and_, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from anchor.database.models import Order, OrderEvent, Fill
+from anchor.database.models import Fill, Order, OrderEvent
 from anchor.utils.time_utils import utcnow
 
 
@@ -48,21 +48,20 @@ class OrderRepository:
         return order
 
     async def get(self, order_id: UUID) -> Optional[Order]:
-        result = await self.session.execute(
-            select(Order).where(Order.id == order_id)
-        )
+        result = await self.session.execute(select(Order).where(Order.id == order_id))
         return result.scalar_one_or_none()
 
-    async def set_oanda_id(self, order_id: UUID, oanda_order_id: str) -> None:
+    async def set_broker_id(self, order_id: UUID, broker_order_id: str) -> None:
         order = await self.get(order_id)
         if order:
-            order.oanda_order_id = oanda_order_id
+            order.broker_order_id = broker_order_id
             await self.session.flush()
 
     async def update_state(self, order_id: UUID, new_state, event_data: dict) -> None:
         order = await self.get(order_id)
         if order is None:
             return
+
         old_state = order.state
         order.state = new_state.value if hasattr(new_state, "value") else str(new_state)
 
@@ -93,14 +92,12 @@ class OrderRepository:
         return order
 
     async def get_by_id(self, order_id: UUID) -> Optional[Order]:
-        result = await self.session.execute(
-            select(Order).where(Order.id == order_id)
-        )
+        result = await self.session.execute(select(Order).where(Order.id == order_id))
         return result.scalar_one_or_none()
 
-    async def get_by_oanda_id(self, oanda_order_id: str) -> Optional[Order]:
+    async def get_by_broker_id(self, broker_order_id: str) -> Optional[Order]:
         result = await self.session.execute(
-            select(Order).where(Order.oanda_order_id == oanda_order_id)
+            select(Order).where(Order.broker_order_id == broker_order_id)
         )
         return result.scalar_one_or_none()
 
@@ -134,26 +131,18 @@ class OrderRepository:
 
     async def get_pending(self) -> List[Order]:
         result = await self.session.execute(
-            select(Order).where(
-                Order.state.in_(["PENDING", "SUBMITTED", "ACKNOWLEDGED"])
-            )
+            select(Order).where(Order.state.in_(["PENDING", "SUBMITTED", "ACKNOWLEDGED"]))
         )
         return list(result.scalars().all())
 
     async def get_recent(self, limit: int = 100) -> List[Order]:
-        result = await self.session.execute(
-            select(Order).order_by(desc(Order.created_at)).limit(limit)
-        )
+        result = await self.session.execute(select(Order).order_by(desc(Order.created_at)).limit(limit))
         return list(result.scalars().all())
 
     async def get_stale_pending(self, cutoff: datetime) -> List[Order]:
-        """Return pending/submitted orders created before cutoff (for cancellation)."""
         result = await self.session.execute(
             select(Order).where(
-                and_(
-                    Order.state.in_(["PENDING", "SUBMITTED"]),
-                    Order.created_at < cutoff,
-                )
+                and_(Order.state.in_(["PENDING", "SUBMITTED"]), Order.created_at < cutoff)
             )
         )
         return list(result.scalars().all())
@@ -164,9 +153,7 @@ class OrderRepository:
 
     async def get_events(self, order_id: UUID) -> List[OrderEvent]:
         result = await self.session.execute(
-            select(OrderEvent)
-            .where(OrderEvent.order_id == order_id)
-            .order_by(OrderEvent.event_at)
+            select(OrderEvent).where(OrderEvent.order_id == order_id).order_by(OrderEvent.event_at)
         )
         return list(result.scalars().all())
 
@@ -176,8 +163,6 @@ class OrderRepository:
 
     async def get_fills(self, order_id: UUID) -> List[Fill]:
         result = await self.session.execute(
-            select(Fill)
-            .where(Fill.order_id == order_id)
-            .order_by(Fill.fill_at)
+            select(Fill).where(Fill.order_id == order_id).order_by(Fill.fill_at)
         )
         return list(result.scalars().all())

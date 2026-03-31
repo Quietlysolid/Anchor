@@ -32,7 +32,7 @@ def order_repo():
     repo.create       = AsyncMock()
     repo.get          = AsyncMock(return_value=None)
     repo.update_state = AsyncMock()
-    repo.set_oanda_id = AsyncMock()
+    repo.set_broker_id = AsyncMock()
     repo.get_pending  = AsyncMock(return_value=[])
     repo.insert_fill  = AsyncMock()
     repo.session      = MagicMock()
@@ -44,7 +44,7 @@ def order_repo():
 @pytest.fixture
 def broker():
     b = MagicMock()
-    b.place_order  = AsyncMock(return_value=("oanda-123", 1.0800, "trade-456"))
+    b.place_order  = AsyncMock(return_value=("broker-123", 1.0800, "trade-456"))
     b.cancel_order = AsyncMock()
     return b
 
@@ -282,3 +282,5 @@ class TestStateMachineDefinition:
         for src, targets in TRANSITIONS.items():
             for tgt in targets:
                 assert tgt in valid, f"Unknown target state {tgt} in TRANSITIONS[{src}]"
+
+
