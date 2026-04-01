@@ -38,7 +38,6 @@ ssh "$VPS_USER@$VPS_HOST" bash << 'BUILD'
   echo "--- Building frontend and nginx..."
   docker compose build frontend nginx
   echo "--- Build complete."
-  docker compose images
 BUILD
 
 # Step 2: Migrate (best-effort — log failures but don't block service restart)
