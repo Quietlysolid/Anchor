@@ -108,7 +108,7 @@ jobs:
           VPS_USER: ${{ secrets.DEPLOY_VPS_USER }}
           DEPLOY_SHA: ${{ github.sha }}
         run: |
-          ssh "$VPS_USER@$VPS_HOST" '
+          ssh "$VPS_USER@$VPS_HOST" "DEPLOY_SHA='$DEPLOY_SHA' bash -s" <<'EOF'
             for i in 1 2 3 4 5 6; do
               response=$(curl -fsS http://127.0.0.1:8080/api/v1/system/health || true)
               if [ -n "$response" ] && echo "$response" | grep -F "\"deployed_sha\":\"$DEPLOY_SHA\"" >/dev/null; then
@@ -119,4 +119,4 @@ jobs:
             done
             echo "Health check failed or deployed SHA did not match"
             exit 1
-          '
+          EOF
