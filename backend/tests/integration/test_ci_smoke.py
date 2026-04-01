@@ -59,7 +59,8 @@ async def test_system_config_returns_futures_rollout_fields(client):
     assert response.status_code == 200
 
     data = response.json()
-    assert "account_mode" in data
-    assert "account_environment" in data
     assert "instruments" in data
-
+    assert isinstance(data["instruments"], list)
+    assert "trend" in data
+    assert "lcr" in data
+    assert "expected_pilot" in data
