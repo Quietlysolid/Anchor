@@ -24,3 +24,4 @@ data/cot_cache/
 data/models/
 .DS_Store
 Thumbs.db
+backend/anchor/build_info.py
