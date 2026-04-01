@@ -136,7 +136,7 @@ function TradeRow({ trade, nowMs }: { trade: HomepageSnapshotResult; nowMs: numb
   const closeMs = new Date(trade.closed_at).getTime()
 
   return (
-    <div className="flex items-start justify-between gap-3 border-b border-anchor-rule/30 py-4 last:border-0">
+    <div className="flex items-start justify-between gap-3 border-b border-anchor-border/50 py-4 last:border-0">
       <div>
         <p className="text-sm font-semibold text-anchor-navy">{mkt.name}</p>
         <p className="mt-0.5 text-sm text-anchor-slate">
@@ -208,8 +208,8 @@ export default function Home() {
       <div className={cn(
         'mb-6 flex flex-wrap items-center gap-x-3 gap-y-2 border px-4 py-3',
         running
-          ? 'border-anchor-win/20 bg-anchor-win/[0.03]'
-          : 'border-anchor-loss/25 bg-anchor-loss/[0.04]',
+          ? 'border-anchor-win/20 bg-anchor-win/[0.06]'
+          : 'border-anchor-loss/25 bg-anchor-loss/[0.07]',
       )}>
         {/* Live dot */}
         <div className="flex items-center gap-2 shrink-0">
@@ -230,7 +230,7 @@ export default function Home() {
           </span>
         </div>
 
-        <span className="text-anchor-rule/40">·</span>
+        <span className="text-anchor-border">·</span>
 
         <span className="font-mono text-[11px] tracking-wider text-anchor-fog">
           {mode === 'paper' ? 'Paper money' : 'Live account'}
@@ -255,12 +255,12 @@ export default function Home() {
       </div>
 
       {/* ── Portfolio ──────────────────────────────────────────────── */}
-      <section className="panel-glass mb-5 overflow-hidden border border-anchor-navy/[0.09] shadow-[0_12px_36px_rgba(26,39,68,0.05)]">
+      <section className="panel-glass mb-5 overflow-hidden border border-anchor-border shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
 
         {/* Card header */}
-        <div className="flex items-start justify-between gap-4 border-b border-anchor-rule/30 px-5 py-4 sm:px-6">
+        <div className="flex items-start justify-between gap-4 border-b border-anchor-border/60 px-5 py-4 sm:px-6">
           <div>
-            <h2 className="font-display text-[1.35rem] leading-tight text-anchor-navy sm:text-[1.5rem]">
+            <h2 className="font-display text-[1.35rem] leading-tight text-anchor-brass sm:text-[1.5rem]">
               Your portfolio
             </h2>
             {positions.length > 0 && totalPaperPL !== 0 && (
@@ -275,7 +275,7 @@ export default function Home() {
               </p>
             )}
           </div>
-          <p className="shrink-0 font-mono text-xl font-bold text-anchor-navy sm:text-2xl">
+          <p className="shrink-0 font-mono text-2xl font-bold text-anchor-navy sm:text-3xl">
             {dollars(equity)}
           </p>
         </div>
@@ -283,7 +283,7 @@ export default function Home() {
         {/* Open positions — each one is its own row */}
         {positions.length > 0 ? (
           <>
-            <div className="divide-y divide-anchor-rule/25">
+            <div className="divide-y divide-anchor-border/60">
               {positions.map((pos) => {
                 const mkt  = marketInfo(pos.instrument)
                 const pl   = pos.unrealized_pl ?? 0
@@ -306,7 +306,7 @@ export default function Home() {
                       </div>
                       <div className="shrink-0 text-right">
                         <p className={cn(
-                          'font-mono text-lg font-bold leading-tight',
+                          'font-mono text-2xl font-bold leading-none',
                           plUp ? 'text-anchor-win' : plDn ? 'text-anchor-loss' : 'text-anchor-navy/40',
                         )}>
                           {signedDollars(pl)}
@@ -318,7 +318,7 @@ export default function Home() {
                     </div>
 
                     {/* Position details */}
-                    <div className="mt-3 space-y-1.5 border-t border-anchor-rule/20 pt-3">
+                    <div className="mt-3 space-y-1.5 border-t border-anchor-border/40 pt-3">
                       <p className="text-sm text-anchor-slate">
                         <span className={cn(
                           'font-semibold',
@@ -359,7 +359,7 @@ export default function Home() {
             </div>
 
             {/* Plain-English note on unrealized P&L */}
-            <div className="border-t border-anchor-rule/25 bg-anchor-parchment/40 px-5 py-3 sm:px-6">
+            <div className="border-t border-anchor-border/50 bg-anchor-surface/50 px-5 py-3 sm:px-6">
               <p className="text-xs leading-relaxed text-anchor-fog">
                 <span className="font-semibold text-anchor-slate">Paper profit/loss</span> moves with
                 the market but isn't real yet — it locks in permanently when a trade closes and becomes
@@ -378,7 +378,7 @@ export default function Home() {
 
         {/* Next rebalance hint */}
         {nextRebalance && (
-          <div className="border-t border-anchor-rule/25 px-5 py-3 sm:px-6">
+          <div className="border-t border-anchor-border/50 px-5 py-3 sm:px-6">
             <p className="text-xs text-anchor-fog">
               Next rebalance:{' '}
               <span className="font-semibold text-anchor-navy">
@@ -391,9 +391,9 @@ export default function Home() {
       </section>
 
       {/* ── What Anchor did (journal) ───────────────────────────────── */}
-      <section className="panel-glass mb-5 overflow-hidden border border-anchor-navy/[0.09] shadow-[0_12px_36px_rgba(26,39,68,0.05)]">
-        <div className="border-b border-anchor-rule/30 px-5 py-4 sm:px-6">
-          <h2 className="font-display text-[1.35rem] leading-tight text-anchor-navy sm:text-[1.5rem]">
+      <section className="panel-glass mb-5 overflow-hidden border border-anchor-border shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
+        <div className="border-b border-anchor-border/60 px-5 py-4 sm:px-6">
+          <h2 className="font-display text-[1.35rem] leading-tight text-anchor-brass sm:text-[1.5rem]">
             What Anchor did
           </h2>
           <p className="mt-0.5 text-xs text-anchor-fog">
@@ -402,7 +402,7 @@ export default function Home() {
         </div>
 
         {journal.length > 0 ? (
-          <div className="divide-y divide-anchor-rule/25">
+          <div className="divide-y divide-anchor-border/60">
             {journal.map((item, i) => (
               <div key={i} className="flex gap-3 px-5 py-3.5 sm:px-6">
                 <div className={cn(
@@ -430,9 +430,9 @@ export default function Home() {
       </section>
 
       {/* ── Trade history ───────────────────────────────────────────── */}
-      <section className="panel-glass overflow-hidden border border-anchor-navy/[0.09] shadow-[0_12px_36px_rgba(26,39,68,0.05)]">
-        <div className="border-b border-anchor-rule/30 px-5 py-4 sm:px-6">
-          <h2 className="font-display text-[1.35rem] leading-tight text-anchor-navy sm:text-[1.5rem]">
+      <section className="panel-glass overflow-hidden border border-anchor-border shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
+        <div className="border-b border-anchor-border/60 px-5 py-4 sm:px-6">
+          <h2 className="font-display text-[1.35rem] leading-tight text-anchor-brass sm:text-[1.5rem]">
             Trade history
           </h2>
           <p className="mt-0.5 text-xs text-anchor-fog">
@@ -457,8 +457,8 @@ export default function Home() {
       </section>
 
       {/* ── Footer ─────────────────────────────────────────────────── */}
-      <footer className="mt-8 flex items-center justify-between gap-3 border-t border-anchor-rule/35 pt-4">
-        <div className="flex items-center gap-2 text-anchor-rule/50">
+      <footer className="mt-8 flex items-center justify-between gap-3 border-t border-anchor-border/50 pt-4">
+        <div className="flex items-center gap-2 text-anchor-fog/50">
           <AnchorMark size={11} />
           <span className="font-mono text-[9px] uppercase tracking-widest">
             Anchor · personal futures monitor

@@ -6,18 +6,27 @@ export default {
     extend: {
       colors: {
         anchor: {
-          parchment: '#eeead8',   // chart paper background
-          card:      '#faf9f3',   // slightly warm white for cards / insets
-          navy:      '#1a2744',   // primary ink — headings, borders, key text
-          chartblue: '#2b5ea7',   // accent — active states, links
-          rule:      '#c4bca8',   // chart grid lines / dividers
-          slate:     '#526070',   // secondary body text
-          fog:       '#8a8578',   // muted / placeholder
-          win:       '#2d6a4f',   // profit / positive
-          loss:      '#8b2020',   // loss / negative
-          warn:      '#7a5c1e',   // warning / caution
-          spine:     '#0f1822',   // sidebar dark background
-          spine2:    '#172030',   // sidebar hover
+          // ── Surfaces ──────────────────────────────────────────────
+          bg:        '#0b1628',   // page background — deep maritime navy
+          surface:   '#0d1e35',   // card / panel surface
+          border:    '#1c2f4a',   // card borders and section dividers
+          // ── Text ──────────────────────────────────────────────────
+          navy:      '#d4cfc0',   // primary text — warm cream (was dark ink)
+          brass:     '#c9a84c',   // display headings — brass / amber
+          chartblue: '#60a5fa',   // accent — links, active states
+          rule:      '#1c2f4a',   // chart grid lines / dividers
+          slate:     '#8899ae',   // secondary body text
+          fog:       '#5e6e82',   // muted / placeholder
+          // ── Signal ────────────────────────────────────────────────
+          win:       '#4ade80',   // profit / positive — bright green
+          loss:      '#f87171',   // loss / negative — coral red
+          warn:      '#fbbf24',   // warning / caution — amber
+          // ── Legacy surfaces (repurposed as dark tones) ────────────
+          parchment: '#0d1e35',   // formerly cream card bg, now dark surface
+          card:      '#0f2040',   // slightly raised dark surface
+          // ── Sidebar ───────────────────────────────────────────────
+          spine:     '#060f1e',   // deepest navy
+          spine2:    '#0b1628',   // hover state
         },
         border:      'hsl(var(--border))',
         background:  'hsl(var(--background))',
