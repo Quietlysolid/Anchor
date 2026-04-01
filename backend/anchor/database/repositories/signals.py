@@ -76,7 +76,6 @@ class SignalRepository:
         Used to enforce the one-signal-per-instrument-per-session cap.
         Pass exclude_id to exclude the signal row just inserted in this transaction.
         """
-        from uuid import UUID as _UUID
         conditions = [
             Signal.instrument == instrument,
             Signal.session    == "NY_LCR",

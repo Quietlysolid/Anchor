@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
@@ -10,11 +10,10 @@ from anchor.build_info import DEPLOYED_AT, DEPLOYED_SHA
 from anchor.config import get_settings
 from anchor.database.engine import get_db
 from anchor.api.schemas import (
-    LCRPairStatusesResponse,
     OperatorStateResponse,
     RolloutConfigResponse,
 )
-from anchor.database.models import Order, Position, RegimeHistory, Signal, SystemEvent, Trade
+from anchor.database.models import Order, Position, Signal, SystemEvent, Trade
 from anchor.execution.broker_client import BrokerClient
 from anchor.futures.strategy import build_futures_v1_targets
 from anchor.utils.time_utils import utcnow
@@ -533,27 +532,6 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
             .limit(24)
         )
     ).scalars().all()
-
-    regimes = []
-    if settings.trading_domain != "futures":
-        regime_subq = (
-            select(
-                RegimeHistory.instrument,
-                func.max(RegimeHistory.time).label("max_time"),
-            )
-            .where(RegimeHistory.instrument.in_(settings.instruments))
-            .group_by(RegimeHistory.instrument)
-            .subquery()
-        )
-        regimes = (
-            await session.execute(
-                select(RegimeHistory).join(
-                    regime_subq,
-                    (RegimeHistory.instrument == regime_subq.c.instrument)
-                    & (RegimeHistory.time == regime_subq.c.max_time),
-                )
-            )
-        ).scalars().all()
 
     upcoming_calendar = []
 

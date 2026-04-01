@@ -4,8 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import pandas as pd
-
 from anchor.config import get_settings
 from anchor.futures.contracts import get_futures_market
 from anchor.futures.io import load_daily_market_closes
