@@ -6,7 +6,11 @@ from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from anchor.build_info import DEPLOYED_AT, DEPLOYED_SHA
+try:
+    from anchor.build_info import DEPLOYED_AT, DEPLOYED_SHA
+except ImportError:
+    DEPLOYED_SHA = "unknown"
+    DEPLOYED_AT = "unknown"
 from anchor.config import get_settings
 from anchor.database.engine import get_db
 from anchor.api.schemas import (
