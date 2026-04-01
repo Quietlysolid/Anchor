@@ -28,6 +28,9 @@ _stream_connected: bool = False
 _account_balance: float = 0.0
 _account_equity: float = 0.0
 _last_reconciliation: str | None = None
+_open_positions_count: int = 0
+_cached_positions: list = []
+_cached_orders: list = []
 _WORKING_ORDER_STATES = ("PENDING", "SUBMITTED", "ACKNOWLEDGED", "PARTIAL")
 
 
@@ -42,6 +45,25 @@ def set_account_info(balance: float, equity: float, reconciled_at: str | None = 
     _account_equity = equity
     if reconciled_at:
         _last_reconciliation = reconciled_at
+
+
+def set_open_positions_count(count: int) -> None:
+    global _open_positions_count
+    _open_positions_count = count
+
+
+def set_cached_broker_state(positions: list, orders: list) -> None:
+    global _cached_positions, _cached_orders
+    _cached_positions = positions
+    _cached_orders = orders
+
+
+def get_cached_positions() -> list:
+    return _cached_positions
+
+
+def get_cached_orders() -> list:
+    return _cached_orders
 
 
 def _window_payload(engine: str, label: str, starts_at: datetime, ends_at: datetime) -> dict:
@@ -335,11 +357,10 @@ async def health_check(session: AsyncSession = Depends(get_db)):
 
     open_positions = 0
     if settings.trading_domain == "futures":
-        try:
-            runtime = await _broker_runtime_snapshot()
-            open_positions = len(runtime["positions"])
-        except Exception:
-            open_positions = 0
+        # Use the cached count updated by _reconcile_account every 30s.
+        # Avoids making a live broker call on every health check, which
+        # caused thread-pool exhaustion and request pileup.
+        open_positions = _open_positions_count
     else:
         try:
             result = await session.execute(
@@ -380,9 +401,13 @@ async def get_operator_state(session: AsyncSession = Depends(get_db)):
         db_ok = False
 
     if settings.trading_domain == "futures":
-        runtime = await _broker_runtime_snapshot()
-        open_positions_count = len(runtime["positions"])
-        working_orders_count = len(runtime["pending_orders"])
+        try:
+            runtime = await _broker_runtime_snapshot()
+            open_positions_count = len(runtime["positions"])
+            working_orders_count = len(runtime["pending_orders"])
+        except Exception:
+            open_positions_count = _open_positions_count
+            working_orders_count = 0
         latest_blocker = None
     else:
         open_positions_count = (
@@ -458,7 +483,10 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
 
     operator = await get_operator_state(session)
 
-    runtime = await _broker_runtime_snapshot() if settings.trading_domain == "futures" else None
+    if settings.trading_domain == "futures":
+        runtime = {"positions": _cached_positions, "pending_orders": _cached_orders, "account": {}}
+    else:
+        runtime = None
 
     recent_signals = []
     if settings.trading_domain != "futures":

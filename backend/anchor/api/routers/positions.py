@@ -1,13 +1,12 @@
-import asyncio
 from datetime import timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
+from anchor.api.routers.system import get_cached_positions
 from anchor.database.engine import get_db
 from anchor.database.models import Position
-from anchor.execution.broker_client import BrokerClient
 from anchor.utils.time_utils import utcnow
 
 router = APIRouter()
@@ -16,14 +15,7 @@ router = APIRouter()
 @router.get("/positions")
 async def get_open_positions(session: AsyncSession = Depends(get_db)):
     del session
-    broker = BrokerClient()
-    try:
-        positions = await asyncio.wait_for(broker.get_open_positions(), timeout=12)
-    except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="Timed out loading broker positions") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Broker positions unavailable: {exc}") from exc
-    return [_live_position_to_dict(p) for p in positions]
+    return [_live_position_to_dict(p) for p in get_cached_positions()]
 
 
 @router.get("/positions/history")
@@ -39,13 +31,7 @@ async def get_position_history(
 
 @router.get("/positions/{position_id}")
 async def get_position(position_id: str, session: AsyncSession = Depends(get_db)):
-    broker = BrokerClient()
-    try:
-        positions = await asyncio.wait_for(broker.get_open_positions(), timeout=12)
-    except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="Timed out loading broker positions") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Broker positions unavailable: {exc}") from exc
+    positions = get_cached_positions()
     live_match = next((p for p in positions if str(p.get("id")) == position_id or str(p.get("instrument")) == position_id), None)
     if live_match:
         return _live_position_to_dict(live_match)
@@ -81,6 +67,7 @@ def _position_to_dict(p: Position) -> dict:
 def _live_position_to_dict(p: dict) -> dict:
     current_units = float(p.get("currentUnits", 0.0) or 0.0)
     now_iso = utcnow().astimezone(timezone.utc).isoformat()
+    market_price = float(p.get("marketPrice") or 0.0) or None
     return {
         "id":              str(p.get("id") or p.get("instrument")),
         "opened_at":       now_iso,
@@ -89,9 +76,9 @@ def _live_position_to_dict(p: dict) -> dict:
         "direction":       "LONG" if current_units > 0 else "SHORT",
         "units":           abs(current_units),
         "avg_entry_price": float(p.get("price", 0.0) or 0.0),
-        "current_price":   None,
+        "current_price":   market_price,
         "unrealized_pl":   float(p.get("unrealizedPL", 0.0) or 0.0),
-        "realized_pl":     0.0,
+        "realized_pl":     float(p.get("realizedPL", 0.0) or 0.0),
         "stop_loss":       None,
         "take_profit":     None,
         "broker_trade_id": str(p.get("instrument", "")),

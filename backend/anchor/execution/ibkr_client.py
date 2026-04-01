@@ -94,6 +94,7 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
         self.order_states: dict[int, _OrderState] = {}
         self.market_data: dict[int, dict[str, Any]] = {}
         self.tick_callback = None
+        self.portfolio_rows: list[dict] = []
 
     def nextValidId(self, orderId: int) -> None:  # noqa: N802
         self.next_order_id = orderId
@@ -117,6 +118,7 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
             self.positions_req.error = message
         if self.open_orders_req and errorCode not in ignored_codes:
             self.open_orders_req.error = message
+            self.open_orders_req.done.set()
         if self.contract_details_req and errorCode not in ignored_codes:
             self.contract_details_req.error = message
             self.contract_details_req.done.set()
@@ -140,6 +142,16 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
     def accountDownloadEnd(self, accountName: str) -> None:  # noqa: N802
         if self.account_updates_req is not None:
             self.account_updates_req.done.set()
+
+    def updatePortfolio(self, contract, position: float, marketPrice: float, marketValue: float, averageCost: float, unrealizedPNL: float, realizedPNL: float, accountName: str) -> None:  # noqa: N802,E501
+        self.portfolio_rows.append({
+            "contract": contract,
+            "position": position,
+            "marketPrice": marketPrice,
+            "averageCost": averageCost,
+            "unrealizedPNL": unrealizedPNL,
+            "realizedPNL": realizedPNL,
+        })
 
     def position(self, account: str, contract, position: float, avgCost: float) -> None:  # noqa: N802
         if self.positions_req is not None:
@@ -230,6 +242,10 @@ class IBKRBrokerClient:
         self._app = _IBKRApp()
         self._thread: threading.Thread | None = None
         self._connect_lock = threading.Lock()
+        # Serialize all blocking IBKR API calls so shared _app state
+        # (_app.positions_req, _app.account_updates_req, etc.) is never
+        # accessed by two threads simultaneously.
+        self._api_lock = threading.Lock()
 
     @staticmethod
     def _wait_for_request(state: _RequestState, timeout: float, min_rows: int = 1) -> bool:
@@ -269,7 +285,10 @@ class IBKRBrokerClient:
             )
 
     async def _run_blocking(self, fn, *args, **kwargs):
-        return await asyncio.to_thread(fn, *args, **kwargs)
+        def _locked():
+            with self._api_lock:
+                return fn(*args, **kwargs)
+        return await asyncio.to_thread(_locked)
 
     def _build_contract(self, instrument: str):
         parsed = parse_ibkr_instrument(instrument)
@@ -333,7 +352,7 @@ class IBKRBrokerClient:
                 normalized["NAV"] = float(row["value"] or 0.0)
             elif row["tag"] == "Currency":
                 normalized["currency"] = row["value"]
-        normalized["openTradeCount"] = len(self._positions_sync())
+        # openTradeCount is populated by the caller after get_open_trades()
         return normalized
 
     async def get_account_summary(self) -> dict:
@@ -341,15 +360,59 @@ class IBKRBrokerClient:
 
     def _positions_sync(self) -> list[dict]:
         self._ensure_connected()
-        state = _RequestState()
-        self._app.positions_req = state
-        self._app.reqPositions()
-        if not state.done.wait(timeout=10):
-            raise RuntimeError("IBKR positions request timed out")
-        self._app.cancelPositions()
+        if not self._account_id:
+            # Fall back to reqPositions if no account id configured
+            state = _RequestState()
+            self._app.positions_req = state
+            self._app.reqPositions()
+            if not state.done.wait(timeout=10):
+                raise RuntimeError("IBKR positions request timed out")
+            self._app.cancelPositions()
+            rows = state.rows
+            portfolio_map: dict[str, dict] = {}
+        else:
+            # Use reqAccountUpdates which fires updatePortfolio with live
+            # price and unrealized P&L in addition to size/avgCost.
+            self._app.portfolio_rows = []
+            state = _RequestState()
+            self._app.account_updates_req = state
+            self._app.reqAccountUpdates(True, self._account_id)
+            self._wait_for_request(state, timeout=8)
+            self._app.reqAccountUpdates(False, self._account_id)
+            self._app.account_updates_req = None
+
+            # Build a lookup from symbol -> portfolio row for P&L/price
+            portfolio_map = {}
+            for pr in self._app.portfolio_rows:
+                c = pr["contract"]
+                if abs(float(pr["position"] or 0)) < 1e-9:
+                    continue
+                if c.secType == "FUT":
+                    expiry = getattr(c, "lastTradeDateOrContractMonth", "") or ""
+                    key = normalize_instrument_symbol(f"{c.symbol}-{expiry}" if expiry else c.symbol)
+                else:
+                    key = normalize_instrument_symbol(f"{c.symbol}_{c.currency}" if c.secType == "CASH" else c.symbol)
+                portfolio_map[key] = pr
+
+            # Convert portfolio rows to the standard position shape
+            positions = []
+            for instrument, pr in portfolio_map.items():
+                size = float(pr["position"])
+                positions.append({
+                    "id": ibkr_position_id(instrument),
+                    "instrument": instrument,
+                    "currentUnits": size,
+                    "initialUnits": size,
+                    "price": float(pr["averageCost"] or 0.0),
+                    "marketPrice": float(pr["marketPrice"] or 0.0),
+                    "openTime": None,
+                    "unrealizedPL": float(pr["unrealizedPNL"] or 0.0),
+                    "realizedPL": float(pr["realizedPNL"] or 0.0),
+                })
+            return positions
 
         positions = []
-        for row in state.rows:
+        for row in rows:
             contract = row["contract"]
             size = float(row["position"] or 0.0)
             if abs(size) < 1e-9:
@@ -361,17 +424,18 @@ class IBKRBrokerClient:
                 instrument = normalize_instrument_symbol(f"{contract.symbol}-{expiry}" if expiry else contract.symbol)
             else:
                 instrument = normalize_instrument_symbol(contract.symbol)
-            positions.append(
-                {
-                    "id": ibkr_position_id(instrument),
-                    "instrument": instrument,
-                    "currentUnits": size,
-                    "initialUnits": size,
-                    "price": float(row["avgCost"] or 0.0),
-                    "openTime": None,
-                    "unrealizedPL": 0.0,
-                }
-            )
+            pr = portfolio_map.get(instrument, {})
+            positions.append({
+                "id": ibkr_position_id(instrument),
+                "instrument": instrument,
+                "currentUnits": size,
+                "initialUnits": size,
+                "price": float(row["avgCost"] or 0.0),
+                "marketPrice": float(pr.get("marketPrice") or 0.0),
+                "openTime": None,
+                "unrealizedPL": float(pr.get("unrealizedPNL") or 0.0),
+                "realizedPL": float(pr.get("realizedPNL") or 0.0),
+            })
         return positions
 
     async def get_open_trades(self) -> list[dict]:
@@ -386,7 +450,8 @@ class IBKRBrokerClient:
         self._app.open_orders_req = state
         self._app.reqOpenOrders()
         if not state.done.wait(timeout=10):
-            raise RuntimeError("IBKR open orders request timed out")
+            # No pending orders is a valid state; don't raise.
+            return []
 
         pending = []
         for row in state.rows:

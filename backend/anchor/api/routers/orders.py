@@ -1,12 +1,10 @@
-import asyncio
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
+from anchor.api.routers.system import get_cached_orders
 from anchor.database.engine import get_db
 from anchor.database.models import Order
-from anchor.execution.broker_client import BrokerClient
 from anchor.utils.time_utils import utcnow
 
 router = APIRouter()
@@ -20,15 +18,7 @@ async def get_orders(
 ):
     requested_statuses = [s.strip().upper() for s in status.split(",")] if status else None
     if requested_statuses is None or set(requested_statuses).issubset({"PENDING", "SUBMITTED", "ACKNOWLEDGED", "PARTIAL"}):
-        broker = BrokerClient()
-        try:
-            orders = await asyncio.wait_for(broker.get_pending_orders(), timeout=12)
-        except TimeoutError as exc:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=504, detail="Timed out loading broker orders") from exc
-        except Exception as exc:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=503, detail=f"Broker orders unavailable: {exc}") from exc
+        orders = get_cached_orders()
         filtered = [
             _live_order_to_dict(order)
             for order in orders
@@ -48,13 +38,7 @@ async def get_orders(
 async def get_order(order_id: str, session: AsyncSession = Depends(get_db)):
     from fastapi import HTTPException
     from anchor.database.models import OrderEvent
-    broker = BrokerClient()
-    try:
-        live_orders = await asyncio.wait_for(broker.get_pending_orders(), timeout=12)
-    except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="Timed out loading broker orders") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Broker orders unavailable: {exc}") from exc
+    live_orders = get_cached_orders()
     live_match = next((o for o in live_orders if str(o.get("id")) == order_id), None)
     if live_match:
         return _live_order_to_dict(live_match)

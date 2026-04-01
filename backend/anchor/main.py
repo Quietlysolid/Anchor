@@ -13,7 +13,7 @@ from anchor.utils.logging import configure_logging
 from anchor.api.routers import positions, orders, performance, system
 from anchor.api.websocket import router as ws_router, manager as ws_manager
 from anchor.monitoring.heartbeat import HeartbeatService
-from anchor.api.routers.system import set_stream_status, set_account_info
+from anchor.api.routers.system import set_stream_status, set_account_info, set_open_positions_count, set_cached_broker_state
 from anchor.scheduler._shared import _spread_monitor as _shared_spread_monitor
 from anchor.risk.weekend_guard import WeekendGuard
 from anchor.execution.broker_client import BrokerClient
@@ -33,12 +33,19 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
             equity = float(acc.get("NAV", balance))
             set_account_info(balance=balance, equity=equity, reconciled_at=utcnow().isoformat())
 
+            raw_trades = await broker_client.get_open_trades()
+            set_open_positions_count(len(raw_trades))
+            try:
+                raw_orders = await broker_client.get_pending_orders()
+            except Exception:
+                raw_orders = []
+            set_cached_broker_state(raw_trades, raw_orders)
+
             if redis_client:
                 await redis_client.publish("account", json.dumps({
                     "channel": "account",
                     "data": {"balance": balance, "equity": equity},
                 }))
-                raw_trades = await broker_client.get_open_trades()
                 positions = []
                 for t in raw_trades:
                     units = float(t.get("currentUnits", t.get("initialUnits", 0)) or 0)
@@ -61,7 +68,7 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
 
         except Exception as exc:
             logger.warning("reconcile_error", error=str(exc))
-        await asyncio.sleep(30)
+        await asyncio.sleep(7)
 
 
 @asynccontextmanager
