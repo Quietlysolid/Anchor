@@ -43,7 +43,7 @@ jobs:
 
       - name: Run backend smoke tests
         working-directory: backend
-        run: poetry run pytest tests/integration/test_api_smoke.py -q
+        run: poetry run pytest tests/integration/test_ci_smoke.py tests/unit/test_risk_gates.py -q
 
       - name: Set up Node
         uses: actions/setup-node@v4
