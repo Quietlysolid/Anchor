@@ -9,22 +9,8 @@ VPS_HOST="${VPS_HOST:?Set VPS_HOST environment variable}"
 APP_DIR="/opt/anchor"
 DEPLOY_SHA="${DEPLOY_SHA:-$(git rev-parse --short HEAD)}"
 DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-BUILD_INFO_FILE="backend/anchor/build_info.py"
-BUILD_INFO_BACKUP="$(mktemp)"
 
 echo "==> Deploying to $VPS_HOST..."
-
-cp "$BUILD_INFO_FILE" "$BUILD_INFO_BACKUP"
-cleanup() {
-  cp "$BUILD_INFO_BACKUP" "$BUILD_INFO_FILE"
-  rm -f "$BUILD_INFO_BACKUP"
-}
-trap cleanup EXIT
-
-cat > "$BUILD_INFO_FILE" <<EOF2
-DEPLOYED_SHA = "${DEPLOY_SHA}"
-DEPLOYED_AT = "${DEPLOYED_AT}"
-EOF2
 
 # Ensure remote app directory exists
 ssh "$VPS_USER@$VPS_HOST" "mkdir -p $APP_DIR"
@@ -38,6 +24,11 @@ git archive HEAD | ssh "$VPS_USER@$VPS_HOST" "tar -x -C $APP_DIR"
 ssh "$VPS_USER@$VPS_HOST" bash << EOF
   set -euo pipefail
   cd $APP_DIR
+
+  cat > backend/anchor/build_info.py <<'EOF2'
+DEPLOYED_SHA = "${DEPLOY_SHA}"
+DEPLOYED_AT = "${DEPLOYED_AT}"
+EOF2
 
   echo "==> Building images..."
   # --no-cache on Python services ensures the COPY . . layer is never stale
