@@ -20,8 +20,11 @@ RUN poetry config virtualenvs.create false \
     && poetry lock \
     && poetry install --only main --no-interaction --no-ansi --no-root
 
-# Copy source
-COPY . .
+# Copy runtime source without overwriting the dependency files already staged above.
+COPY anchor ./anchor
+COPY alembic ./alembic
+COPY scripts ./scripts
+COPY alembic.ini ./
 
 # Install the anchor package itself now that the source is present
 RUN poetry install --only main --no-interaction --no-ansi
