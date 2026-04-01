@@ -63,7 +63,7 @@ class PartialTPManager:
                 logger.error(
                     "partial_tp_check_failed",
                     instrument=pos.instrument,
-                    trade_id=pos.oanda_trade_id,
+                    trade_id=pos.broker_trade_id,
                     error=str(exc),
                 )
 
@@ -74,7 +74,7 @@ class PartialTPManager:
         if pos.partial_tp_done:
             return False
 
-        if pos.oanda_trade_id is None:
+        if pos.broker_trade_id is None:
             return False
 
         if pos.stop_loss is None or pos.take_profit is None:
@@ -118,11 +118,11 @@ class PartialTPManager:
             trigger_distance=round(trigger_distance, 6),
             close_units=close_units,
             remaining_units=current_units - close_units,
-            trade_id=pos.oanda_trade_id,
+            trade_id=pos.broker_trade_id,
         )
 
         # 1. Partial close at market
-        await self.broker.close_trade(pos.oanda_trade_id, units=str(close_units))
+        await self.broker.close_trade(pos.broker_trade_id, units=str(close_units))
 
         # 2. Best-effort broker-side stop move. Phase 1 IBKR support logs/skips this
         #    and keeps the DB state authoritative until attached-order management lands.
@@ -143,16 +143,16 @@ class PartialTPManager:
     async def _move_sl_to_breakeven(self, pos, breakeven_price: float) -> None:
         """Move the stop loss to breakeven at the broker when supported."""
         try:
-            await self.broker.move_stop_loss_to_breakeven(pos.oanda_trade_id, breakeven_price)
+            await self.broker.move_stop_loss_to_breakeven(pos.broker_trade_id, breakeven_price)
             logger.info(
                 "sl_moved_to_breakeven",
-                trade_id=pos.oanda_trade_id,
+                trade_id=pos.broker_trade_id,
                 breakeven=breakeven_price,
             )
         except Exception as exc:
             logger.warning(
                 "sl_breakeven_broker_failed",
-                trade_id=pos.oanda_trade_id,
+                trade_id=pos.broker_trade_id,
                 error=str(exc),
             )
 

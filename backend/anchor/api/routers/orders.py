@@ -68,7 +68,7 @@ def _order_to_dict(o: Order) -> dict:
         "order_type":     o.order_type,
         "units":          float(o.requested_units),
         "state":          o.state,
-        "broker_order_id": o.oanda_order_id,
+        "broker_order_id": o.broker_order_id,
         "stop_loss":      float(o.stop_loss)    if o.stop_loss    else None,
         "take_profit":    float(o.take_profit)  if o.take_profit  else None,
         "record_origin":  "current_broker_state" if o.state in {"PENDING", "SUBMITTED", "ACKNOWLEDGED", "PARTIAL"} else "anchor_audit_history",

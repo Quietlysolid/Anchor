@@ -28,11 +28,32 @@ class PositionRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_by_oanda_trade_id(self, oanda_trade_id: str) -> Optional[Position]:
+    async def get_by_broker_trade_id(self, broker_trade_id: str) -> Optional[Position]:
         result = await self.session.execute(
-            select(Position).where(Position.oanda_trade_id == oanda_trade_id)
+            select(Position)
+            .where(
+                and_(
+                    Position.broker_trade_id == broker_trade_id,
+                    Position.status == PositionStatus.OPEN,
+                )
+            )
+            .order_by(Position.opened_at.desc())
+            .limit(1)
+        )
+        position = result.scalar_one_or_none()
+        if position is not None:
+            return position
+
+        result = await self.session.execute(
+            select(Position)
+            .where(Position.broker_trade_id == broker_trade_id)
+            .order_by(Position.opened_at.desc())
+            .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def get_by_oanda_trade_id(self, broker_trade_id: str) -> Optional[Position]:
+        return await self.get_by_broker_trade_id(broker_trade_id)
 
     async def get_open(self) -> List[Position]:
         result = await self.session.execute(
@@ -82,6 +103,8 @@ class PositionRepository:
         position.status    = PositionStatus.CLOSED
         position.closed_at = closed_at
         position.realized_pl = Decimal(str(realized_pl))
+        position.broker_stop_order_id = None
+        position.stop_attached_at = None
         if exit_price is not None:
             position.current_price = Decimal(str(exit_price))
 
@@ -139,6 +162,8 @@ class PositionRepository:
         if position is None:
             return
         position.partial_tp_done = True
+        position.broker_stop_order_id = None
+        position.stop_attached_at = None
         # Reduce tracked units by the amount closed
         remaining = max(Decimal(0), position.units - Decimal(str(units_closed)))
         if position.initial_units is None:
@@ -152,6 +177,29 @@ class PositionRepository:
         if position:
             position.stop_loss = Decimal(str(new_sl))
             await self.session.flush()
+
+    async def set_broker_stop_order(
+        self,
+        broker_trade_id: str,
+        stop_order_id: str,
+        stop_loss: float | None = None,
+    ) -> None:
+        position = await self.get_by_broker_trade_id(broker_trade_id)
+        if position is None:
+            return
+        position.broker_stop_order_id = stop_order_id
+        position.stop_attached_at = utcnow()
+        if stop_loss is not None:
+            position.stop_loss = Decimal(str(stop_loss))
+        await self.session.flush()
+
+    async def clear_broker_stop_order(self, broker_trade_id: str) -> None:
+        position = await self.get_by_broker_trade_id(broker_trade_id)
+        if position is None:
+            return
+        position.broker_stop_order_id = None
+        position.stop_attached_at = None
+        await self.session.flush()
 
     async def create_from_broker_trade(self, broker_trade: dict, signal_id=None) -> Position:
         """Reconstruct a Position from an OANDA trade dict (for crash recovery)."""
@@ -172,7 +220,7 @@ class PositionRepository:
             avg_entry_price=Decimal(str(broker_trade.get("price", 0))),
             current_price=Decimal(str(broker_trade.get("price", 0))),
             unrealized_pl=Decimal(str(broker_trade.get("unrealizedPL", 0))),
-            oanda_trade_id=broker_trade.get("id"),
+            broker_trade_id=broker_trade.get("id"),
             status=PositionStatus.OPEN,
             opened_at=opened_at,
             signal_id=signal_id,

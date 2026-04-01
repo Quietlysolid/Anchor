@@ -171,6 +171,23 @@ services:
       - "127.0.0.1:3000:3000"
       - "127.0.0.1:5173:3000"
 
+  frontend_dev:
+    image: node:20-alpine
+    container_name: anchor_frontend_dev
+    restart: unless-stopped
+    depends_on:
+      - engine
+    working_dir: /app
+    environment:
+      - VITE_API_PROXY_TARGET=http://engine:8000
+      - VITE_WS_PROXY_TARGET=ws://engine:8000
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "127.0.0.1:5174:5173"
+
   nginx:
     image: nginx:1.27-alpine
     container_name: anchor_nginx
@@ -223,3 +240,4 @@ volumes:
   prometheus_data:
   grafana_data:
   nginx_logs:
+  frontend_node_modules:

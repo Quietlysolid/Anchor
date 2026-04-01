@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from anchor.config import get_settings
-from anchor.database.engine import init_db, close_db
+from anchor.database.engine import init_db, close_db, get_session
 from anchor.utils.logging import configure_logging
 from anchor.api.routers import positions, orders, performance, system
 from anchor.api.websocket import router as ws_router, manager as ws_manager
@@ -35,11 +35,33 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
 
             raw_trades = await broker_client.get_open_trades()
             set_open_positions_count(len(raw_trades))
+
+            db_opened_at_by_instrument: dict[str, str] = {}
+            try:
+                from anchor.database.repositories.positions import PositionRepository
+
+                async with get_session() as session:
+                    pos_repo = PositionRepository(session)
+                    db_positions = await pos_repo.get_open()
+                db_opened_at_by_instrument = {
+                    str(p.instrument): p.opened_at.isoformat()
+                    for p in db_positions
+                    if p.opened_at is not None
+                }
+            except Exception as exc:
+                logger.warning("open_positions_timestamp_lookup_failed", error=str(exc))
+
+            enriched_trades = []
+            for trade in raw_trades:
+                enriched = dict(trade)
+                enriched["openTime"] = db_opened_at_by_instrument.get(str(trade.get("instrument", "")))
+                enriched_trades.append(enriched)
+
             try:
                 raw_orders = await broker_client.get_pending_orders()
             except Exception:
                 raw_orders = []
-            set_cached_broker_state(raw_trades, raw_orders)
+            set_cached_broker_state(enriched_trades, raw_orders)
 
             if redis_client:
                 await redis_client.publish("account", json.dumps({
@@ -47,7 +69,7 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
                     "data": {"balance": balance, "equity": equity},
                 }))
                 positions = []
-                for t in raw_trades:
+                for t in enriched_trades:
                     units = float(t.get("currentUnits", t.get("initialUnits", 0)) or 0)
                     positions.append({
                         "broker_trade_id": t.get("id"),
@@ -55,10 +77,11 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
                         "direction":       "LONG" if units > 0 else "SHORT",
                         "units":           abs(units),
                         "avg_entry_price": float(t.get("price", 0)),
-                        "current_price":   float(t.get("price", 0)),
+                        "current_price":   float(t.get("marketPrice", 0)) or None,
                         "unrealized_pl":   float(t.get("unrealizedPL", 0)),
                         "stop_loss":       float(t["stopLossOrder"]["price"]) if "stopLossOrder" in t else None,
                         "take_profit":     float(t["takeProfitOrder"]["price"]) if "takeProfitOrder" in t else None,
+                        "opened_at":       t.get("openTime"),
                         "status":          "OPEN",
                     })
                 await redis_client.publish("positions", json.dumps({

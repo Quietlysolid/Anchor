@@ -6,6 +6,15 @@ from celery.schedules import crontab
 
 from anchor.config import settings
 
+def _futures_rebalance_schedule():
+    hour, minute = [int(part) for part in settings.futures_daily_signal_time_utc.split(":", 1)]
+    frequency = settings.futures_rebalance_frequency.strip().lower()
+    if frequency == "daily":
+        return crontab(hour=hour, minute=minute, day_of_week="1-5")
+    if frequency == "weekly":
+        return crontab(hour=hour, minute=minute, day_of_week="1")
+    raise ValueError(f"Unsupported futures_rebalance_frequency: {settings.futures_rebalance_frequency}")
+
 celery_app = Celery(
     "anchor",
     broker=settings.redis_url,
@@ -38,11 +47,7 @@ celery_app.conf.update(
         },
         "futures-v1-rebalance-weekdays": {
             "task": "anchor.scheduler.jobs.run_futures_v1_rebalance",
-            "schedule": crontab(
-                hour=int(settings.futures_daily_signal_time_utc.split(":", 1)[0]),
-                minute=int(settings.futures_daily_signal_time_utc.split(":", 1)[1]),
-                day_of_week="1-5",
-            ),
+            "schedule": _futures_rebalance_schedule(),
         },
         "startup-diagnostics-daily": {
             "task": "anchor.scheduler.jobs.startup_diagnostics",

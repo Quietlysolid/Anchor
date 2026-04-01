@@ -58,7 +58,7 @@ def _position_to_dict(p: Position) -> dict:
         "realized_pl":     float(p.realized_pl),
         "stop_loss":       float(p.stop_loss) if p.stop_loss else None,
         "take_profit":     float(p.take_profit) if p.take_profit else None,
-        "broker_trade_id": p.oanda_trade_id,
+        "broker_trade_id": p.broker_trade_id,
         "status":          p.status,
         "record_origin":   "current_broker_state" if p.status == "OPEN" else "anchor_audit_history",
     }
@@ -66,11 +66,11 @@ def _position_to_dict(p: Position) -> dict:
 
 def _live_position_to_dict(p: dict) -> dict:
     current_units = float(p.get("currentUnits", 0.0) or 0.0)
-    now_iso = utcnow().astimezone(timezone.utc).isoformat()
+    opened_at = p.get("openTime") or utcnow().astimezone(timezone.utc).isoformat()
     market_price = float(p.get("marketPrice") or 0.0) or None
     return {
         "id":              str(p.get("id") or p.get("instrument")),
-        "opened_at":       now_iso,
+        "opened_at":       opened_at,
         "closed_at":       None,
         "instrument":      str(p.get("instrument", "")),
         "direction":       "LONG" if current_units > 0 else "SHORT",

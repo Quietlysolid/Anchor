@@ -57,6 +57,9 @@ class OrderRepository:
             order.broker_order_id = broker_order_id
             await self.session.flush()
 
+    async def set_oanda_id(self, order_id: UUID, broker_order_id: str) -> None:
+        await self.set_broker_id(order_id, broker_order_id)
+
     async def update_state(self, order_id: UUID, new_state, event_data: dict) -> None:
         order = await self.get(order_id)
         if order is None:
@@ -100,6 +103,9 @@ class OrderRepository:
             select(Order).where(Order.broker_order_id == broker_order_id)
         )
         return result.scalar_one_or_none()
+
+    async def get_by_oanda_id(self, broker_order_id: str) -> Optional[Order]:
+        return await self.get_by_broker_id(broker_order_id)
 
     async def get_fill_match_candidates(
         self,

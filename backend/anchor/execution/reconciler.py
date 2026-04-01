@@ -47,7 +47,7 @@ class Reconciler:
     async def _match_order_for_trade(self, trade: dict):
         opening_order_id = trade.get("openingOrderID")
         if opening_order_id:
-            linked = await self.order_repo.get_by_oanda_id(opening_order_id)
+            linked = await self.order_repo.get_by_broker_id(opening_order_id)
             if linked:
                 return linked
 
@@ -97,8 +97,8 @@ class Reconciler:
             expected_price=Decimal(str(benchmark)) if benchmark else None,
             slippage_pips=Decimal(str(slippage_pips)) if slippage_pips is not None else None,
             spread_at_fill=None,
-            oanda_fill_id=None,
-            metadata_={"reconstructed_from_broker": True, "oanda_trade_id": trade.get("id")},
+            broker_fill_id=None,
+            metadata_={"reconstructed_from_broker": True, "broker_trade_id": trade.get("id")},
         )
         await self.order_repo.insert_fill(fill)
 
@@ -128,7 +128,7 @@ class Reconciler:
             if needs_signal:
                 matched_order = await self._match_order_for_trade(
                     {
-                        "id": position.oanda_trade_id,
+                        "id": position.broker_trade_id,
                         "instrument": position.instrument,
                         "initialUnits": str(position.units if position.direction == "LONG" else -position.units),
                         "price": str(position.avg_entry_price),
@@ -143,14 +143,14 @@ class Reconciler:
                 await self.order_repo.update_state(
                     matched_order.id,
                     "FILLED",
-                    {"filled_by_reconciler": True, "oanda_trade_id": position.oanda_trade_id},
+                    {"filled_by_reconciler": True, "broker_trade_id": position.broker_trade_id},
                 )
 
             if matched_order:
                 await self._ensure_fill_audit(
                     matched_order,
                     {
-                        "id": position.oanda_trade_id,
+                        "id": position.broker_trade_id,
                         "instrument": position.instrument,
                         "initialUnits": str(position.units if position.direction == "LONG" else -position.units),
                         "price": str(position.avg_entry_price),
@@ -159,7 +159,7 @@ class Reconciler:
                 )
 
             if matched_order and (needs_signal or matched_order.state != "FILLED"):
-                result["actions_taken"].append(f"REPAIRED_AUDIT:{position.oanda_trade_id}")
+                result["actions_taken"].append(f"REPAIRED_AUDIT:{position.broker_trade_id}")
 
         audit_gaps = (
             await session.execute(
@@ -208,26 +208,26 @@ class Reconciler:
         broker_ids     = {t["id"] for t in broker_trades}
 
         db_positions = await self.pos_repo.get_open_positions()
-        db_trade_ids = {p.oanda_trade_id for p in db_positions if p.oanda_trade_id}
+        db_trade_ids = {p.broker_trade_id for p in db_positions if p.broker_trade_id}
 
         result["db_positions"]     = len(db_positions)
         result["broker_positions"] = len(broker_trades)
 
         # DB has position, broker doesn't → fetch closed trade details and mark closed
         for pos in db_positions:
-            if pos.oanda_trade_id and pos.oanda_trade_id not in broker_ids:
+            if pos.broker_trade_id and pos.broker_trade_id not in broker_ids:
                 # Try to get the closed trade details from OANDA for accurate P&L
                 realized_pl = 0.0
                 exit_price  = None
                 close_reason = "SL_TP_OR_MANUAL"
                 try:
-                    closed = await self.broker.get_closed_trade(pos.oanda_trade_id)
+                    closed = await self.broker.get_closed_trade(pos.broker_trade_id)
                     if closed:
                         realized_pl  = float(closed.get("realizedPL", 0.0))
                         exit_price   = float(closed.get("averageClosePrice", 0)) or None
                         close_reason = "SL_TP_OR_MANUAL" if closed.get("closingTransactionIDs") else "MANUAL"
                 except Exception as exc:
-                    logger.warning("reconciler_get_closed_trade_failed", trade_id=pos.oanda_trade_id, error=str(exc))
+                    logger.warning("reconciler_get_closed_trade_failed", trade_id=pos.broker_trade_id, error=str(exc))
 
                 await self.pos_repo.mark_closed(
                     position_id=pos.id,
@@ -241,11 +241,11 @@ class Reconciler:
                 if self.daily_limiter is not None:
                     self.daily_limiter.record_trade(realized_pl)
 
-                result["missing_from_broker"].append(pos.oanda_trade_id)
-                result["actions_taken"].append(f"CLOSED_IN_DB:{pos.oanda_trade_id}")
+                result["missing_from_broker"].append(pos.broker_trade_id)
+                result["actions_taken"].append(f"CLOSED_IN_DB:{pos.broker_trade_id}")
                 logger.info(
                     "position_closed_by_broker",
-                    trade_id=pos.oanda_trade_id,
+                    trade_id=pos.broker_trade_id,
                     realized_pl=realized_pl,
                     close_reason=close_reason,
                 )
@@ -259,7 +259,7 @@ class Reconciler:
                     await self.order_repo.update_state(
                         linked_order.id,
                         "FILLED",
-                        {"filled_by_reconciler": True, "oanda_trade_id": trade["id"]},
+                        {"filled_by_reconciler": True, "broker_trade_id": trade["id"]},
                     )
                     await self._ensure_fill_audit(linked_order, trade)
 
@@ -277,8 +277,8 @@ class Reconciler:
         stale_cutoff = utcnow() - timedelta(hours=STALE_ORDER_HOURS)
         stale_orders = await self.order_repo.get_stale_pending(stale_cutoff)
         for order in stale_orders:
-            if order.oanda_order_id:
-                await self.broker.cancel_order(order.oanda_order_id)
+            if order.broker_order_id:
+                await self.broker.cancel_order(order.broker_order_id)
             await self.order_repo.update_state(order.id, "EXPIRED", {"reason": "STALE"})
             result["actions_taken"].append(f"CANCELLED_STALE:{order.id}")
 

@@ -113,7 +113,7 @@ class Order(Base):
     order_type:             Mapped[str]             = mapped_column(String(12), nullable=False, default="MARKET")
     requested_units:        Mapped[Decimal]         = mapped_column(Numeric(18, 2), nullable=False)
     state:                  Mapped[str]             = mapped_column(Enum(OrderState, name="order_state", create_type=False), nullable=False, default=OrderState.PENDING)
-    broker_order_id:        Mapped[str | None]      = mapped_column(String(64))
+    broker_order_id:        Mapped[str | None]      = mapped_column("ibkr_order_id", String(64))
     limit_price:            Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     stop_price:             Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     take_profit:            Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
@@ -159,7 +159,7 @@ class Fill(Base):
     commission:     Mapped[Decimal]        = mapped_column(Numeric(18, 6), default=0)
     pl_realized:    Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     pl_currency:    Mapped[str]            = mapped_column(String(3), nullable=False, default="USD")
-    broker_fill_id: Mapped[str | None]     = mapped_column(String(64))
+    broker_fill_id: Mapped[str | None]     = mapped_column("ibkr_fill_id", String(64))
     metadata_:      Mapped[dict | None]    = mapped_column("metadata", JSONB)
 
     order: Mapped["Order"] = relationship("Order", back_populates="fills")
@@ -181,7 +181,9 @@ class Position(Base):
     stop_loss:              Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     take_profit:            Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
     trailing_stop_distance: Mapped[Decimal | None]  = mapped_column(Numeric(18, 6))
-    broker_trade_id:        Mapped[str | None]      = mapped_column(String(64), unique=True)
+    broker_stop_order_id:   Mapped[str | None]      = mapped_column("ibkr_stop_order_id", String(64))
+    stop_attached_at:       Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    broker_trade_id:        Mapped[str | None]      = mapped_column("ibkr_trade_id", String(64))
     status:                 Mapped[str]             = mapped_column(String(8), nullable=False, default="OPEN")
     partial_tp_done:        Mapped[bool]            = mapped_column(Boolean, nullable=False, default=False)
     initial_units:          Mapped[Decimal | None]  = mapped_column(Numeric(18, 2))  # units at open, before partial close

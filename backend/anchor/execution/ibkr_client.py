@@ -47,6 +47,23 @@ settings = get_settings()
 _CLIENT_ID_COUNTER = itertools.count()
 
 
+def _normalize_position_entry_price(contract, raw_cost: float) -> float:
+    if not raw_cost:
+        return 0.0
+    if getattr(contract, 'secType', None) != 'FUT':
+        return float(raw_cost)
+
+    multiplier_raw = getattr(contract, 'multiplier', None)
+    try:
+        multiplier = float(multiplier_raw) if multiplier_raw else 0.0
+    except (TypeError, ValueError):
+        multiplier = 0.0
+
+    if multiplier > 0:
+        return float(raw_cost) / multiplier
+    return float(raw_cost)
+
+
 def _broker_client_id_base(service_name: str) -> int:
     """Reserve stable client-id ranges per process role to avoid IBKR collisions."""
     ranges = {
@@ -333,7 +350,7 @@ class IBKRBrokerClient:
             summary_state = _RequestState()
             self._app.account_summary_req = summary_state
             req_id = int(time.time() * 1000) % 2_000_000_000
-            self._app.reqAccountSummary(req_id, "All", "AccountType,NetLiquidation,TotalCashValue,Currency")
+            self._app.reqAccountSummary(req_id, "All", "AccountType,NetLiquidation,TotalCashValue,Currency,AvailableFunds,ExcessLiquidity,MaintMarginReq,FullMaintMarginReq")
             self._wait_for_request(summary_state, timeout=8)
             self._app.cancelAccountSummary(req_id)
             rows.extend(summary_state.rows)
@@ -342,7 +359,7 @@ class IBKRBrokerClient:
         if not rows:
             raise RuntimeError("IBKR account summary request timed out")
 
-        normalized = {"balance": 0.0, "NAV": 0.0, "currency": "USD", "openTradeCount": 0}
+        normalized = {"balance": 0.0, "NAV": 0.0, "currency": "USD", "openTradeCount": 0, "availableFunds": 0.0, "excessLiquidity": 0.0, "maintMarginReq": 0.0, "fullMaintMarginReq": 0.0}
         for row in rows:
             if self._account_id and row["account"] != self._account_id:
                 continue
@@ -352,6 +369,14 @@ class IBKRBrokerClient:
                 normalized["NAV"] = float(row["value"] or 0.0)
             elif row["tag"] == "Currency":
                 normalized["currency"] = row["value"]
+            elif row["tag"] == "AvailableFunds":
+                normalized["availableFunds"] = float(row["value"] or 0.0)
+            elif row["tag"] == "ExcessLiquidity":
+                normalized["excessLiquidity"] = float(row["value"] or 0.0)
+            elif row["tag"] == "MaintMarginReq":
+                normalized["maintMarginReq"] = float(row["value"] or 0.0)
+            elif row["tag"] == "FullMaintMarginReq":
+                normalized["fullMaintMarginReq"] = float(row["value"] or 0.0)
         # openTradeCount is populated by the caller after get_open_trades()
         return normalized
 
@@ -403,7 +428,7 @@ class IBKRBrokerClient:
                     "instrument": instrument,
                     "currentUnits": size,
                     "initialUnits": size,
-                    "price": float(pr["averageCost"] or 0.0),
+                    "price": _normalize_position_entry_price(pr["contract"], float(pr["averageCost"] or 0.0)),
                     "marketPrice": float(pr["marketPrice"] or 0.0),
                     "openTime": None,
                     "unrealizedPL": float(pr["unrealizedPNL"] or 0.0),
@@ -430,7 +455,7 @@ class IBKRBrokerClient:
                 "instrument": instrument,
                 "currentUnits": size,
                 "initialUnits": size,
-                "price": float(row["avgCost"] or 0.0),
+                "price": _normalize_position_entry_price(contract, float(row["avgCost"] or 0.0)),
                 "marketPrice": float(pr.get("marketPrice") or 0.0),
                 "openTime": None,
                 "unrealizedPL": float(pr.get("unrealizedPNL") or 0.0),
@@ -448,7 +473,7 @@ class IBKRBrokerClient:
         self._ensure_connected()
         state = _RequestState()
         self._app.open_orders_req = state
-        self._app.reqOpenOrders()
+        self._app.reqAllOpenOrders()
         if not state.done.wait(timeout=10):
             # No pending orders is a valid state; don't raise.
             return []
@@ -495,7 +520,7 @@ class IBKRBrokerClient:
             raise RuntimeError("IBKR contract details request returned no matches")
         return rows[0]["contract"]
 
-    def _place_order_sync(self, request: "OrderRequest") -> tuple[str, float | None, str | None]:
+    def _place_order_sync(self, request: "OrderRequest") -> tuple[str, float | None, str | None, str | None]:
         self._ensure_connected()
         order_id = self._next_order_id()
         contract = self._build_contract(request.instrument)
@@ -533,23 +558,81 @@ class IBKRBrokerClient:
 
         fill_price = state.avg_fill_price if state.status == "Filled" else None
         trade_id = ibkr_position_id(request.instrument) if state.status == "Filled" else None
-        return str(order_id), fill_price, trade_id
+
+        stop_order_id = None
+        if fill_price is not None and request.stop_loss is not None:
+            stop_order_id = self._place_protective_stop_sync(
+                contract=contract,
+                direction=request.direction.value,
+                units=abs(request.units),
+                stop_price=float(request.stop_loss),
+            )
+
+        return str(order_id), fill_price, trade_id, stop_order_id
 
     async def place_order(
         self,
         order_id: uuid.UUID,
         request: "OrderRequest",
-    ) -> tuple[str, float | None, str | None]:
-        broker_order_id, fill_price, trade_id = await self._run_blocking(self._place_order_sync, request)
+    ) -> tuple[str, float | None, str | None, str | None]:
+        broker_order_id, fill_price, trade_id, stop_order_id = await self._run_blocking(self._place_order_sync, request)
         logger.info(
             "ibkr_order_placed",
             order_id=str(order_id),
             broker_order_id=broker_order_id,
             fill_price=fill_price,
             trade_id=trade_id,
+            stop_order_id=stop_order_id,
             instrument=request.instrument,
         )
-        return broker_order_id, fill_price, trade_id
+        return broker_order_id, fill_price, trade_id, stop_order_id
+
+    def _place_protective_stop_sync(
+        self,
+        contract,
+        direction: str,
+        units: int,
+        stop_price: float,
+    ) -> str:
+        stop_order_id = self._next_order_id()
+        stop_order = Order()
+        stop_order.action = "SELL" if direction == "LONG" else "BUY"
+        stop_order.totalQuantity = abs(units)
+        stop_order.orderType = "STP"
+        stop_order.auxPrice = float(stop_price)
+        stop_order.tif = "GTC"
+        stop_order.eTradeOnly = False
+        stop_order.firmQuoteOnly = False
+        if self._account_id:
+            stop_order.account = self._account_id
+
+        state = _OrderState()
+        self._app.order_states[stop_order_id] = state
+        self._app.placeOrder(stop_order_id, contract, stop_order)
+        logger.info(
+            "ibkr_protective_stop_placed",
+            stop_order_id=str(stop_order_id),
+            instrument=getattr(contract, "localSymbol", None) or getattr(contract, "symbol", ""),
+            stop_price=stop_price,
+            units=units,
+            direction=direction,
+        )
+        return str(stop_order_id)
+
+
+    def _cancel_protective_stops_for_instrument_sync(self, instrument: str) -> list[str]:
+        pending_orders = self._pending_orders_sync()
+        cancelled: list[str] = []
+        normalized = normalize_instrument_symbol(instrument)
+        for order in pending_orders:
+            if order.get("instrument") != normalized:
+                continue
+            if str(order.get("order_type", "")).upper() != "STP":
+                continue
+            broker_order_id = str(order.get("id"))
+            self._app.cancelOrder(int(broker_order_id), "")
+            cancelled.append(broker_order_id)
+        return cancelled
 
     def _cancel_order_sync(self, broker_order_id: str) -> None:
         self._ensure_connected()
@@ -561,17 +644,65 @@ class IBKRBrokerClient:
         except Exception as exc:
             logger.warning("ibkr_cancel_failed", broker_order_id=broker_order_id, error=str(exc))
 
-    def _close_trade_sync(self, trade_id: str, units: str = "ALL") -> dict:
+    def _ensure_protective_stop_sync(self, trade_id: str, stop_price: float) -> dict:
         self._ensure_connected()
         instrument = normalize_instrument_symbol(trade_id)
+        pending_orders = self._pending_orders_sync()
+        existing_stop = next(
+            (
+                order for order in pending_orders
+                if order.get("instrument") == instrument
+                and str(order.get("order_type", "")).upper() == "STP"
+            ),
+            None,
+        )
+        if existing_stop is not None:
+            return {
+                "status": "exists",
+                "trade_id": instrument,
+                "stop_order_id": str(existing_stop.get("id")),
+                "stop_price": stop_price,
+            }
+
         positions = self._positions_sync()
         position = next((p for p in positions if p["id"] == instrument), None)
         if position is None:
-            return {"status": "not_found", "trade_id": instrument}
+            return {"status": "not_found", "trade_id": instrument, "stop_price": stop_price}
+
+        current_units = float(position.get("currentUnits", 0.0) or 0.0)
+        if abs(current_units) < 1e-9:
+            return {"status": "flat", "trade_id": instrument, "stop_price": stop_price}
+
+        contract = self._build_contract(position["instrument"])
+        direction = "LONG" if current_units > 0 else "SHORT"
+        stop_order_id = self._place_protective_stop_sync(
+            contract=contract,
+            direction=direction,
+            units=abs(int(round(current_units))),
+            stop_price=stop_price,
+        )
+        return {
+            "status": "placed",
+            "trade_id": instrument,
+            "stop_order_id": stop_order_id,
+            "stop_price": stop_price,
+        }
+
+    async def ensure_protective_stop(self, trade_id: str, stop_price: float) -> dict:
+        return await self._run_blocking(self._ensure_protective_stop_sync, trade_id, stop_price)
+
+    def _close_trade_sync(self, trade_id: str, units: str = "ALL") -> dict:
+        self._ensure_connected()
+        instrument = normalize_instrument_symbol(trade_id)
+        cancelled_stop_ids = self._cancel_protective_stops_for_instrument_sync(instrument)
+        positions = self._positions_sync()
+        position = next((p for p in positions if p["id"] == instrument), None)
+        if position is None:
+            return {"status": "not_found", "trade_id": instrument, "cancelled_stop_ids": cancelled_stop_ids}
 
         current_units = float(position["currentUnits"])
         if abs(current_units) < 1e-9:
-            return {"status": "flat", "trade_id": instrument}
+            return {"status": "flat", "trade_id": instrument, "cancelled_stop_ids": cancelled_stop_ids}
 
         close_qty = abs(current_units) if units == "ALL" else min(abs(current_units), abs(float(units)))
         contract = self._build_contract(position["instrument"])
@@ -596,6 +727,7 @@ class IBKRBrokerClient:
             "trade_id": instrument,
             "order_id": str(order_id),
             "avg_fill_price": state.avg_fill_price,
+            "cancelled_stop_ids": cancelled_stop_ids,
         }
 
     async def close_trade(self, trade_id: str, units: str = "ALL") -> dict:

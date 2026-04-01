@@ -115,8 +115,8 @@ class OrderManager:
         # Transition → SUBMITTED and send to broker
         await self.transition(order_id, OrderState.SUBMITTED, {})
 
-        oanda_id, fill_price, trade_id = await self.broker_client.place_order(order_id, request)
-        await self.order_repo.set_oanda_id(order_id, oanda_id)
+        broker_order_id, fill_price, trade_id, stop_order_id = await self.broker_client.place_order(order_id, request)
+        await self.order_repo.set_broker_id(order_id, broker_order_id)
 
         # Market orders fill immediately — create Position row and mark FILLED
         if trade_id and fill_price:
@@ -126,8 +126,8 @@ class OrderManager:
                 fill_price=fill_price,
                 expected_price=request.limit_price or fill_price,
             )
-            await self.transition(order_id, OrderState.ACKNOWLEDGED, {"oanda_order_id": oanda_id})
-            await self._create_position(request, trade_id, fill_price)
+            await self.transition(order_id, OrderState.ACKNOWLEDGED, {"broker_order_id": broker_order_id})
+            await self._create_position(request, trade_id, fill_price, stop_order_id=stop_order_id)
             from anchor.database.models import Fill
 
             fill = Fill(
@@ -147,6 +147,7 @@ class OrderManager:
                     "fill_price": fill_price,
                     "expected_price": float(expected_price) if expected_price is not None else None,
                     "slippage_pips": float(slippage_pips) if slippage_pips is not None else None,
+                    "broker_stop_order_id": stop_order_id,
                 },
             )
 
@@ -155,8 +156,9 @@ class OrderManager:
     async def _create_position(
         self,
         request: OrderRequest,
-        oanda_trade_id: str,
+        broker_trade_id: str,
         fill_price: float,
+        stop_order_id: str | None = None,
     ) -> None:
         """Write a Position row after a market order fills."""
         from anchor.database.models import Position, PositionStatus
@@ -169,7 +171,9 @@ class OrderManager:
             current_price=Decimal(str(fill_price)),
             stop_loss=Decimal(str(request.stop_loss)) if request.stop_loss else None,
             take_profit=Decimal(str(request.take_profit)) if request.take_profit else None,
-            oanda_trade_id=oanda_trade_id,
+            broker_stop_order_id=stop_order_id,
+            stop_attached_at=utcnow() if stop_order_id else None,
+            broker_trade_id=broker_trade_id,
             status=PositionStatus.OPEN,
             signal_id=request.signal_id,
         )
@@ -181,7 +185,8 @@ class OrderManager:
             direction=request.direction.value,
             units=request.units,
             fill_price=fill_price,
-            oanda_trade_id=oanda_trade_id,
+            broker_trade_id=broker_trade_id,
+            broker_stop_order_id=stop_order_id,
         )
 
     async def transition(
@@ -239,7 +244,7 @@ class OrderManager:
         units_filled: int,
         fill_price: float,
         fill_at: datetime,
-        oanda_fill_id: str | None = None,
+        broker_fill_id: str | None = None,
         spread_at_fill: float | None = None,
         expected_price: float | None = None,
     ) -> None:
@@ -277,7 +282,7 @@ class OrderManager:
             units_filled=units_filled,
             fill_price=fill_price,
             fill_at=fill_at,
-            oanda_fill_id=oanda_fill_id,
+            broker_fill_id=broker_fill_id,
             expected_price=expected_price_dec,
             slippage_pips=slippage_pips_dec,
             spread_at_fill=spread_at_fill,
@@ -320,5 +325,5 @@ class OrderManager:
         self._partial_fills.pop(order_id, None)
         if self.broker_client:
             order = await self.order_repo.get(order_id)
-            if order and order.oanda_order_id:
-                await self.broker_client.cancel_order(order.oanda_order_id)
+            if order and order.broker_order_id:
+                await self.broker_client.cancel_order(order.broker_order_id)

@@ -7,9 +7,17 @@ from pathlib import Path
 import structlog
 
 from anchor.scheduler.celery_app import celery_app
-from anchor.scheduler._shared import _run_async
+from anchor.scheduler._shared import _drawdown_monitor, _run_async
+from anchor.futures.io import load_daily_market_closes
 
 logger = structlog.get_logger(__name__)
+
+def _account_margin_usage_pct(account: dict) -> float | None:
+    nav = float(account.get("NAV", 0.0) or 0.0)
+    maint = float(account.get("fullMaintMarginReq", account.get("maintMarginReq", 0.0)) or 0.0)
+    if nav <= 0 or maint <= 0:
+        return None
+    return maint / nav
 
 
 def _runtime_instruments() -> list[str]:
@@ -20,6 +28,33 @@ def _runtime_instruments() -> list[str]:
     return list(settings.instruments)
 
 
+def _vol_based_emergency_stop(
+    data_dir: str,
+    instrument: str,
+    direction: str,
+    reference_price: float,
+    vol_lookback_days: int,
+) -> float | None:
+    market_id = str(instrument).upper().split("-", 1)[0]
+    if reference_price <= 0:
+        return None
+    try:
+        closes = load_daily_market_closes(data_dir=data_dir, markets=[market_id])[market_id].dropna()
+    except Exception:
+        return None
+    returns = closes.pct_change(fill_method=None).dropna()
+    history = returns.tail(max(vol_lookback_days, 5))
+    if history.empty:
+        return None
+    daily_vol = float(history.std(ddof=0) or 0.0)
+    if daily_vol <= 0:
+        return None
+    stop_distance = reference_price * daily_vol * 2.5
+    if direction == "LONG":
+        return max(0.0, reference_price - stop_distance)
+    return reference_price + stop_distance
+
+
 @celery_app.task(name="anchor.scheduler.jobs.snapshot_equity", bind=True, max_retries=3)
 def snapshot_equity(self):
     """Write an equity curve point every 15 minutes."""
@@ -28,7 +63,10 @@ def snapshot_equity(self):
         from anchor.database.engine import get_session, init_db
         from anchor.database.models import EquityCurvePoint
         from anchor.database.repositories import EquityRepository
+        from anchor.database.repositories.positions import PositionRepository
+        from anchor.database.repositories.events import SystemEventRepository
         from anchor.execution.broker_client import BrokerClient
+        from anchor.config import settings
 
         await init_db()
         client = BrokerClient()
@@ -40,12 +78,19 @@ def snapshot_equity(self):
         balance = float(account.get("balance", 0))
         equity = float(account.get("NAV", balance))
         unrealized = equity - balance
+        margin_usage_pct = _account_margin_usage_pct(account)
 
         async with get_session() as session:
             repo = EquityRepository(session)
+            pos_repo = PositionRepository(session)
             latest = await repo.get_latest()
             peak = max(equity, float(latest.peak_equity) if latest else equity)
-            dd = (peak - equity) / peak if peak > 0 else 0.0
+
+            await _drawdown_monitor.bootstrap_peak_equity(session)
+            await _drawdown_monitor.bootstrap_month_state(session, current_equity=equity)
+            _drawdown_monitor.update(equity)
+            dd = _drawdown_monitor.current_drawdown
+            drawdown_allowed, drawdown_reason = _drawdown_monitor.check()
 
             point = EquityCurvePoint(
                 time=datetime.now(timezone.utc),
@@ -53,9 +98,86 @@ def snapshot_equity(self):
                 account_equity=equity,
                 unrealized_pl=unrealized,
                 drawdown_pct=dd * 100,
-                peak_equity=peak,
+                peak_equity=max(peak, equity),
             )
             await repo.insert(point)
+            if settings.trading_domain == "futures":
+                open_positions = await client.get_open_positions()
+                tracked_positions = {
+                    position.broker_trade_id: position
+                    for position in await pos_repo.get_open()
+                    if position.broker_trade_id
+                }
+                for position in open_positions:
+                    trade_id = str(position.get("id", ""))
+                    instrument = str(position.get("instrument", ""))
+                    tracked = tracked_positions.get(trade_id)
+                    if tracked is None or tracked.broker_stop_order_id:
+                        continue
+                    if not instrument or "-" not in instrument:
+                        continue
+                    current_units = float(position.get("currentUnits", 0.0) or 0.0)
+                    if abs(current_units) < 1e-9:
+                        continue
+                    direction = "LONG" if current_units > 0 else "SHORT"
+                    reference_price = float(position.get("marketPrice", 0.0) or position.get("price", 0.0) or 0.0)
+                    stop_price = _vol_based_emergency_stop(
+                        data_dir="/app/data",
+                        instrument=instrument,
+                        direction=direction,
+                        reference_price=reference_price,
+                        vol_lookback_days=settings.futures_vol_lookback_days,
+                    )
+                    if stop_price is None:
+                        continue
+                    stop_result = await client.ensure_protective_stop(instrument, stop_price)
+                    if stop_result.get("status") == "placed":
+                        await pos_repo.set_broker_stop_order(
+                            broker_trade_id=trade_id,
+                            stop_order_id=str(stop_result.get("stop_order_id")),
+                            stop_loss=stop_price,
+                        )
+                        logger.info(
+                            "futures_catastrophe_stop_backfilled",
+                            instrument=instrument,
+                            stop_order_id=stop_result.get("stop_order_id"),
+                            stop_price=stop_price,
+                        )
+            if (
+                settings.trading_domain == "futures"
+                and margin_usage_pct is not None
+                and margin_usage_pct >= settings.futures_margin_warn_usage_pct
+            ):
+                await SystemEventRepository(session).insert(
+                    event_type="FUTURES_MARGIN_GUARD",
+                    severity="WARN",
+                    component="RISK",
+                    message=(
+                        f"Futures margin usage warning: {margin_usage_pct:.1%} "
+                        f"(threshold {settings.futures_margin_warn_usage_pct:.1%})"
+                    ),
+                    metadata={
+                        "live_margin_usage_pct": margin_usage_pct,
+                        "warn_threshold": settings.futures_margin_warn_usage_pct,
+                        "block_new_opens_threshold": settings.futures_margin_block_new_opens_pct,
+                        "available_funds": float(account.get("availableFunds", 0.0) or 0.0),
+                        "excess_liquidity": float(account.get("excessLiquidity", 0.0) or 0.0),
+                        "maint_margin_req": float(account.get("maintMarginReq", 0.0) or 0.0),
+                        "full_maint_margin_req": float(account.get("fullMaintMarginReq", 0.0) or 0.0),
+                    },
+                )
+            if settings.trading_domain == "futures" and not drawdown_allowed:
+                await SystemEventRepository(session).insert(
+                    event_type="FUTURES_DRAWDOWN_GUARD",
+                    severity="WARN",
+                    component="RISK",
+                    message=f"Futures drawdown guard active: {drawdown_reason}",
+                    metadata={
+                        "drawdown_pct": dd,
+                        "drawdown_reason": drawdown_reason,
+                        "scale_factor": _drawdown_monitor.scale_factor,
+                    },
+                )
             await session.commit()
 
         from anchor.monitoring import metrics
@@ -64,7 +186,7 @@ def snapshot_equity(self):
         metrics.account_equity.set(equity)
         metrics.unrealized_pl.set(unrealized)
         metrics.drawdown_pct.set(dd * 100)
-        logger.debug("equity_snapshot_written", balance=balance, equity=equity)
+        logger.debug("equity_snapshot_written", balance=balance, equity=equity, margin_usage_pct=margin_usage_pct)
 
     try:
         _run_async(_inner())

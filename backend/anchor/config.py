@@ -206,7 +206,10 @@ class Settings(BaseSettings):
     futures_daily_signal_time_utc: str = "22:15"
     futures_transaction_cost_bps: float = 1.0
     futures_roll_cost_bps: float = 2.0
-    futures_weekend_guard_enabled: bool = False
+    futures_margin_warn_usage_pct: float = 0.45
+    futures_margin_block_new_opens_pct: float = 0.55
+    futures_margin_force_derisk_usage_pct: float = 0.65
+    futures_weekend_guard_enabled: bool = True
 
     # ── Anthropic ─────────────────────────────────────────────
     anthropic_api_key: str = ""

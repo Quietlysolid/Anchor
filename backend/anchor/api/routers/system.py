@@ -97,11 +97,22 @@ def _instrument_label(raw: str) -> str:
 
 def _next_futures_rebalance(now_utc: datetime) -> datetime:
     hour, minute = [int(part) for part in settings.futures_daily_signal_time_utc.split(":", 1)]
+    frequency = settings.futures_rebalance_frequency.strip().lower()
     candidate = now_utc.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    while candidate <= now_utc or candidate.weekday() >= 5:
-        candidate += timedelta(days=1)
-        candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return candidate
+
+    if frequency == "daily":
+        while candidate <= now_utc or candidate.weekday() >= 5:
+            candidate += timedelta(days=1)
+            candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return candidate
+
+    if frequency == "weekly":
+        while candidate <= now_utc or candidate.weekday() != 0:
+            candidate += timedelta(days=1)
+            candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return candidate
+
+    raise ValueError(f"Unsupported futures_rebalance_frequency: {settings.futures_rebalance_frequency}")
 
 
 def _futures_window(now_utc: datetime) -> tuple[dict | None, dict | None]:
