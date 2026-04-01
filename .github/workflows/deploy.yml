@@ -109,14 +109,22 @@ jobs:
           DEPLOY_SHA: ${{ github.sha }}
         run: |
           ssh "$VPS_USER@$VPS_HOST" "DEPLOY_SHA='$DEPLOY_SHA' bash -s" <<'EOF'
-            for i in 1 2 3 4 5 6; do
+            cd /opt/anchor
+            for i in $(seq 1 24); do
               response=$(curl -fsS http://127.0.0.1:8080/api/v1/system/health || true)
-              if [ -n "$response" ] && echo "$response" | grep -F "\"deployed_sha\":\"$DEPLOY_SHA\"" >/dev/null; then
+              if [ -n "$response" ]; then
+                echo "health attempt $i: $response"
+              else
+                echo "health attempt $i: no response"
+              fi
+              if [ -n "$response" ] && echo "$response" | python3 -c 'import json, os, sys; print("ok" if json.loads(sys.stdin.read()).get("deployed_sha") == os.environ["DEPLOY_SHA"] else "mismatch")' | grep -qx ok; then
                 echo "$response"
                 exit 0
               fi
               sleep 5
             done
             echo "Health check failed or deployed SHA did not match"
+            docker compose ps || true
+            docker compose logs --tail=100 engine nginx || true
             exit 1
           EOF
