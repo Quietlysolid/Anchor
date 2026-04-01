@@ -55,7 +55,8 @@ EOF2
   fi
 
   echo "==> Starting services..."
-  docker compose up -d --force-recreate --remove-orphans engine celery_worker celery_beat watchdog mlflow frontend nginx
+  docker compose rm -sf engine celery_worker celery_beat watchdog mlflow frontend nginx || true
+  docker compose up -d --remove-orphans engine celery_worker celery_beat watchdog mlflow frontend nginx
 
   echo ""
   echo "==> Services:"
