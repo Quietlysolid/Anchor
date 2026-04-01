@@ -7,10 +7,10 @@ set -euo pipefail
 VPS_USER="${VPS_USER:-root}"
 VPS_HOST="${VPS_HOST:?Set VPS_HOST environment variable}"
 APP_DIR="/opt/anchor"
-DEPLOY_SHA="${DEPLOY_SHA:-$(git rev-parse --short HEAD)}"
+DEPLOY_SHA="${DEPLOY_SHA:-$(git rev-parse HEAD)}"
 DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-echo "==> Deploying to $VPS_HOST..."
+echo "==> Deploying SHA ${DEPLOY_SHA:0:12} to $VPS_HOST..."
 
 # Ensure remote app directory exists
 ssh "$VPS_USER@$VPS_HOST" "mkdir -p $APP_DIR"
@@ -20,48 +20,64 @@ ssh "$VPS_USER@$VPS_HOST" "mkdir -p $APP_DIR"
 echo "==> Syncing code..."
 git archive HEAD | ssh "$VPS_USER@$VPS_HOST" "tar -x -C $APP_DIR"
 
-# Remote commands
-ssh "$VPS_USER@$VPS_HOST" bash << EOF
-  set -euo pipefail
-  cd $APP_DIR
-
-  cat > backend/anchor/build_info.py <<'EOF2'
+# Write build_info.py before building images so it gets baked in
+echo "==> Writing build_info.py..."
+ssh "$VPS_USER@$VPS_HOST" "cat > $APP_DIR/backend/anchor/build_info.py" << EOF
 DEPLOYED_SHA = "${DEPLOY_SHA}"
 DEPLOYED_AT = "${DEPLOYED_AT}"
-EOF2
+EOF
 
-  echo "==> Building images..."
-  # --no-cache on Python services ensures the COPY . . layer is never stale
-  # after a code sync. Frontend/nginx are cache-friendly (rarely change).
-  docker compose build --parallel --no-cache engine celery_worker celery_beat watchdog mlflow
-  docker compose build --parallel frontend nginx
+# Remote commands — split into discrete steps so failure is clearly attributed
+ssh "$VPS_USER@$VPS_HOST" bash << 'REMOTE'
+  set -euo pipefail
+  cd /opt/anchor
 
-  echo "==> Starting database..."
-  docker compose up -d db
+  echo "--- [1/6] Building Python service images..."
+  docker compose build --no-cache engine celery_worker celery_beat watchdog mlflow
 
-  echo "==> Ensuring MLflow database exists..."
-  _mlflow_db_exists=\$(docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '\${MLFLOW_DB_NAME:-anchor_mlflow}'" | tr -d '[:space:]')
-  if [ "\$_mlflow_db_exists" != "1" ]; then
-    docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d postgres -c "CREATE DATABASE \${MLFLOW_DB_NAME:-anchor_mlflow};"
+  echo "--- [2/6] Building frontend and nginx..."
+  docker compose build frontend nginx
+
+  echo "--- [3/6] Starting database..."
+  docker compose up -d db redis
+
+  echo "--- [4/6] Waiting for database to be ready..."
+  for i in $(seq 1 30); do
+    if docker compose exec -T db pg_isready -U "${DB_USER:-anchor}" -d "${DB_NAME:-anchor}" > /dev/null 2>&1; then
+      echo "    db ready after ${i}x2s"
+      break
+    fi
+    if [ "$i" -eq 30 ]; then
+      echo "    ERROR: database did not become ready in 60s"
+      exit 1
+    fi
+    sleep 2
+  done
+
+  echo "--- [5/6] Ensuring MLflow database exists..."
+  _mlflow_db_exists=$(docker compose exec -T db psql -U "${DB_USER:-anchor}" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '${MLFLOW_DB_NAME:-anchor_mlflow}'" | tr -d '[:space:]')
+  if [ "$_mlflow_db_exists" != "1" ]; then
+    docker compose exec -T db psql -U "${DB_USER:-anchor}" -d postgres -c "CREATE DATABASE ${MLFLOW_DB_NAME:-anchor_mlflow};"
   fi
 
-  echo "==> Running DB migrations..."
-  # If the revision table is stale after a reset, clear it and rerun the
-  # real upgrade instead of stamping success.
+  echo "--- [5b/6] Running DB migrations..."
   if ! docker compose run --rm engine alembic upgrade head; then
-    echo "==> Migration failed. Clearing alembic_version and retrying upgrade..."
-    docker compose exec -T db psql -U "\${DB_USER:-anchor}" -d "\${DB_NAME:-anchor}" -c "DELETE FROM alembic_version;"
-    docker compose run --rm engine alembic upgrade head
+    echo "    Migration failed on first attempt — clearing alembic_version and retrying..."
+    docker compose exec -T db psql -U "${DB_USER:-anchor}" -d "${DB_NAME:-anchor}" -c "DELETE FROM alembic_version;"
+    if ! docker compose run --rm engine alembic upgrade head; then
+      echo "    ERROR: Migration failed on both attempts. Aborting to protect database integrity."
+      exit 1
+    fi
   fi
 
-  echo "==> Starting services..."
+  echo "--- [6/6] Starting all services..."
   docker compose rm -sf engine celery_worker celery_beat watchdog mlflow frontend nginx || true
   docker compose up -d --remove-orphans engine celery_worker celery_beat watchdog mlflow frontend nginx
 
   echo ""
   echo "==> Services:"
   docker compose ps
-EOF
+REMOTE
 
 echo ""
-echo "==> Deploy complete! Dashboard: http://$VPS_HOST/"
+echo "==> Deploy complete! Dashboard: http://$VPS_HOST:8080/"

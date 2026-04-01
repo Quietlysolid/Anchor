@@ -37,6 +37,10 @@ jobs:
           poetry lock
           poetry install --with dev
 
+      - name: Lint (ruff)
+        working-directory: backend
+        run: poetry run ruff check anchor tests
+
       - name: Verify app imports
         working-directory: backend
         run: poetry run python -c "from anchor.main import create_app; create_app()"
