@@ -159,7 +159,10 @@ export interface SystemHealth {
   open_positions: number
   account_balance: number
   account_equity: number
+  broker_day_pl: number | null
   today_pl: number | null
+  account_id: string | null
+  market_data_mode: string
 }
 
 export interface OperatorWindow {
@@ -221,6 +224,18 @@ export interface HomepageSnapshotExposureOrder {
   take_profit: number | null
 }
 
+export interface HomepageSnapshotExecutionFill {
+  id: string
+  instrument: string
+  direction: Direction
+  order_type: string
+  units: number
+  fill_price: number
+  fill_at: string
+  slippage_pips: number | null
+  commission: number
+}
+
 export interface HomepageSnapshotWatchItem {
   instrument: string
   status: string
@@ -253,13 +268,58 @@ export interface HomepageSnapshot {
     provider?: string
     mode: 'paper' | 'live'
     environment: string
+    account_id: string | null
+    market_data_mode: string
     balance: number
     equity: number
+    available_funds: number
+    excess_liquidity: number
+    initial_margin: number
+    maintenance_margin: number
+    margin_usage_pct: number | null
+    broker_day_pl: number | null
     today_pl: number | null
+    anchor_day_pl: number | null
     stream_connected: boolean
     last_reconciliation: string | null
   }
   history_notice?: string
+  status: {
+    stream_connected: boolean
+    last_broker_sync: string | null
+    open_positions_count: number
+    open_orders_count: number
+    last_rebalance: {
+      occurred_at: string
+      title: string
+      detail: string
+    } | null
+    drawdown_guard: {
+      active: boolean
+      mode: 'monthly_halt' | 'halt' | 'reduced'
+      title: string
+      reason: string
+      blocking: string
+      clear_when: string
+      current_drawdown_pct: number
+      reduce_threshold_pct: number
+      halt_threshold_pct: number
+      monthly_halt_threshold_pct: number
+      scale_factor: number
+      occurred_at: string | null
+    } | null
+    active_guardrails: Array<{
+      event_type: string
+      occurred_at: string
+      title: string
+      detail: string
+    }>
+  }
+  alerts: Array<{
+    severity: 'info' | 'warning' | 'critical'
+    title: string
+    detail: string
+  }>
   strategies: Array<{
     engine: string
     label: string
@@ -269,9 +329,59 @@ export interface HomepageSnapshot {
     readiness_label: string
   }>
   activity: HomepageSnapshotActivity[]
+  decisions: Array<{
+    id: string
+    occurred_at: string
+    tone: 'good' | 'warn' | 'bad' | 'info'
+    title: string
+    detail: string
+    reason_code: string | null
+  }>
+  performance: {
+    equity_curve: EquityPoint[]
+    returns: {
+      '1w_pct': number | null
+      mtd_pct: number | null
+      since_start_pct: number | null
+    }
+    drawdown: {
+      current_pct: number | null
+      max_pct: number | null
+    }
+    realized_pl: {
+      mtd: number | null
+      since_start: number | null
+    }
+    unrealized_pl: number | null
+    track_record_days: number
+  }
+  readiness: {
+    state: 'not_ready' | 'observe' | 'paper_validated' | 'candidate_for_live_mirror'
+    label: string
+    recommendation: string
+    incident_cutoff: string
+    track_record_days: number
+    rebalance_count: number
+    margin_incidents: number
+    operational_incidents: number
+    criteria: Array<{
+      key: string
+      label: string
+      value: string
+      target: string
+      passed: boolean
+    }>
+    passed_checks: number
+    total_checks: number
+    failing_checks: string[]
+  }
   exposure: {
     positions: HomepageSnapshotExposurePosition[]
     orders: HomepageSnapshotExposureOrder[]
+  }
+  execution: {
+    open_orders: HomepageSnapshotExposureOrder[]
+    recent_fills: HomepageSnapshotExecutionFill[]
   }
   watchlist: HomepageSnapshotWatchItem[]
   recent_results: HomepageSnapshotResult[]
@@ -281,6 +391,14 @@ export interface HomepageSnapshot {
 export interface SystemEvent {
   id: string
   event_at: string
+  event_type: string
+  severity: string
+  component: string | null
+  message: string
+  metadata: Record<string, unknown>
+}
+
+export interface RebalanceEvent {
   event_type: string
   severity: string
   component: string | null
@@ -367,7 +485,7 @@ export interface EconomicEvent {
 }
 
 // ── WebSocket ────────────────────────────────────────────────
-export type WsChannel = 'ticks' | 'signals' | 'positions' | 'orders' | 'regime' | 'heartbeat' | 'account'
+export type WsChannel = 'ticks' | 'signals' | 'positions' | 'orders' | 'regime' | 'heartbeat' | 'account' | 'events'
 
 export interface WsMessage {
   channel: WsChannel

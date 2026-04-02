@@ -333,6 +333,54 @@ class IBKRBrokerClient:
         self._app.next_order_id += 1
         return order_id
 
+    @staticmethod
+    def _normalize_account_summary_rows(rows: list[dict], account_id: str | None) -> dict:
+        filtered = [row for row in rows if not account_id or row.get("account") == account_id]
+
+        def _best_numeric(tag: str, fallback_tags: tuple[str, ...] = ()) -> float:
+            for candidate_tag in (tag, *fallback_tags):
+                candidates = [row for row in filtered if row.get("tag") == candidate_tag]
+                if not candidates:
+                    continue
+                candidates.sort(
+                    key=lambda row: (
+                        0 if row.get("currency") == "BASE" else 1 if row.get("currency") == "USD" else 2
+                    )
+                )
+                value = candidates[0].get("value")
+                try:
+                    return float(value or 0.0)
+                except (TypeError, ValueError):
+                    return 0.0
+            return 0.0
+
+        currency = "USD"
+        currency_rows = [row for row in filtered if row.get("tag") == "Currency"]
+        for row in currency_rows:
+            value = str(row.get("value") or "").upper()
+            if value and value != "BASE":
+                currency = value
+                break
+
+        realized = _best_numeric("RealizedPnL")
+        unrealized = _best_numeric("UnrealizedPnL")
+        broker_day_pl = _best_numeric("FuturesPNL")
+        if broker_day_pl == 0.0 and (realized or unrealized):
+            broker_day_pl = realized + unrealized
+
+        return {
+            "balance": _best_numeric("TotalCashValue", fallback_tags=("CashBalance", "TotalCashBalance")),
+            "NAV": _best_numeric("NetLiquidation", fallback_tags=("NetLiquidationByCurrency",)),
+            "currency": currency,
+            "openTradeCount": 0,
+            "availableFunds": _best_numeric("AvailableFunds"),
+            "excessLiquidity": _best_numeric("ExcessLiquidity"),
+            "initMarginReq": _best_numeric("InitMarginReq", fallback_tags=("FullInitMarginReq",)),
+            "maintMarginReq": _best_numeric("MaintMarginReq"),
+            "fullMaintMarginReq": _best_numeric("FullMaintMarginReq"),
+            "brokerDayPL": broker_day_pl,
+        }
+
     def _account_summary_sync(self) -> dict:
         self._ensure_connected()
         rows: list[dict] = []
@@ -346,39 +394,24 @@ class IBKRBrokerClient:
             rows.extend(updates_state.rows)
             self._app.account_updates_req = None
 
-        if not rows:
-            summary_state = _RequestState()
-            self._app.account_summary_req = summary_state
-            req_id = int(time.time() * 1000) % 2_000_000_000
-            self._app.reqAccountSummary(req_id, "All", "AccountType,NetLiquidation,TotalCashValue,Currency,AvailableFunds,ExcessLiquidity,MaintMarginReq,FullMaintMarginReq")
-            self._wait_for_request(summary_state, timeout=8)
-            self._app.cancelAccountSummary(req_id)
-            rows.extend(summary_state.rows)
-            self._app.account_summary_req = None
+        summary_state = _RequestState()
+        self._app.account_summary_req = summary_state
+        req_id = int(time.time() * 1000) % 2_000_000_000
+        self._app.reqAccountSummary(
+            req_id,
+            "All",
+            "AccountType,NetLiquidation,NetLiquidationByCurrency,TotalCashValue,CashBalance,TotalCashBalance,"
+            "Currency,AvailableFunds,ExcessLiquidity,InitMarginReq,FullInitMarginReq,MaintMarginReq,"
+            "FullMaintMarginReq,RealizedPnL,UnrealizedPnL,FuturesPNL",
+        )
+        self._wait_for_request(summary_state, timeout=8)
+        self._app.cancelAccountSummary(req_id)
+        rows.extend(summary_state.rows)
+        self._app.account_summary_req = None
 
         if not rows:
             raise RuntimeError("IBKR account summary request timed out")
-
-        normalized = {"balance": 0.0, "NAV": 0.0, "currency": "USD", "openTradeCount": 0, "availableFunds": 0.0, "excessLiquidity": 0.0, "maintMarginReq": 0.0, "fullMaintMarginReq": 0.0}
-        for row in rows:
-            if self._account_id and row["account"] != self._account_id:
-                continue
-            if row["tag"] == "TotalCashValue":
-                normalized["balance"] = float(row["value"] or 0.0)
-            elif row["tag"] == "NetLiquidation":
-                normalized["NAV"] = float(row["value"] or 0.0)
-            elif row["tag"] == "Currency":
-                normalized["currency"] = row["value"]
-            elif row["tag"] == "AvailableFunds":
-                normalized["availableFunds"] = float(row["value"] or 0.0)
-            elif row["tag"] == "ExcessLiquidity":
-                normalized["excessLiquidity"] = float(row["value"] or 0.0)
-            elif row["tag"] == "MaintMarginReq":
-                normalized["maintMarginReq"] = float(row["value"] or 0.0)
-            elif row["tag"] == "FullMaintMarginReq":
-                normalized["fullMaintMarginReq"] = float(row["value"] or 0.0)
-        # openTradeCount is populated by the caller after get_open_trades()
-        return normalized
+        return self._normalize_account_summary_rows(rows, self._account_id)
 
     async def get_account_summary(self) -> dict:
         return await self._run_blocking(self._account_summary_sync)

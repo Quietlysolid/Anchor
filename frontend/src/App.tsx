@@ -30,15 +30,21 @@ function WsBootstrap() {
       wsClient.on('account', (d) => {
         const { balance, equity } = d as { balance: number; equity: number }
         setAccount(balance, equity)
+        queryClient.invalidateQueries({ queryKey: ['homepage-snapshot'] })
       }),
       wsClient.on('positions', (d) => {
         setPositions(d as Position[])
+        queryClient.invalidateQueries({ queryKey: ['homepage-snapshot'] })
         queryClient.invalidateQueries({ queryKey: ['performance'] })
         queryClient.invalidateQueries({ queryKey: ['trade-journal'] })
         queryClient.invalidateQueries({ queryKey: ['equity-curve'] })
       }),
       wsClient.on('orders', () => {
+        queryClient.invalidateQueries({ queryKey: ['homepage-snapshot'] })
         queryClient.invalidateQueries({ queryKey: ['pending-orders'] })
+      }),
+      wsClient.on('events', () => {
+        queryClient.invalidateQueries({ queryKey: ['homepage-snapshot'] })
       }),
     ]
 

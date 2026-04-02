@@ -111,6 +111,14 @@ class Settings(BaseSettings):
     # ── Alerts ───────────────────────────────────────────────
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    watchdog_health_endpoint_url: str = "http://engine:8000/api/v1/system/health"
+    watchdog_heartbeat_stale_seconds: int = 180
+    watchdog_broker_sync_stale_seconds: int = 120
+    watchdog_broker_sync_critical_seconds: int = 300
+    watchdog_check_interval_seconds: int = 120
+    watchdog_alert_cooldown_seconds: int = 1800
+    watchdog_recent_event_lookback_minutes: int = 15
+    watchdog_warn_on_delayed_market_data: bool = True
 
     # ── Risk Parameters ───────────────────────────────────────
     max_risk_per_trade: float = 0.01       # 1% of account
@@ -210,6 +218,12 @@ class Settings(BaseSettings):
     futures_margin_block_new_opens_pct: float = 0.55
     futures_margin_force_derisk_usage_pct: float = 0.65
     futures_weekend_guard_enabled: bool = True
+    futures_readiness_min_track_record_days: int = 30
+    futures_readiness_min_rebalances: int = 8
+    futures_readiness_max_drawdown_pct: float = 10.0
+    futures_readiness_min_since_start_return_pct: float = 0.0
+    futures_readiness_max_margin_incidents_30d: int = 0
+    futures_readiness_max_operational_incidents_30d: int = 0
 
     # ── Anthropic ─────────────────────────────────────────────
     anthropic_api_key: str = ""

@@ -20,7 +20,7 @@ class AnchorWebSocket {
       console.info('[WS] connected')
       this.attempt = 0
       this.notifyStatus(true)
-      this.subscribe(['positions', 'orders', 'heartbeat', 'account'])
+      this.subscribe(['positions', 'orders', 'heartbeat', 'account', 'events'])
     }
 
     this.ws.onmessage = (evt) => {

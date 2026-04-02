@@ -150,6 +150,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      engine:
+        condition: service_healthy
       ib_gateway:
         condition: service_started
     env_file: .env

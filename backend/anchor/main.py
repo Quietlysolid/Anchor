@@ -30,8 +30,19 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
         try:
             acc = await broker_client.get_account_summary()
             balance = float(acc.get("balance", 0))
-            equity = float(acc.get("NAV", balance))
-            set_account_info(balance=balance, equity=equity, reconciled_at=utcnow().isoformat())
+            nav = float(acc.get("NAV", 0.0) or 0.0)
+            equity = nav if nav > 0 else balance
+            broker_day_pl = acc.get("brokerDayPL")
+            set_account_info(
+                balance=balance,
+                equity=equity,
+                reconciled_at=utcnow().isoformat(),
+                broker_day_pl=float(broker_day_pl) if broker_day_pl is not None else None,
+                available_funds=float(acc.get("availableFunds", 0.0) or 0.0),
+                excess_liquidity=float(acc.get("excessLiquidity", 0.0) or 0.0),
+                init_margin_req=float(acc.get("initMarginReq", 0.0) or 0.0),
+                maint_margin_req=float(acc.get("maintMarginReq", 0.0) or 0.0),
+            )
 
             raw_trades = await broker_client.get_open_trades()
             set_open_positions_count(len(raw_trades))
@@ -66,7 +77,13 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
             if redis_client:
                 await redis_client.publish("account", json.dumps({
                     "channel": "account",
-                    "data": {"balance": balance, "equity": equity},
+                    "data": {
+                        "balance": balance,
+                        "equity": equity,
+                        "broker_day_pl": float(broker_day_pl) if broker_day_pl is not None else None,
+                        "available_funds": float(acc.get("availableFunds", 0.0) or 0.0),
+                        "excess_liquidity": float(acc.get("excessLiquidity", 0.0) or 0.0),
+                    },
                 }))
                 positions = []
                 for t in enriched_trades:
@@ -149,7 +166,7 @@ async def lifespan(app: FastAPI):
         async def _redis_fanout():
             """Subscribe to Redis channels and broadcast to WebSocket clients."""
             pubsub = redis_client.pubsub()
-            await pubsub.subscribe("ticks", "regime", "signals", "positions", "orders", "account")
+            await pubsub.subscribe("ticks", "regime", "signals", "positions", "orders", "account", "events")
             async for message in pubsub.listen():
                 if message["type"] == "message":
                     try:

@@ -11,6 +11,7 @@ from sqlalchemy import text as _sql_text
 from sqlalchemy import select as _select
 
 from anchor.database.models import Fill, Position, Trade
+from anchor.futures.contracts import get_futures_market
 from anchor.utils.math_utils import get_pip_size
 from anchor.utils.time_utils import utcnow
 
@@ -43,6 +44,31 @@ class Reconciler:
     def _direction_from_trade(trade: dict) -> str:
         units = float(trade.get("currentUnits", trade.get("initialUnits", 0)) or 0)
         return "LONG" if units > 0 else "SHORT"
+
+    @staticmethod
+    def _is_futures_instrument(instrument: str) -> bool:
+        return "-" in str(instrument or "")
+
+    @classmethod
+    def _derive_futures_exit_price(cls, position: Position, realized_pl: float) -> float | None:
+        instrument = str(position.instrument or "")
+        if not cls._is_futures_instrument(instrument):
+            return None
+        market_id = instrument.split("-", 1)[0]
+        try:
+            market = get_futures_market(market_id)
+        except KeyError:
+            return None
+
+        units = abs(float(position.units or 0.0))
+        if units <= 0 or market.point_value_usd == 0:
+            return None
+
+        entry = float(position.avg_entry_price or 0.0)
+        price_delta = float(realized_pl) / (float(market.point_value_usd) * units)
+        if str(position.direction).upper() == "LONG":
+            return entry + price_delta
+        return entry - price_delta
 
     async def _match_order_for_trade(self, trade: dict):
         opening_order_id = trade.get("openingOrderID")
@@ -216,16 +242,21 @@ class Reconciler:
         # DB has position, broker doesn't → fetch closed trade details and mark closed
         for pos in db_positions:
             if pos.broker_trade_id and pos.broker_trade_id not in broker_ids:
-                # Try to get the closed trade details from OANDA for accurate P&L
+                # For futures, broker_trade_id is the instrument symbol, not a unique
+                # closed-trade lookup key. Fall back to the last broker unrealized P&L
+                # and derive a close price from the contract point value.
                 realized_pl = 0.0
                 exit_price  = None
                 close_reason = "SL_TP_OR_MANUAL"
                 try:
-                    closed = await self.broker.get_closed_trade(pos.broker_trade_id)
+                    closed = None if self._is_futures_instrument(pos.instrument) else await self.broker.get_closed_trade(pos.broker_trade_id)
                     if closed:
                         realized_pl  = float(closed.get("realizedPL", 0.0))
                         exit_price   = float(closed.get("averageClosePrice", 0)) or None
                         close_reason = "SL_TP_OR_MANUAL" if closed.get("closingTransactionIDs") else "MANUAL"
+                    elif self._is_futures_instrument(pos.instrument):
+                        realized_pl = float(pos.unrealized_pl or 0.0)
+                        exit_price = self._derive_futures_exit_price(pos, realized_pl)
                 except Exception as exc:
                     logger.warning("reconciler_get_closed_trade_failed", trade_id=pos.broker_trade_id, error=str(exc))
 

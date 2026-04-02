@@ -15,7 +15,7 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
-VALID_CHANNELS = {"ticks", "signals", "positions", "orders", "regime", "heartbeat", "account"}
+VALID_CHANNELS = {"ticks", "signals", "positions", "orders", "regime", "heartbeat", "account", "events"}
 
 
 class ConnectionManager:

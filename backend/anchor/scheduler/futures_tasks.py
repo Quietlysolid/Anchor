@@ -81,6 +81,9 @@ def run_futures_v1_rebalance(self):
     """Rebalance the Futures v1 paper portfolio against current IBKR positions."""
 
     async def _inner():
+        import json
+
+        import redis.asyncio as aioredis
         from anchor.config import settings
         from anchor.database.engine import init_db
         from anchor.database.repositories.events import SystemEventRepository
@@ -115,6 +118,8 @@ def run_futures_v1_rebalance(self):
             pending_orders=pending_orders,
             markets=markets,
         )
+
+        rebalance_event_payload: dict | None = None
 
         async with _db_engine.AsyncSessionFactory() as session:
             await _drawdown_monitor.bootstrap_peak_equity(session)
@@ -179,6 +184,19 @@ def run_futures_v1_rebalance(self):
                     ],
                 },
             )
+            rebalance_event_payload = {
+                "event_type": "FUTURES_V1_REBALANCE_PLAN",
+                "severity": "INFO",
+                "component": "FUTURES",
+                "message": f"Futures v1 rebalance plan generated with {len(plan.actions)} actions",
+                "metadata": {
+                    "as_of": plan.as_of,
+                    "actions": len(plan.actions),
+                    "auto_execute": settings.futures_v1_auto_execute,
+                    "blocked_reason": plan.blocked_reason,
+                    "markets": markets,
+                },
+            }
 
             if live_margin_usage_pct is not None and live_margin_usage_pct >= settings.futures_margin_block_new_opens_pct:
                 await event_repo.insert(
@@ -300,6 +318,20 @@ def run_futures_v1_rebalance(self):
                         )
 
             await session.commit()
+
+        if rebalance_event_payload is not None:
+            try:
+                rc = aioredis.from_url(settings.redis_url, decode_responses=True)
+                await rc.publish(
+                    "events",
+                    json.dumps({
+                        "channel": "events",
+                        "data": rebalance_event_payload,
+                    }),
+                )
+                await rc.aclose()
+            except Exception as exc:
+                logger.warning("futures_v1_rebalance_event_publish_failed", error=str(exc))
 
         logger.info(
             "futures_v1_rebalance_complete",
