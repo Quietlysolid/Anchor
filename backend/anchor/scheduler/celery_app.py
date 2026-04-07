@@ -34,6 +34,7 @@ celery_app.conf.update(
         "anchor.scheduler.jobs.reconcile_positions": {"queue": "default"},
         "anchor.scheduler.jobs.run_futures_v1_rebalance": {"queue": "default"},
         "anchor.scheduler.jobs.startup_diagnostics": {"queue": "default"},
+        "anchor.scheduler.jobs.refresh_futures_data": {"queue": "default"},
     },
     # Beat schedule (periodic tasks)
     beat_schedule={
@@ -52,6 +53,10 @@ celery_app.conf.update(
         "startup-diagnostics-daily": {
             "task": "anchor.scheduler.jobs.startup_diagnostics",
             "schedule": 86_400.0,
+        },
+        "refresh-futures-data-daily": {
+            "task": "anchor.scheduler.jobs.refresh_futures_data",
+            "schedule": crontab(hour=21, minute=0, day_of_week="1-5"),
         },
     },
     worker_prefetch_multiplier=1,

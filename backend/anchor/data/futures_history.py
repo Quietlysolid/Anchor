@@ -42,6 +42,53 @@ def _download_history(yahoo_symbol: str, period: str) -> pd.DataFrame:
     return frame[keep].dropna(subset=["time", "close"]).sort_values("time")
 
 
+async def download_futures_history_ibkr(markets: list[str], output_dir: str, duration: str = "10 Y") -> list[Path]:
+    """Download daily futures history via IBKR reqHistoricalData (CONTFUT / TRADES)."""
+    from anchor.execution.broker_client import BrokerClient
+
+    broker = BrokerClient()
+    output_paths: list[Path] = []
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for market_id in markets:
+        market = get_futures_market(market_id)
+        logger.info(
+            "futures_history_ibkr_download_start",
+            market=market.market_id,
+            symbol=market.ibkr_symbol,
+            exchange=market.exchange,
+            duration=duration,
+        )
+        bars = await broker.fetch_historical_candles(
+            symbol=market.ibkr_symbol,
+            exchange=market.exchange,
+            currency=market.currency,
+            multiplier=market.contract_multiplier,
+            trading_class=market.trading_class,
+            duration=duration,
+        )
+
+        frame = pd.DataFrame(bars)
+        frame["time"] = pd.to_datetime(frame["date"], format="%Y%m%d", utc=True, errors="coerce")
+        frame = frame.dropna(subset=["time", "close"]).sort_values("time")
+        frame = frame[["time", "open", "high", "low", "close", "volume"]]
+
+        out_path = out_dir / f"{market.market_id}_D.csv"
+        frame.to_csv(out_path, index=False)
+        logger.info(
+            "futures_history_ibkr_saved",
+            market=market.market_id,
+            rows=len(frame),
+            start=str(frame["time"].iloc[0]),
+            end=str(frame["time"].iloc[-1]),
+            path=str(out_path),
+        )
+        output_paths.append(out_path)
+
+    return output_paths
+
+
 def download_futures_history(markets: list[str], output_dir: str, period: str = "10y") -> list[Path]:
     output_paths: list[Path] = []
     out_dir = Path(output_dir)

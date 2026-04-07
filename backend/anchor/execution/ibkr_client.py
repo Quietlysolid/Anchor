@@ -112,6 +112,7 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
         self.market_data: dict[int, dict[str, Any]] = {}
         self.tick_callback = None
         self.portfolio_rows: list[dict] = []
+        self.historical_data_reqs: dict[int, _RequestState] = {}
 
     def nextValidId(self, orderId: int) -> None:  # noqa: N802
         self.next_order_id = orderId
@@ -139,6 +140,10 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
         if self.contract_details_req and errorCode not in ignored_codes:
             self.contract_details_req.error = message
             self.contract_details_req.done.set()
+        hist_state = self.historical_data_reqs.get(reqId)
+        if hist_state is not None and errorCode not in ignored_codes:
+            hist_state.error = message
+            hist_state.done.set()
 
     def accountSummary(self, reqId: int, account: str, tag: str, value: str, currency: str) -> None:  # noqa: N802,E501
         if self.account_summary_req is not None:
@@ -230,6 +235,23 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
         state.remaining = remaining
         state.avg_fill_price = avgFillPrice or lastFillPrice or state.avg_fill_price
         if status in {"Filled", "Cancelled", "ApiCancelled", "Inactive"}:
+            state.done.set()
+
+    def historicalData(self, reqId: int, bar) -> None:  # noqa: N802
+        state = self.historical_data_reqs.get(reqId)
+        if state is not None:
+            state.rows.append({
+                "date": bar.date,
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+            })
+
+    def historicalDataEnd(self, reqId: int, start: str, end: str) -> None:  # noqa: N802
+        state = self.historical_data_reqs.get(reqId)
+        if state is not None:
             state.done.set()
 
     def tickPrice(self, reqId: int, tickType: int, price: float, attrib) -> None:  # noqa: N802
@@ -776,6 +798,66 @@ class IBKRBrokerClient:
             trade_id=trade_id,
             breakeven_price=breakeven_price,
             reason="phase_1_does_not_modify_attached_orders",
+        )
+
+    def _fetch_historical_candles_sync(
+        self,
+        symbol: str,
+        exchange: str,
+        currency: str,
+        multiplier: str,
+        trading_class: str | None,
+        duration: str,
+    ) -> list[dict]:
+        self._ensure_connected()
+        contract = Contract()
+        contract.symbol = symbol
+        contract.secType = "CONTFUT"
+        contract.exchange = exchange
+        contract.currency = currency
+        if multiplier:
+            contract.multiplier = multiplier
+        if trading_class:
+            contract.tradingClass = trading_class
+
+        req_id = int(time.time() * 1000) % 2_000_000_000
+        state = _RequestState()
+        self._app.historical_data_reqs[req_id] = state
+
+        self._app.reqHistoricalData(
+            req_id,
+            contract,
+            "",           # endDateTime: "" = now
+            duration,
+            "1 day",
+            "TRADES",
+            0,            # useRTH: 0 = include extended hours
+            1,            # formatDate: 1 = YYYYMMDD strings
+            False,        # keepUpToDate
+            [],           # chartOptions
+        )
+
+        state.done.wait(timeout=90)
+        self._app.historical_data_reqs.pop(req_id, None)
+
+        if state.error:
+            raise RuntimeError(f"IBKR historical data error for {symbol}: {state.error}")
+        if not state.rows:
+            raise ValueError(f"No historical data returned from IBKR for {symbol}")
+        return state.rows
+
+    async def fetch_historical_candles(
+        self,
+        symbol: str,
+        exchange: str,
+        currency: str,
+        multiplier: str,
+        trading_class: str | None = None,
+        duration: str = "10 Y",
+    ) -> list[dict]:
+        return await self._run_blocking(
+            self._fetch_historical_candles_sync,
+            symbol, exchange, currency, multiplier, trading_class, duration,
         )
 
     async def disconnect(self) -> None:

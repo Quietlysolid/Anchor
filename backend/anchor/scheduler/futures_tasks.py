@@ -378,3 +378,30 @@ def run_futures_v1_rebalance(self):
     except Exception as exc:
         logger.error("futures_v1_rebalance_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120)
+
+
+@celery_app.task(name="anchor.scheduler.jobs.refresh_futures_data", bind=True, max_retries=2)
+def refresh_futures_data(self):
+    """Download fresh daily closes — IBKR primary, yfinance fallback."""
+
+    async def _inner():
+        from anchor.config import settings
+        from anchor.data.futures_history import download_futures_history, download_futures_history_ibkr
+
+        markets = list(settings.futures_v1_markets)
+        try:
+            paths = await download_futures_history_ibkr(markets=markets, output_dir="/app/data")
+            logger.info("futures_data_refreshed", source="ibkr", markets=markets, files=[str(p) for p in paths])
+        except Exception as ibkr_exc:
+            logger.warning(
+                "futures_data_ibkr_failed_falling_back_to_yfinance",
+                error=str(ibkr_exc),
+            )
+            paths = download_futures_history(markets=markets, output_dir="/app/data", period="10y")
+            logger.info("futures_data_refreshed", source="yfinance", markets=markets, files=[str(p) for p in paths])
+
+    try:
+        _run_async(_inner())
+    except Exception as exc:
+        logger.error("futures_data_refresh_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=300)
