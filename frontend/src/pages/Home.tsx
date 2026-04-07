@@ -251,23 +251,23 @@ export default function Home() {
                             />
                           </div>
                           <div className="mt-3 grid gap-3">
-                            <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="grid min-w-0 gap-2 sm:grid-cols-2">
                               <label className="block">
-                                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Filled on</span>
+                                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">Filled on</span>
                                 <input
                                   type="date"
                                   value={draft.filledOn}
                                   onChange={(event) => updateManualTrade(setManualTrades, tradeKey, { filledOn: event.target.value })}
-                                  className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
+                                  className="mt-1.5 block min-w-0 max-w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[12px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
                                 />
                               </label>
                               <label className="block">
-                                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Closed on</span>
+                                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">Closed on</span>
                                 <input
                                   type="date"
                                   value={draft.closedOn}
                                   onChange={(event) => updateManualTrade(setManualTrades, tradeKey, { closedOn: event.target.value })}
-                                  className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
+                                  className="mt-1.5 block min-w-0 max-w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[12px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
                                 />
                               </label>
                             </div>
@@ -376,23 +376,23 @@ export default function Home() {
                             />
                           </div>
                           <div className="mt-3 grid gap-3">
-                            <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="grid min-w-0 gap-2 sm:grid-cols-2">
                               <label className="block">
-                                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Filled on</span>
+                                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">Filled on</span>
                                 <input
                                   type="date"
                                   value={replacementDraft.filledOn}
                                   onChange={(event) => updateManualTrade(setManualTrades, replacementTradeKey, { filledOn: event.target.value })}
-                                  className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
+                                  className="mt-1.5 block min-w-0 max-w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[12px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
                                 />
                               </label>
                               <label className="block">
-                                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Closed on</span>
+                                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">Closed on</span>
                                 <input
                                   type="date"
                                   value={replacementDraft.closedOn}
                                   onChange={(event) => updateManualTrade(setManualTrades, replacementTradeKey, { closedOn: event.target.value })}
-                                  className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
+                                  className="mt-1.5 block min-w-0 max-w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[12px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
                                 />
                               </label>
                             </div>
@@ -570,7 +570,7 @@ export default function Home() {
                         />
                       </div>
                     </div>
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
                       <label className="block">
                         <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">
                           Filled on
@@ -579,7 +579,7 @@ export default function Home() {
                           type="date"
                           value={draft.filledOn}
                           onChange={(event) => updateManualTrade(setManualTrades, tradeKey, { filledOn: event.target.value })}
-                          className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
+                          className="mt-2 block min-w-0 max-w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
                         />
                       </label>
                       <label className="block">
@@ -590,7 +590,7 @@ export default function Home() {
                           type="date"
                           value={draft.closedOn}
                           onChange={(event) => updateManualTrade(setManualTrades, tradeKey, { closedOn: event.target.value })}
-                          className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
+                          className="mt-2 block min-w-0 max-w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition focus:border-anchor-brass/45"
                         />
                       </label>
                     </div>
