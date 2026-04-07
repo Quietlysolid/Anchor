@@ -260,7 +260,30 @@ def run_futures_v1_rebalance(self):
                 for action in plan.actions:
                     try:
                         if action.action == "close":
-                            await broker.close_trade(action.instrument, units="ALL")
+                            # Use the position data already fetched for the plan to
+                            # avoid a second IBKR positions fetch inside close_trade
+                            # (which can time out and silently return not_found).
+                            pos = next(
+                                (p for p in actual_positions if p.get("instrument") == action.instrument),
+                                None,
+                            )
+                            if pos is None:
+                                raise RuntimeError(
+                                    f"close action for {action.instrument} but position not in actual_positions"
+                                )
+                            units = abs(int(round(float(pos.get("currentUnits", 0) or 0))))
+                            if units == 0:
+                                raise RuntimeError(
+                                    f"close action for {action.instrument} but currentUnits is 0"
+                                )
+                            close_request = OrderRequest(
+                                instrument=action.instrument,
+                                direction=Direction.LONG if action.direction == "LONG" else Direction.SHORT,
+                                units=units,
+                                order_type=OrderType.MARKET,
+                                stop_loss=None,
+                            )
+                            await broker.place_order(uuid.uuid4(), close_request)
                         elif action.action == "open":
                             if block_new_opens:
                                 logger.warning(

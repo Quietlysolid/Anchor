@@ -300,22 +300,14 @@ async def _readiness_snapshot(session: AsyncSession, performance: dict, now_utc:
     incident_cutoff = _readiness_incident_cutoff(now_utc)
     rebalance_events = (
         await session.execute(
-            select(SystemEvent.event_at, SystemEvent.metadata_)
+            select(SystemEvent.metadata_)
             .where(SystemEvent.event_type == "FUTURES_V1_REBALANCE_PLAN")
         )
-    ).all()
-    order_times = (
-        await session.execute(select(Order.created_at).order_by(Order.created_at))
-    ).scalars().all()
-    fill_times = (
-        await session.execute(select(Fill.fill_at).order_by(Fill.fill_at))
     ).scalars().all()
     rebalance_count = sum(
         1
-        for event_at, metadata in rebalance_events
-        if isinstance(metadata, dict)
-        and _is_successful_auto_rebalance(metadata)
-        and _has_rebalance_execution_evidence(event_at, order_times, fill_times)
+        for metadata in rebalance_events
+        if isinstance(metadata, dict) and _is_successful_auto_rebalance(metadata)
     )
     margin_incidents = int(
         await session.scalar(
@@ -456,20 +448,6 @@ def _is_successful_auto_rebalance(metadata: dict) -> bool:
         return False
     return True
 
-
-def _has_rebalance_execution_evidence(
-    event_at: datetime,
-    order_times: list[datetime],
-    fill_times: list[datetime],
-) -> bool:
-    window_end = event_at + timedelta(minutes=30)
-    for ts in order_times:
-        if event_at <= ts <= window_end:
-            return True
-    for ts in fill_times:
-        if event_at <= ts <= window_end:
-            return True
-    return False
 
 
 def _rebalance_event_detail(event: SystemEvent) -> tuple[str, str]:
@@ -1277,10 +1255,7 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
     recent_trades_stmt = select(Trade).order_by(desc(Trade.closed_at)).limit(24)
     recent_trades_rows = (await session.execute(recent_trades_stmt)).scalars().all()
     if settings.trading_domain == "futures":
-        recent_trades = [
-            trade for trade in recent_trades_rows
-            if abs(float(trade.net_pl or 0.0)) > 1e-9
-        ][:8]
+        recent_trades = recent_trades_rows[:8]
     else:
         recent_trades = recent_trades_rows[:8]
 
