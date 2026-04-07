@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useManualTradeJournal, useManualTradingProfile, useUpsertManualTradingProfile } from '../api/hooks'
+import type { ManualTradeJournalEntry } from '../types'
 import { SectionCard, cn, dollars, pctStr, signedDollars, useDashboardSnapshot } from './dashboardShared'
 import { EquityCurve } from '../components/charts/EquityCurve'
 
@@ -13,10 +14,33 @@ export default function PerformancePage() {
   const readiness = snapshot?.readiness
   const failingChecks = readiness?.criteria?.filter((criterion) => !criterion.passed) ?? []
   const manualSummary = useMemo(() => buildManualSummary(manualTrades ?? [], manualProfile?.starting_balance ?? null), [manualTrades, manualProfile?.starting_balance])
+  const [selectedMonth, setSelectedMonth] = useState(() => currentMonthKey())
+  const selectedMonthData = manualSummary.months.find((month) => month.key === selectedMonth) ?? null
 
   useEffect(() => {
     setStartingBalanceInput(manualProfile?.starting_balance != null ? String(manualProfile.starting_balance) : '')
   }, [manualProfile?.starting_balance])
+
+  useEffect(() => {
+    if (manualSummary.months.length === 0) {
+      setSelectedMonth(currentMonthKey())
+      return
+    }
+    if (!manualSummary.months.some((month) => month.key === selectedMonth)) {
+      setSelectedMonth(manualSummary.months[0].key)
+    }
+  }, [manualSummary.months, selectedMonth])
+
+  function moveMonth(direction: -1 | 1) {
+    if (manualSummary.months.length === 0) return
+    const index = manualSummary.months.findIndex((month) => month.key === selectedMonth)
+    if (index === -1) {
+      setSelectedMonth(manualSummary.months[0].key)
+      return
+    }
+    const nextIndex = Math.min(Math.max(index + direction, 0), manualSummary.months.length - 1)
+    setSelectedMonth(manualSummary.months[nextIndex].key)
+  }
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-24 pt-6 sm:px-6">
@@ -110,25 +134,86 @@ export default function PerformancePage() {
 
           <div className="mt-5">
             <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Daily calendar</p>
-            {manualSummary.calendarDays.length > 0 ? (
-              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {manualSummary.calendarDays.map((day) => (
+            {manualSummary.months.length > 0 && selectedMonthData ? (
+              <div className="mt-3">
+                <div className="flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => moveMonth(-1)}
+                    disabled={manualSummary.months[manualSummary.months.length - 1]?.key === selectedMonth}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] transition',
+                      manualSummary.months[manualSummary.months.length - 1]?.key === selectedMonth
+                        ? 'border-white/8 bg-white/[0.02] text-anchor-fog/45'
+                        : 'border-white/10 bg-white/[0.03] text-anchor-navy hover:border-anchor-brass/35 hover:bg-anchor-brass/10',
+                    )}
+                  >
+                    Prev
+                  </button>
+                  <div className="text-center">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Showing</p>
+                    <p className="mt-1 text-[14px] font-semibold text-anchor-navy">{formatMonthLabel(selectedMonthData.key)}</p>
+                    <p className="mt-1 text-[11px] text-anchor-fog/84">
+                      {selectedMonthData.tradeCount} finished trade{selectedMonthData.tradeCount === 1 ? '' : 's'} · {signedDollars(selectedMonthData.net)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => moveMonth(1)}
+                    disabled={manualSummary.months[0]?.key === selectedMonth}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] transition',
+                      manualSummary.months[0]?.key === selectedMonth
+                        ? 'border-white/8 bg-white/[0.02] text-anchor-fog/45'
+                        : 'border-white/10 bg-white/[0.03] text-anchor-navy hover:border-anchor-brass/35 hover:bg-anchor-brass/10',
+                    )}
+                  >
+                    Next
+                  </button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-7 gap-2">
+                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((label) => (
+                    <p key={label} className="text-center font-mono text-[10px] uppercase tracking-[0.12em] text-anchor-fog/72">
+                      {label}
+                    </p>
+                  ))}
+                </div>
+
+                <div className="mt-2 grid grid-cols-7 gap-2">
+                  {selectedMonthData.calendarDays.map((day) => (
+                    day.inMonth ? (
                   <div
                     key={day.date}
                     className={cn(
-                      'rounded-[14px] border px-3 py-2',
+                      'min-h-[88px] rounded-[14px] border px-2.5 py-2',
                       day.pnl > 0 ? 'border-emerald-500/20 bg-emerald-500/[0.06]' :
                       day.pnl < 0 ? 'border-rose-500/20 bg-rose-500/[0.06]' :
                       'border-white/8 bg-white/[0.03]',
                     )}
                   >
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-anchor-fog/84">{formatCalendarDay(day.date)}</p>
-                    <p className={cn('mt-1 font-mono text-[13px] font-semibold', day.pnl > 0 ? 'text-anchor-win' : day.pnl < 0 ? 'text-anchor-loss' : 'text-anchor-navy')}>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-anchor-fog/84">{formatCalendarDayNumber(day.date)}</p>
+                      {day.trades > 0 && (
+                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 font-mono text-[9px] text-anchor-fog/84">
+                          {day.trades}
+                        </span>
+                      )}
+                    </div>
+                    <p className={cn('mt-3 font-mono text-[12px] font-semibold', day.pnl > 0 ? 'text-anchor-win' : day.pnl < 0 ? 'text-anchor-loss' : 'text-anchor-navy')}>
                       {signedDollars(day.pnl)}
                     </p>
-                    <p className="mt-1 text-[10px] text-anchor-fog/84">{day.trades} trade{day.trades === 1 ? '' : 's'}</p>
+                    <p className="mt-1 text-[10px] text-anchor-fog/84">
+                      {day.trades > 0 ? `${day.trades} trade${day.trades === 1 ? '' : 's'}` : 'No closes'}
+                    </p>
                   </div>
-                ))}
+                    ) : (
+                      <div key={day.date} className="min-h-[88px] rounded-[14px] border border-transparent bg-transparent px-2.5 py-2 opacity-30">
+                        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-anchor-fog/40">{formatCalendarDayNumber(day.date)}</p>
+                      </div>
+                    )
+                  ))}
+                </div>
               </div>
             ) : (
               <p className="mt-3 text-sm text-anchor-fog">No finished manual trades yet.</p>
@@ -197,14 +282,7 @@ function parseMoneyInput(raw: string) {
 }
 
 function buildManualSummary(
-  entries: Array<{
-    market: string | null
-    direction: string | null
-    contracts: number
-    fill_price: number | null
-    exit_price: number | null
-    closed_on: string | null
-  }>,
+  entries: ManualTradeJournalEntry[],
   startingBalance: number | null,
 ) {
   const closedTrades = entries
@@ -231,11 +309,27 @@ function buildManualSummary(
     calendarMap.set(trade.date, current)
   }
 
-  const calendarDays = Array.from(calendarMap.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .slice(-28)
-    .map(([date, value]) => ({ date, pnl: value.pnl, trades: value.trades }))
-    .reverse()
+  const monthKeys = new Set<string>()
+  for (const trade of closedTrades) {
+    monthKeys.add(trade.date.slice(0, 7))
+  }
+  if (monthKeys.size === 0) {
+    monthKeys.add(currentMonthKey())
+  }
+
+  const months = Array.from(monthKeys)
+    .sort((a, b) => b.localeCompare(a))
+    .map((monthKey) => {
+      const calendarDays = buildMonthCalendar(monthKey, calendarMap)
+      const tradeCount = calendarDays.reduce((sum, day) => sum + (day.inMonth ? day.trades : 0), 0)
+      const monthNet = calendarDays.reduce((sum, day) => sum + (day.inMonth ? day.pnl : 0), 0)
+      return {
+        key: monthKey,
+        tradeCount,
+        net: monthNet,
+        calendarDays,
+      }
+    })
 
   return {
     startingBalance,
@@ -244,11 +338,50 @@ function buildManualSummary(
     totalLoss,
     net,
     closedTrades: closedTrades.length,
-    calendarDays,
+    months,
   }
 }
 
-function formatCalendarDay(value: string) {
+function buildMonthCalendar(monthKey: string, calendarMap: Map<string, { pnl: number; trades: number }>) {
+  const [yearRaw, monthRaw] = monthKey.split('-')
+  const year = Number(yearRaw)
+  const monthIndex = Number(monthRaw) - 1
+  const firstDay = new Date(Date.UTC(year, monthIndex, 1))
+  const lastDay = new Date(Date.UTC(year, monthIndex + 1, 0))
+  const start = new Date(firstDay)
+  start.setUTCDate(start.getUTCDate() - firstDay.getUTCDay())
+  const end = new Date(lastDay)
+  end.setUTCDate(end.getUTCDate() + (6 - lastDay.getUTCDay()))
+
+  const days: Array<{ date: string; pnl: number; trades: number; inMonth: boolean }> = []
+  for (const cursor = new Date(start); cursor <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const date = formatIsoDay(cursor)
+    const value = calendarMap.get(date) ?? { pnl: 0, trades: 0 }
+    days.push({
+      date,
+      pnl: value.pnl,
+      trades: value.trades,
+      inMonth: cursor.getUTCMonth() === monthIndex,
+    })
+  }
+  return days
+}
+
+function currentMonthKey() {
+  return formatIsoDay(new Date()).slice(0, 7)
+}
+
+function formatIsoDay(value: Date) {
+  return value.toISOString().slice(0, 10)
+}
+
+function formatMonthLabel(value: string) {
+  const [yearRaw, monthRaw] = value.split('-')
+  const date = new Date(Date.UTC(Number(yearRaw), Number(monthRaw) - 1, 1))
+  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+}
+
+function formatCalendarDayNumber(value: string) {
   const date = new Date(`${value}T00:00:00Z`)
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+  return date.toLocaleDateString('en-US', { day: 'numeric', timeZone: 'UTC' })
 }

@@ -206,10 +206,9 @@ export default function Home() {
                     </p>
 
                     <div className="mt-3 rounded-[16px] border border-white/8 bg-white/[0.03] px-3 py-3">
-                      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Do this</p>
+                      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Robinhood moves</p>
                       <div className="mt-3 grid gap-3 sm:grid-cols-2">
                         <div className="rounded-[14px] border border-white/8 bg-white/[0.02] px-3 py-3">
-                          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">Step 1</p>
                           <p className="mt-1 text-[13px] font-semibold text-anchor-navy">Close old contract</p>
                           <p className="mt-1 text-[11px] text-anchor-fog/88">{action.instrument}</p>
                           <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-anchor-fog/92">
@@ -220,7 +219,6 @@ export default function Home() {
                           </div>
                         </div>
                         <div className="rounded-[14px] border border-white/8 bg-white/[0.02] px-3 py-3">
-                          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">Step 2</p>
                           <p className="mt-1 text-[13px] font-semibold text-anchor-navy">Open new contract</p>
                           <p className="mt-1 text-[11px] text-anchor-fog/88">{replacementAction.instrument}</p>
                           <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-anchor-fog/92">
@@ -235,9 +233,15 @@ export default function Home() {
 
                     <div className="mt-3 rounded-[16px] border border-white/8 bg-white/[0.03] px-3 py-3">
                       <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Journal</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-anchor-fog/88">
+                        Each save becomes its own trade record in Anchor. `Filled on` is your entry date. `Closed on` is your exit date. If you re-enter later, save that as a new trade too.
+                      </p>
                       <div className="mt-3 grid gap-3 sm:grid-cols-2">
                         <div className="rounded-[14px] border border-white/8 bg-white/[0.02] px-3 py-3">
-                          <p className="text-[12px] font-semibold text-anchor-navy">Step 1 journal</p>
+                          <p className="text-[12px] font-semibold text-anchor-navy">Close trade record</p>
+                          <p className="mt-1 text-[11px] text-anchor-fog/88">
+                            Log the closing side here. Use `Filled on` for when you actually closed in Robinhood, and `Closed on` for the date the trade was fully finished.
+                          </p>
                           <div className="mt-2 flex flex-wrap gap-2">
                             <TogglePill
                               active={draft.taken}
@@ -362,7 +366,10 @@ export default function Home() {
                         </div>
 
                         <div className="rounded-[14px] border border-white/8 bg-white/[0.02] px-3 py-3">
-                          <p className="text-[12px] font-semibold text-anchor-navy">Step 2 journal</p>
+                          <p className="text-[12px] font-semibold text-anchor-navy">New trade record</p>
+                          <p className="mt-1 text-[11px] text-anchor-fog/88">
+                            Log the new entry here. `Filled on` is the day you entered. Leave `Closed on` blank until you actually exit this trade later.
+                          </p>
                           <div className="mt-2 flex flex-wrap gap-2">
                             <TogglePill
                               active={replacementDraft.taken}
@@ -570,6 +577,9 @@ export default function Home() {
                         />
                       </div>
                     </div>
+                    <p className="mt-2 text-[11px] leading-relaxed text-anchor-fog/88">
+                      Every save keeps this trade in Anchor. `Filled on` is when you entered in Robinhood. `Closed on` is when you exited. If you take another Anchor entry later, save that as a new trade instead of overwriting this one.
+                    </p>
                     <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
                       <label className="block">
                         <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">
