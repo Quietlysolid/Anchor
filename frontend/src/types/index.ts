@@ -252,6 +252,8 @@ export interface HomepageSnapshotResult {
   closed_at: string
   net_pl: number
   close_reason: string | null
+  broker_verified?: boolean
+  close_source?: string | null
 }
 
 export interface HomepageSnapshotCalendarItem {
@@ -259,6 +261,30 @@ export interface HomepageSnapshotCalendarItem {
   currency: string
   impact: 'HIGH' | 'MEDIUM'
   event_name: string
+}
+
+export interface ManualTradeJournalEntry {
+  id: string
+  created_at: string
+  updated_at: string
+  action_key: string
+  action: string
+  instrument: string
+  market: string | null
+  direction: string | null
+  contracts: number
+  reason: string | null
+  anchor_generated_at: string | null
+  anchor_reference_price: number | null
+  anchor_stop_price: number | null
+  anchor_entry_note: string | null
+  anchor_exit_note: string | null
+  taken: boolean
+  closed: boolean
+  fill_price: number | null
+  stop_price: number | null
+  exit_price: number | null
+  notes: string | null
 }
 
 export interface HomepageSnapshot {

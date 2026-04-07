@@ -1,5 +1,5 @@
-from anchor.api.routers import positions, orders, performance, system
+from anchor.api.routers import manual_trades, positions, orders, performance, system
 
 __all__ = [
-    "positions", "orders", "performance", "system",
+    "manual_trades", "positions", "orders", "performance", "system",
 ]

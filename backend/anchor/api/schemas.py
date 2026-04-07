@@ -160,6 +160,10 @@ class TradeResponse(BaseModel):
     net_pl: float
     gross_pl: float
     commission: float
+    broker_verified: bool = False
+    close_source: Optional[str] = None
+    broker_order_id: Optional[str] = None
+    broker_fill_id: Optional[str] = None
     max_adverse_excursion: Optional[float]
     max_favorable_excursion: Optional[float]
     close_reason: Optional[str]
@@ -170,6 +174,51 @@ class TradeResponse(BaseModel):
     entry_slippage_pips: Optional[float]
     spread_at_fill: Optional[float]
     fill_at: Optional[datetime]
+
+
+class ManualTradeJournalResponse(BaseModel):
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+    action_key: str
+    action: str
+    instrument: str
+    market: Optional[str] = None
+    direction: Optional[str] = None
+    contracts: int
+    reason: Optional[str] = None
+    anchor_generated_at: Optional[datetime] = None
+    anchor_reference_price: Optional[float] = None
+    anchor_stop_price: Optional[float] = None
+    anchor_entry_note: Optional[str] = None
+    anchor_exit_note: Optional[str] = None
+    taken: bool = False
+    closed: bool = False
+    fill_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    exit_price: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class ManualTradeJournalUpsertRequest(BaseModel):
+    action_key: str
+    action: str
+    instrument: str
+    market: Optional[str] = None
+    direction: Optional[str] = None
+    contracts: int
+    reason: Optional[str] = None
+    anchor_generated_at: Optional[datetime] = None
+    anchor_reference_price: Optional[float] = None
+    anchor_stop_price: Optional[float] = None
+    anchor_entry_note: Optional[str] = None
+    anchor_exit_note: Optional[str] = None
+    taken: bool = False
+    closed: bool = False
+    fill_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    exit_price: Optional[float] = None
+    notes: Optional[str] = None
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────
