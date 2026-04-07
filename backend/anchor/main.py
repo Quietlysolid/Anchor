@@ -54,11 +54,11 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
                 async with get_session() as session:
                     pos_repo = PositionRepository(session)
                     db_positions = await pos_repo.get_open()
-                db_opened_at_by_instrument = {
-                    str(p.instrument): p.opened_at.isoformat()
-                    for p in db_positions
-                    if p.opened_at is not None
-                }
+                    db_opened_at_by_instrument = {
+                        str(p.instrument): p.opened_at.isoformat()
+                        for p in db_positions
+                        if p.opened_at is not None
+                    }
             except Exception as exc:
                 logger.warning("open_positions_timestamp_lookup_failed", error=str(exc))
 

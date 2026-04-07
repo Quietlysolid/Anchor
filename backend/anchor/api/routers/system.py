@@ -1162,13 +1162,8 @@ async def get_operator_state(session: AsyncSession = Depends(get_db)):
         db_ok = False
 
     if settings.trading_domain == "futures":
-        try:
-            runtime = await _broker_runtime_snapshot()
-            open_positions_count = len(runtime["positions"])
-            working_orders_count = len(runtime["pending_orders"])
-        except Exception:
-            open_positions_count = _open_positions_count
-            working_orders_count = 0
+        open_positions_count = _open_positions_count
+        working_orders_count = len(_cached_orders)
         latest_blocker = None
     else:
         open_positions_count = (
