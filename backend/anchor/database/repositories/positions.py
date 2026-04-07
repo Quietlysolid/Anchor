@@ -9,6 +9,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anchor.database.models import Position, Trade, PositionStatus
+from anchor.futures.contracts import get_futures_market
 from anchor.utils.time_utils import utcnow
 
 
@@ -91,6 +92,10 @@ class PositionRepository:
         closed_at: datetime,
         realized_pl: float = 0.0,
         exit_price: float | None = None,
+        close_source: str = "reconciliation",
+        broker_verified: bool = False,
+        broker_order_id: str | None = None,
+        broker_fill_id: str | None = None,
     ) -> None:
         """Mark a DB position as closed and write a Trade record."""
         from anchor.database.models import Signal as SignalModel
@@ -107,6 +112,9 @@ class PositionRepository:
         position.stop_attached_at = None
         if exit_price is not None:
             position.current_price = Decimal(str(exit_price))
+
+        if exit_price is not None and str(position.instrument or "").count("-") > 0:
+            realized_pl = self._futures_realized_pl_from_exit(position, exit_price, fallback=realized_pl)
 
         # Resolve close_reason to SL or TP by comparing exit price to stored levels
         resolved_reason = close_reason
@@ -149,12 +157,40 @@ class PositionRepository:
             gross_pl=Decimal(str(net_pl)),
             net_pl=Decimal(str(net_pl)),
             close_reason=resolved_reason,
+            close_source=close_source,
+            broker_verified=broker_verified,
+            broker_order_id=broker_order_id,
+            broker_fill_id=broker_fill_id,
             signal_id=position.signal_id,
             regime_at_entry=regime_at_entry,
             session_at_entry=session_at_entry,
         )
         self.session.add(trade)
         await self.session.flush()
+
+    @staticmethod
+    def _futures_realized_pl_from_exit(position: Position, exit_price: float, fallback: float = 0.0) -> float:
+        instrument = str(position.instrument or "")
+        if "-" not in instrument:
+            return fallback
+        market_id = instrument.split("-", 1)[0]
+        try:
+            market = get_futures_market(market_id)
+        except KeyError:
+            return fallback
+
+        units = abs(float(position.units or 0.0))
+        if units <= 0:
+            return fallback
+
+        entry_price = float(position.avg_entry_price or 0.0)
+        point_value = float(market.point_value_usd or 0.0)
+        if point_value <= 0:
+            return fallback
+
+        if str(position.direction).upper() == "LONG":
+            return (float(exit_price) - entry_price) * point_value * units
+        return (entry_price - float(exit_price)) * point_value * units
 
     async def mark_partial_tp_done(self, position_id: UUID, units_closed: int) -> None:
         """Record that the first partial TP close has been executed."""

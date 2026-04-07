@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { usePositionStore, useSystemStore } from '../store'
+import { useManualTradeJournal, useUpsertManualTradeJournal } from '../api/hooks'
+import type { ManualTradeJournalEntry } from '../types'
 import {
   SectionCard,
   cn,
@@ -11,14 +13,23 @@ import {
   useDashboardSnapshot,
 } from './dashboardShared'
 
-const MANUAL_FILL_STORAGE_KEY = 'anchor-manual-trade-fills'
+type ManualTradeDraft = {
+  taken: boolean
+  closed: boolean
+  fillPrice: string
+  stopPrice: string
+  exitPrice: string
+  notes: string
+}
 
 export default function Home() {
   const snapshot = useDashboardSnapshot()
   const { positions } = usePositionStore()
   const { wsConnected } = useSystemStore()
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const [manualFills, setManualFills] = useState<Record<string, string>>({})
+  const [manualTrades, setManualTrades] = useState<Record<string, ManualTradeDraft>>({})
+  const { data: journalEntries } = useManualTradeJournal()
+  const upsertManualTrade = useUpsertManualTradeJournal()
 
   useEffect(() => {
     document.title = 'Anchor'
@@ -27,27 +38,17 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    try {
-      const raw = window.localStorage.getItem(MANUAL_FILL_STORAGE_KEY)
-      if (!raw) return
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object') {
-        setManualFills(parsed as Record<string, string>)
+    if (!journalEntries) return
+    setManualTrades((current) => {
+      const next = { ...current }
+      for (const entry of journalEntries) {
+        if (!next[entry.action_key]) {
+          next[entry.action_key] = manualTradeDraftFromEntry(entry)
+        }
       }
-    } catch {
-      // Ignore local browser storage failures.
-    }
-  }, [])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    try {
-      window.localStorage.setItem(MANUAL_FILL_STORAGE_KEY, JSON.stringify(manualFills))
-    } catch {
-      // Ignore local browser storage failures.
-    }
-  }, [manualFills])
+      return next
+    })
+  }, [journalEntries])
 
   const account = snapshot?.account
   const status = snapshot?.status
@@ -56,6 +57,7 @@ export default function Home() {
   const state = operatorState(snapshot, marketDataLabel, nowMs, wsConnected)
   const primaryAlert = alerts.find((alert) => isActionableAlert(alert)) ?? null
   const tradePlan = snapshot?.trade_plan
+  const journalMap = Object.fromEntries((journalEntries ?? []).map((entry) => [entry.action_key, entry]))
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-24 pt-6 sm:px-6">
@@ -122,6 +124,9 @@ export default function Home() {
           ) : (
             <p className="text-[12px] text-anchor-fog/90">What Anchor wants to do next. You can place these manually in Robinhood.</p>
           )}
+          <p className="mt-2 text-[11px] leading-relaxed text-anchor-fog/84">
+            Keep Anchor as the planner. Use Robinhood to place the order, then mark what you actually did here.
+          </p>
           {tradePlan?.generated_at && (
             <p className="mt-1 font-mono text-[10px] tracking-[0.05em] text-anchor-fog/84">
               Generated {humanTime(tradePlan.generated_at, nowMs)}
@@ -138,13 +143,19 @@ export default function Home() {
           <div className="divide-y divide-white/8 border-t border-white/8">
             {tradePlan?.actions.map((action, index) => {
               const mkt = marketInfo(action.market || action.instrument)
-              const manualFillRaw = manualFills[action.instrument] ?? ''
-              const manualFill = parseFillPrice(manualFillRaw)
+              const tradeKey = manualTradeKey(tradePlan?.generated_at ?? null, action.action, action.instrument)
+              const draft = manualTrades[tradeKey] ?? emptyManualTradeDraft()
+              const savedEntry = journalMap[tradeKey]
+              const manualFill = parseFillPrice(draft.fillPrice)
+              const manualStop = parseFillPrice(draft.stopPrice)
+              const manualExit = parseFillPrice(draft.exitPrice)
               const adjustedStop = adjustedEmergencyStop(
                 manualFill,
                 action.reference_price,
                 action.emergency_stop,
               )
+              const suggestedStop = manualStop ?? adjustedStop ?? action.emergency_stop
+              const robinhoodSide = robinhoodSideLabel(action.action, action.direction)
               return (
                 <div key={`${action.instrument}-${index}`} className="px-5 py-4 sm:px-6">
                   <p className="text-[14px] font-semibold text-anchor-navy">{tradePlanTitle(action.action, action.direction, action.contracts, mkt.name)}</p>
@@ -152,6 +163,12 @@ export default function Home() {
                     {action.instrument}
                     {action.reason ? ` · ${tradePlanReason(action.reason)}` : ''}
                   </p>
+                  <div className="mt-3 grid grid-cols-2 gap-2 rounded-[16px] border border-white/8 bg-white/[0.03] px-3 py-3 text-[11px] text-anchor-fog/92 sm:grid-cols-4">
+                    <SummaryStat label="Robinhood side" value={robinhoodSide} />
+                    <SummaryStat label="Contracts" value={String(action.contracts)} />
+                    <SummaryStat label="Anchor entry" value={action.reference_price != null ? numberPrice(action.reference_price) : 'Market'} />
+                    <SummaryStat label="Suggested stop" value={suggestedStop != null ? numberPrice(suggestedStop) : 'None'} />
+                  </div>
                   <div className="mt-2 space-y-1.5 text-[11px] leading-relaxed text-anchor-fog/92">
                     <p>{action.entry_note}</p>
                     {action.reference_price != null && (
@@ -166,38 +183,128 @@ export default function Home() {
                     <p>{humanHoldNote(action.hold_note, nowMs)}</p>
                     <p>{humanExitNote(action.exit_note, nowMs)}</p>
                   </div>
-                  {action.action === 'open' && (
-                    <div className="mt-3 rounded-[16px] border border-white/8 bg-white/[0.03] px-3 py-3">
+                  <div className="mt-3 rounded-[16px] border border-white/8 bg-white/[0.03] px-3 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">
+                        Manual Robinhood
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <TogglePill
+                          active={draft.taken}
+                          label={action.action === 'close' ? 'Closed in Robinhood' : 'Taken in Robinhood'}
+                          onClick={() => updateManualTrade(setManualTrades, tradeKey, { taken: !draft.taken })}
+                        />
+                        <TogglePill
+                          active={draft.closed}
+                          label="Done"
+                          onClick={() => updateManualTrade(setManualTrades, tradeKey, { closed: !draft.closed })}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
                       <label className="block">
                         <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">
-                          Your Robinhood fill
+                          Actual fill
                         </span>
                         <input
                           inputMode="decimal"
-                          placeholder="Enter your fill price"
-                          value={manualFillRaw}
-                          onChange={(event) => {
-                            const value = event.target.value
-                            setManualFills((current) => ({ ...current, [action.instrument]: value }))
-                          }}
+                          placeholder="Your fill price"
+                          value={draft.fillPrice}
+                          onChange={(event) => updateManualTrade(setManualTrades, tradeKey, { fillPrice: event.target.value })}
                           className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[14px] text-anchor-navy outline-none transition placeholder:text-anchor-fog/55 focus:border-anchor-brass/45"
                         />
                       </label>
+                      <label className="block">
+                        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">
+                          Stop you placed
+                        </span>
+                        <input
+                          inputMode="decimal"
+                          placeholder={suggestedStop != null ? numberPrice(suggestedStop) : 'Optional'}
+                          value={draft.stopPrice}
+                          onChange={(event) => updateManualTrade(setManualTrades, tradeKey, { stopPrice: event.target.value })}
+                          className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[14px] text-anchor-navy outline-none transition placeholder:text-anchor-fog/55 focus:border-anchor-brass/45"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">
+                          Exit price
+                        </span>
+                        <input
+                          inputMode="decimal"
+                          placeholder={action.action === 'close' ? 'Actual close price' : 'When you exit'}
+                          value={draft.exitPrice}
+                          onChange={(event) => updateManualTrade(setManualTrades, tradeKey, { exitPrice: event.target.value })}
+                          className="mt-2 w-full rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[14px] text-anchor-navy outline-none transition placeholder:text-anchor-fog/55 focus:border-anchor-brass/45"
+                        />
+                      </label>
+                    </div>
+                    <label className="mt-3 block">
+                      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">
+                        Notes
+                      </span>
+                      <textarea
+                        rows={2}
+                        placeholder="Why you took it, what you changed, or what happened."
+                        value={draft.notes}
+                        onChange={(event) => updateManualTrade(setManualTrades, tradeKey, { notes: event.target.value })}
+                        className="mt-2 w-full resize-none rounded-[12px] border border-white/10 bg-anchor-night/50 px-3 py-2 text-[13px] text-anchor-navy outline-none transition placeholder:text-anchor-fog/55 focus:border-anchor-brass/45"
+                      />
+                    </label>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-[11px] text-anchor-fog/84">
+                        {savedEntry
+                          ? `Saved ${humanTime(savedEntry.updated_at, nowMs)}.`
+                          : 'Not saved to Anchor journal yet.'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          upsertManualTrade.mutate({
+                            action_key: tradeKey,
+                            action: action.action,
+                            instrument: action.instrument,
+                            market: action.market,
+                            direction: action.direction,
+                            contracts: action.contracts,
+                            reason: action.reason,
+                            anchor_generated_at: tradePlan?.generated_at ?? null,
+                            anchor_reference_price: action.reference_price,
+                            anchor_stop_price: action.emergency_stop,
+                            anchor_entry_note: action.entry_note,
+                            anchor_exit_note: action.exit_note,
+                            taken: draft.taken,
+                            closed: draft.closed,
+                            fill_price: manualFill,
+                            stop_price: manualStop,
+                            exit_price: manualExit,
+                            notes: draft.notes.trim() || null,
+                          })
+                        }
+                        disabled={upsertManualTrade.isPending}
+                        className={cn(
+                          'rounded-full border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] transition',
+                          upsertManualTrade.isPending
+                            ? 'border-white/10 bg-white/[0.03] text-anchor-fog/70'
+                            : 'border-anchor-brass/35 bg-anchor-brass/10 text-anchor-navy',
+                        )}
+                      >
+                        {upsertManualTrade.isPending ? 'Saving...' : 'Save journal'}
+                      </button>
+                    </div>
+                    <div className="mt-3 space-y-1.5 text-[11px] leading-relaxed text-anchor-fog/92">
                       {manualFill != null ? (
-                        <div className="mt-3 space-y-1.5 text-[11px] leading-relaxed text-anchor-fog/92">
-                          <p>Your fill {numberPrice(manualFill)}.</p>
-                          {adjustedStop != null && (
-                            <p>Adjusted emergency stop {numberPrice(adjustedStop)}.</p>
-                          )}
-                          <p>This tracks your manual Robinhood entry separately from Anchor&apos;s paper reference.</p>
-                        </div>
+                        <p>Your planned stop from this fill is {numberPrice(adjustedStop ?? suggestedStop ?? manualFill)}.</p>
                       ) : (
-                        <p className="mt-3 text-[11px] text-anchor-fog/84">
-                          Enter your actual fill and Anchor will adjust the stop to your price.
-                        </p>
+                        <p>Enter your actual Robinhood fill to adapt the stop from Anchor&apos;s reference.</p>
+                      )}
+                      {manualExit != null ? (
+                        <p>Your manual exit is logged at {numberPrice(manualExit)}.</p>
+                      ) : (
+                        <p>Use exit price when you close so Anchor becomes your simple journal.</p>
                       )}
                     </div>
-                  )}
+                  </div>
                 </div>
               )
             })}
@@ -210,6 +317,46 @@ export default function Home() {
       </SectionCard>
     </div>
   )
+}
+
+function emptyManualTradeDraft(): ManualTradeDraft {
+  return {
+    taken: false,
+    closed: false,
+    fillPrice: '',
+    stopPrice: '',
+    exitPrice: '',
+    notes: '',
+  }
+}
+
+function manualTradeDraftFromEntry(entry: ManualTradeJournalEntry): ManualTradeDraft {
+  return {
+    taken: entry.taken,
+    closed: entry.closed,
+    fillPrice: entry.fill_price != null ? String(entry.fill_price) : '',
+    stopPrice: entry.stop_price != null ? String(entry.stop_price) : '',
+    exitPrice: entry.exit_price != null ? String(entry.exit_price) : '',
+    notes: entry.notes ?? '',
+  }
+}
+
+function manualTradeKey(generatedAt: string | null, action: string, instrument: string) {
+  return `${generatedAt ?? 'unknown'}:${action}:${instrument}`
+}
+
+function updateManualTrade(
+  setManualTrades: React.Dispatch<React.SetStateAction<Record<string, ManualTradeDraft>>>,
+  key: string,
+  patch: Partial<ManualTradeDraft>,
+) {
+  setManualTrades((current) => ({
+    ...current,
+    [key]: {
+      ...(current[key] ?? emptyManualTradeDraft()),
+      ...patch,
+    },
+  }))
 }
 
 function isActionableAlert(alert: { severity: string; title: string }) {
@@ -239,6 +386,11 @@ function tradePlanReason(reason: string) {
   }
 }
 
+function robinhoodSideLabel(action: string, direction: string) {
+  if (action === 'close') return 'Close position'
+  return direction === 'SHORT' ? 'Sell to open' : 'Buy to open'
+}
+
 function numberPrice(value: number) {
   const abs = Math.abs(value)
   const digits = abs >= 1000 ? 2 : abs >= 100 ? 3 : 5
@@ -262,6 +414,40 @@ function adjustedEmergencyStop(
     return null
   }
   return (manualFill * emergencyStop) / referencePrice
+}
+
+function SummaryStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">{label}</p>
+      <p className="mt-1 text-[12px] font-semibold text-anchor-navy">{value}</p>
+    </div>
+  )
+}
+
+function TogglePill({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.14em] transition',
+        active
+          ? 'border-emerald-500/35 bg-emerald-500/10 text-anchor-win'
+          : 'border-white/10 bg-white/[0.03] text-anchor-fog/84',
+      )}
+    >
+      {label}
+    </button>
+  )
 }
 
 function humanHoldNote(note: string, nowMs: number) {

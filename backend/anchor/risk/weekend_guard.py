@@ -55,10 +55,26 @@ class WeekendGuard:
             )
 
             for trade in open_trades:
-                await self.broker_client.close_trade(
+                close_result = await self.broker_client.close_trade(
                     trade_id=trade["id"],
                     units="ALL",
                 )
+                if self.position_repo is not None:
+                    status = str(close_result.get("status", "")).upper()
+                    avg_fill_price = close_result.get("avg_fill_price")
+                    if status == "FILLED" and avg_fill_price is not None:
+                        tracked_position = await self.position_repo.get_by_broker_trade_id(trade["id"])
+                        if tracked_position is not None:
+                            await self.position_repo.mark_closed(
+                                position_id=tracked_position.id,
+                                close_reason="WEEKEND_GUARD",
+                                closed_at=utcnow(),
+                                realized_pl=float(tracked_position.unrealized_pl or 0.0),
+                                exit_price=float(avg_fill_price),
+                                close_source="broker_order",
+                                broker_verified=True,
+                                broker_order_id=str(close_result.get("order_id") or ""),
+                            )
                 logger.info("weekend_guard_closed", trade_id=trade["id"])
 
         except Exception as exc:

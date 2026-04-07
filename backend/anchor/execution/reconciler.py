@@ -266,6 +266,8 @@ class Reconciler:
                     closed_at=utcnow(),
                     realized_pl=realized_pl,
                     exit_price=exit_price,
+                    close_source="reconciliation",
+                    broker_verified=False,
                 )
 
                 # Record realized P&L so daily loss limit gate stays current

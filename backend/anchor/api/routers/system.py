@@ -1253,6 +1253,13 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
         ).scalars().all()
 
     recent_trades_stmt = select(Trade).order_by(desc(Trade.closed_at)).limit(24)
+    if settings.trading_domain == "futures":
+        recent_trades_stmt = (
+            select(Trade)
+            .where(Trade.broker_verified.is_(True))
+            .order_by(desc(Trade.closed_at))
+            .limit(24)
+        )
     recent_trades_rows = (await session.execute(recent_trades_stmt)).scalars().all()
     if settings.trading_domain == "futures":
         recent_trades = recent_trades_rows[:8]
@@ -1370,9 +1377,9 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
         "operator": operator,
         "account": account_snapshot,
         "history_notice": (
-            "This dashboard is now futures-only. Closed futures trades and fills come from Anchor's local audit history."
+            "This dashboard is now futures-only. Closed trades shown here are limited to broker-verified IBKR paper executions. Reconciliation-only closures stay in Anchor's internal audit trail."
             if settings.trading_domain == "futures"
-            else "Closed-trade history still comes from Anchor's local audit database. Open positions and working orders come directly from IBKR futures paper."
+            else "Closed-trade history still comes from Anchor's local audit database and reconciliation state. Open positions and working orders come directly from IBKR futures paper."
         ),
         "status": status,
         "trade_plan": _manual_trade_plan_snapshot(latest_rebalance, now_utc),
@@ -1455,6 +1462,8 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
                 "closed_at": trade.closed_at.isoformat(),
                 "net_pl": float(trade.net_pl),
                 "close_reason": trade.close_reason,
+                "broker_verified": bool(trade.broker_verified),
+                "close_source": trade.close_source,
             }
             for trade in recent_trades
         ],

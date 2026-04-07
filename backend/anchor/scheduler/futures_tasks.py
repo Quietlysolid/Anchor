@@ -87,9 +87,11 @@ def run_futures_v1_rebalance(self):
         from anchor.config import settings
         from anchor.database.engine import init_db
         from anchor.database.repositories.events import SystemEventRepository
+        from anchor.database.repositories.positions import PositionRepository
         from anchor.execution.broker_client import BrokerClient
         from anchor.execution.order_types import Direction, OrderRequest, OrderType
         from anchor.futures.rebalance import build_futures_rebalance_plan
+        from anchor.utils.time_utils import utcnow
 
         if not settings.futures_v1_enabled:
             logger.info("futures_v1_rebalance_skipped", reason="disabled")
@@ -134,9 +136,37 @@ def run_futures_v1_rebalance(self):
             )
 
             event_repo = SystemEventRepository(session)
+            pos_repo = PositionRepository(session)
             execution_errors: list[dict[str, str]] = []
             blocked_open_actions: list[dict[str, str]] = []
             forced_derisk_action: dict[str, str] | None = None
+
+            async def _record_broker_verified_close(
+                instrument: str,
+                close_result: dict,
+                close_reason: str,
+                fallback_realized_pl: float | None = None,
+            ) -> bool:
+                status = str(close_result.get("status", "")).upper()
+                avg_fill_price = close_result.get("avg_fill_price")
+                if status != "FILLED" or avg_fill_price is None:
+                    return False
+
+                tracked_position = await pos_repo.get_by_broker_trade_id(instrument)
+                if tracked_position is None:
+                    return False
+
+                await pos_repo.mark_closed(
+                    position_id=tracked_position.id,
+                    close_reason=close_reason,
+                    closed_at=utcnow(),
+                    realized_pl=float(tracked_position.unrealized_pl or fallback_realized_pl or 0.0),
+                    exit_price=float(avg_fill_price),
+                    close_source="broker_order",
+                    broker_verified=True,
+                    broker_order_id=str(close_result.get("order_id") or ""),
+                )
+                return True
             await event_repo.insert(
                 event_type="FUTURES_V1_REBALANCE_PLAN",
                 severity="INFO",
@@ -241,7 +271,14 @@ def run_futures_v1_rebalance(self):
                         "estimated_margin_burden": _estimated_position_margin_burden(force_derisk_position),
                     },
                 )
-                await broker.close_trade(instrument, units=close_units)
+                close_result = await broker.close_trade(instrument, units=close_units)
+                if close_units == "ALL" or abs(float(close_units)) >= units:
+                    await _record_broker_verified_close(
+                        instrument=instrument,
+                        close_result=close_result,
+                        close_reason="MARGIN_FORCE_DERISK",
+                        fallback_realized_pl=float(force_derisk_position.get("unrealizedPL", 0.0) or 0.0),
+                    )
 
             if not drawdown_allowed:
                 await event_repo.insert(
@@ -276,14 +313,13 @@ def run_futures_v1_rebalance(self):
                                 raise RuntimeError(
                                     f"close action for {action.instrument} but currentUnits is 0"
                                 )
-                            close_request = OrderRequest(
+                            close_result = await broker.close_trade(action.instrument, units="ALL")
+                            await _record_broker_verified_close(
                                 instrument=action.instrument,
-                                direction=Direction.LONG if action.direction == "LONG" else Direction.SHORT,
-                                units=units,
-                                order_type=OrderType.MARKET,
-                                stop_loss=None,
+                                close_result=close_result,
+                                close_reason="REBALANCE",
+                                fallback_realized_pl=float(pos.get("unrealizedPL", 0.0) or 0.0),
                             )
-                            await broker.place_order(uuid.uuid4(), close_request)
                         elif action.action == "open":
                             if block_new_opens:
                                 logger.warning(

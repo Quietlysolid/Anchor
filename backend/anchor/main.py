@@ -10,7 +10,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from anchor.config import get_settings
 from anchor.database.engine import init_db, close_db, get_session
 from anchor.utils.logging import configure_logging
-from anchor.api.routers import positions, orders, performance, system
+from anchor.api.routers import manual_trades, positions, orders, performance, system
 from anchor.api.websocket import router as ws_router, manager as ws_manager
 from anchor.monitoring.heartbeat import HeartbeatService
 from anchor.api.routers.system import set_stream_status, set_account_info, set_open_positions_count, set_cached_broker_state
@@ -196,6 +196,25 @@ async def lifespan(app: FastAPI):
                 async with _SF() as session:
                     return await _PRepo(session).get_open()
 
+            async def get_by_broker_trade_id(self, broker_trade_id: str):
+                from anchor.database.engine import AsyncSessionFactory as _SF
+                from anchor.database.repositories.positions import PositionRepository as _PRepo
+                if _SF is None:
+                    return None
+                async with _SF() as session:
+                    return await _PRepo(session).get_by_broker_trade_id(broker_trade_id)
+
+            async def mark_closed(self, **kwargs):
+                from anchor.database.engine import AsyncSessionFactory as _SF
+                from anchor.database.repositories.positions import PositionRepository as _PRepo
+                if _SF is None:
+                    return None
+                async with _SF() as session:
+                    repo = _PRepo(session)
+                    result = await repo.mark_closed(**kwargs)
+                    await session.commit()
+                    return result
+
         if settings.trading_domain != "futures" or settings.futures_weekend_guard_enabled:
             weekend_guard = WeekendGuard(broker_client=_wg_broker, position_repo=_WGPositionRepo())
             asyncio.create_task(weekend_guard.run())
@@ -238,6 +257,7 @@ def create_app() -> FastAPI:
     app.include_router(positions.router, prefix=prefix, tags=["positions"])
     app.include_router(orders.router, prefix=prefix, tags=["orders"])
     app.include_router(performance.router, prefix=prefix, tags=["performance"])
+    app.include_router(manual_trades.router, prefix=prefix, tags=["manual-trades"])
     app.include_router(system.router, prefix=prefix, tags=["system"])
     app.include_router(ws_router)
 

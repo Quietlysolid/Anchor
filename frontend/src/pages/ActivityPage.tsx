@@ -12,6 +12,7 @@ export default function ActivityPage() {
 
   const decisions = snapshot?.decisions ?? []
   const recentTrades = snapshot?.recent_results ?? []
+  const historyNotice = snapshot?.history_notice
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-24 pt-6 sm:px-6">
@@ -46,6 +47,12 @@ export default function ActivityPage() {
       </SectionCard>
 
       <SectionCard title="Closed Trades">
+        {historyNotice ? (
+          <div className="border-b border-white/8 px-5 py-4 sm:px-6">
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">History source</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-anchor-fog/90">{historyNotice}</p>
+          </div>
+        ) : null}
         <div className="px-5 sm:px-6">
           {recentTrades.length > 0 ? (
             recentTrades.slice(0, 8).map((trade) => <TradeHistoryRow key={trade.id} trade={trade} nowMs={nowMs} />)
