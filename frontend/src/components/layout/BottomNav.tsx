@@ -2,10 +2,10 @@ import { NavLink } from 'react-router-dom'
 import { Activity, BarChart3, ClipboardList, Wallet } from 'lucide-react'
 
 const TABS = [
-  { to: '/', label: 'Now', end: true, Icon: Activity },
+  { to: '/', label: 'Home', end: true, Icon: Activity },
   { to: '/positions', label: 'Positions', end: false, Icon: Wallet },
-  { to: '/activity', label: 'Activity', end: false, Icon: ClipboardList },
-  { to: '/performance', label: 'Performance', end: false, Icon: BarChart3 },
+  { to: '/activity', label: 'Updates', end: false, Icon: ClipboardList },
+  { to: '/performance', label: 'Results', end: false, Icon: BarChart3 },
 ]
 
 export function BottomNav() {
@@ -15,7 +15,7 @@ export function BottomNav() {
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-6 px-6 py-4">
           <div>
             <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-white/35">Anchor futures</p>
-            <p className="mt-1 font-display text-[1.35rem] leading-none text-anchor-brass">Operator console</p>
+            <p className="mt-1 font-display text-[1.35rem] leading-none text-anchor-brass">Trading dashboard</p>
           </div>
           <div className="flex items-center gap-2">
             {TABS.map(({ to, label, end, Icon }) => (

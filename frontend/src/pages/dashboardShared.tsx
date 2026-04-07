@@ -83,6 +83,19 @@ export function humanTime(iso: string | null | undefined, nowMs: number): string
   return `${d.toLocaleDateString('en-US', { timeZone: ET, month: 'short', day: 'numeric' })} · ${tStr}`
 }
 
+export function formatExplicitEtTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return d.toLocaleString('en-US', {
+    timeZone: ET,
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }) + ' ET'
+}
+
 export function formatScheduledTime(iso: string | null | undefined, nowMs: number): string {
   if (!iso) return '—'
   const target = new Date(iso)

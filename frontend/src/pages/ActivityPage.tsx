@@ -12,11 +12,10 @@ export default function ActivityPage() {
 
   const decisions = snapshot?.decisions ?? []
   const recentTrades = snapshot?.recent_results ?? []
-  const historyNotice = snapshot?.history_notice
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-24 pt-6 sm:px-6">
-      <SectionCard title="Activity">
+      <SectionCard title="Updates" kicker="Important things">
         {decisions.length > 0 ? (
           <div className="divide-y divide-white/7">
             {decisions.map((item) => (
@@ -41,18 +40,12 @@ export default function ActivityPage() {
           </div>
         ) : (
           <div className="px-5 py-6 sm:px-6">
-            <p className="text-sm text-anchor-fog">No meaningful activity yet.</p>
+            <p className="text-sm text-anchor-fog">Nothing important yet.</p>
           </div>
         )}
       </SectionCard>
 
-      <SectionCard title="Closed Trades">
-        {historyNotice ? (
-          <div className="border-b border-white/8 px-5 py-4 sm:px-6">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">History source</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-anchor-fog/90">{historyNotice}</p>
-          </div>
-        ) : null}
+      <SectionCard title="Finished Trades" kicker="Closed in broker">
         <div className="px-5 sm:px-6">
           {recentTrades.length > 0 ? (
             recentTrades.slice(0, 8).map((trade) => <TradeHistoryRow key={trade.id} trade={trade} nowMs={nowMs} />)
@@ -69,10 +62,10 @@ export default function ActivityPage() {
 
 function eventCategory(reasonCode: string | null) {
   const code = (reasonCode ?? '').toUpperCase()
-  if (code.includes('RECONCILIATION')) return 'Health'
-  if (code.includes('REBALANCE')) return 'Rebalance'
+  if (code.includes('RECONCILIATION')) return 'Check'
+  if (code.includes('REBALANCE')) return 'Bot'
   if (code.includes('GUARD')) return 'Risk'
-  if (code.includes('ORDER') || code.includes('FILL')) return 'Execution'
+  if (code.includes('ORDER') || code.includes('FILL')) return 'Order'
   if (code.includes('TRADE')) return 'Trade'
-  return 'System'
+  return 'App'
 }

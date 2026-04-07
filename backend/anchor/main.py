@@ -13,7 +13,14 @@ from anchor.utils.logging import configure_logging
 from anchor.api.routers import manual_trades, positions, orders, performance, system
 from anchor.api.websocket import router as ws_router, manager as ws_manager
 from anchor.monitoring.heartbeat import HeartbeatService
-from anchor.api.routers.system import set_stream_status, set_account_info, set_open_positions_count, set_cached_broker_state
+from anchor.api.routers.system import (
+    clear_account_info,
+    set_broker_live_status,
+    set_stream_status,
+    set_account_info,
+    set_open_positions_count,
+    set_cached_broker_state,
+)
 from anchor.scheduler._shared import _spread_monitor as _shared_spread_monitor
 from anchor.risk.weekend_guard import WeekendGuard
 from anchor.execution.broker_client import BrokerClient
@@ -45,6 +52,11 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
             )
 
             raw_trades = await broker_client.get_open_trades()
+            if raw_trades:
+                try:
+                    raw_trades = await broker_client.refresh_position_marks(raw_trades)
+                except Exception as exc:
+                    logger.warning("refresh_position_marks_failed", error=str(exc))
             set_open_positions_count(len(raw_trades))
 
             db_opened_at_by_instrument: dict[str, str] = {}
@@ -73,6 +85,7 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
             except Exception:
                 raw_orders = []
             set_cached_broker_state(enriched_trades, raw_orders)
+            set_broker_live_status(True)
 
             if redis_client:
                 await redis_client.publish("account", json.dumps({
@@ -107,6 +120,10 @@ async def _reconcile_account(broker_client, stream_client, redis_client=None) ->
                 }))
 
         except Exception as exc:
+            clear_account_info()
+            set_open_positions_count(0)
+            set_cached_broker_state([], [])
+            set_broker_live_status(False, str(exc))
             logger.warning("reconcile_error", error=str(exc))
         await asyncio.sleep(7)
 

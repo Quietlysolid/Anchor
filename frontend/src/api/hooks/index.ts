@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../client'
-import type { HomepageSnapshot, ManualTradeJournalEntry, Position } from '../../types'
+import type { HomepageSnapshot, ManualTradeJournalEntry, ManualTradingProfile, Position } from '../../types'
 
 export const useHomepageSnapshot = () =>
   useQuery({
@@ -24,6 +24,13 @@ export const useManualTradeJournal = () =>
     staleTime: 10_000,
   })
 
+export const useManualTradingProfile = () =>
+  useQuery({
+    queryKey: ['manual-trades-profile'],
+    queryFn: () => api.get<ManualTradingProfile | null>('/manual-trades/profile'),
+    staleTime: 10_000,
+  })
+
 export const useUpsertManualTradeJournal = () => {
   const queryClient = useQueryClient()
 
@@ -32,6 +39,30 @@ export const useUpsertManualTradeJournal = () => {
       api.post<ManualTradeJournalEntry>('/manual-trades', body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['manual-trades'] })
+    },
+  })
+}
+
+export const useDeleteManualTradeJournal = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (actionKey: string) =>
+      api.delete<{ ok: boolean }>(`/manual-trades/${encodeURIComponent(actionKey)}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['manual-trades'] })
+    },
+  })
+}
+
+export const useUpsertManualTradingProfile = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (body: { starting_balance: number | null }) =>
+      api.post<ManualTradingProfile>('/manual-trades/profile', body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['manual-trades-profile'] })
     },
   })
 }

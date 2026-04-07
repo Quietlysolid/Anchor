@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import List
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from anchor.database.models import ManualTradeJournal
+from anchor.database.models import ManualTradeJournal, ManualTradingProfile
 from anchor.utils.time_utils import utcnow
 
 
@@ -39,6 +40,8 @@ class ManualTradeJournalRepository:
         anchor_exit_note: str | None,
         taken: bool,
         closed: bool,
+        filled_on: date | None,
+        closed_on: date | None,
         fill_price: float | None,
         stop_price: float | None,
         exit_price: float | None,
@@ -74,10 +77,47 @@ class ManualTradeJournalRepository:
         row.anchor_exit_note = anchor_exit_note
         row.taken = taken
         row.closed = closed
+        row.filled_on = filled_on
+        row.closed_on = closed_on
         row.fill_price = Decimal(str(fill_price)) if fill_price is not None else None
         row.stop_price = Decimal(str(stop_price)) if stop_price is not None else None
         row.exit_price = Decimal(str(exit_price)) if exit_price is not None else None
         row.notes = notes
+
+        await self.session.flush()
+        await self.session.refresh(row)
+        return row
+
+    async def delete_by_action_key(self, action_key: str) -> bool:
+        result = await self.session.execute(
+            select(ManualTradeJournal).where(ManualTradeJournal.action_key == action_key).limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return False
+        await self.session.delete(row)
+        await self.session.flush()
+        return True
+
+
+class ManualTradingProfileRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get(self) -> ManualTradingProfile | None:
+        result = await self.session.execute(
+            select(ManualTradingProfile).where(ManualTradingProfile.id == 1).limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert(self, *, starting_balance: float | None) -> ManualTradingProfile:
+        row = await self.get()
+        if row is None:
+            row = ManualTradingProfile(id=1)
+            self.session.add(row)
+
+        row.updated_at = utcnow()
+        row.starting_balance = Decimal(str(starting_balance)) if starting_balance is not None else None
 
         await self.session.flush()
         await self.session.refresh(row)

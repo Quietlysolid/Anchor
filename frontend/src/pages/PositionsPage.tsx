@@ -5,9 +5,9 @@ import {
   cn,
   directionLabel,
   dollars,
+  formatExplicitEtTime,
   formatScheduledTime,
   holdTime,
-  humanTime,
   marketInfo,
   pctStr,
   priceStr,
@@ -31,14 +31,14 @@ export default function PositionsPage() {
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-24 pt-6 sm:px-6">
-      <SectionCard title="Positions">
+      <SectionCard title="Positions" kicker="From broker">
         <div className="grid grid-cols-2 gap-4 px-5 py-5 sm:grid-cols-3 sm:px-6">
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Account value</p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Balance</p>
             <p className="mt-1 font-mono text-[1.15rem] font-bold text-anchor-navy">{dollars(account?.equity)}</p>
           </div>
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Today P&L</p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Today</p>
             <p className={cn(
               'mt-1 font-mono text-[1.15rem] font-bold',
               (account?.broker_day_pl ?? 0) > 0 ? 'text-anchor-win' : (account?.broker_day_pl ?? 0) < 0 ? 'text-anchor-loss' : 'text-anchor-navy',
@@ -47,7 +47,7 @@ export default function PositionsPage() {
             </p>
           </div>
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Margin usage</p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-anchor-fog/84">Margin used</p>
             <p className="mt-1 font-mono text-[1.15rem] font-bold text-anchor-navy">{pctStr(account?.margin_usage_pct)}</p>
           </div>
         </div>
@@ -56,7 +56,7 @@ export default function PositionsPage() {
           <div className="border-t border-white/8">
             <div className="px-5 py-4 sm:px-6">
               <p className={cn('text-sm font-semibold', totalPaperPL > 0 ? 'text-anchor-win' : totalPaperPL < 0 ? 'text-anchor-loss' : 'text-anchor-navy')}>
-                {signedDollars(totalPaperPL)} total unrealized
+                {signedDollars(totalPaperPL)} open gain/loss
               </p>
             </div>
             <div className="divide-y divide-white/8">
@@ -70,7 +70,7 @@ export default function PositionsPage() {
                   : null
                 return (
                   <div key={pos.id} className="px-5 py-5 sm:px-6">
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                       <div>
                         <p className="text-[1.05rem] font-semibold text-anchor-navy">{mkt.name}</p>
                         <p className="mt-1 text-[12px] text-anchor-slate/95">
@@ -81,17 +81,19 @@ export default function PositionsPage() {
                           {' · '}{holdTime(pos.opened_at, nowMs)}
                         </p>
                         <p className="mt-1 text-[12px] text-anchor-slate/95">
-                          Entry <span className="font-mono text-anchor-navy">{priceStr(pos.avg_entry_price)}</span>
+                          In <span className="font-mono text-anchor-navy">{priceStr(pos.avg_entry_price)}</span>
                           {' · '}Now <span className="font-mono text-anchor-navy">{priceStr(pos.current_price)}</span>
                         </p>
-                        {exitHint && <p className="mt-2 text-[11px] text-anchor-fog/88">{exitHint}</p>}
+                        {exitHint && <p className="mt-2 text-[11px] text-anchor-fog/88">Stop at {priceStr(pos.stop_loss)}</p>}
                       </div>
-                      <div className="shrink-0 text-right">
-                        <p className={cn('whitespace-nowrap font-mono text-[1.8rem] font-bold leading-none', pl > 0 ? 'text-anchor-win' : pl < 0 ? 'text-anchor-loss' : 'text-anchor-navy')}>
+                      <div className="shrink-0 text-left sm:text-right">
+                        <p className={cn('font-mono text-[1.5rem] font-bold leading-none sm:whitespace-nowrap sm:text-[1.8rem]', pl > 0 ? 'text-anchor-win' : pl < 0 ? 'text-anchor-loss' : 'text-anchor-navy')}>
                           {signedDollars(pl)}
                         </p>
-                        <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">Unrealized</p>
-                        <p className="mt-2 font-mono text-[10px] tracking-[0.05em] text-anchor-fog/84">{humanTime(pos.opened_at, nowMs)}</p>
+                        <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-anchor-fog/84">Open gain/loss</p>
+                        <p className="mt-2 font-mono text-[10px] tracking-[0.05em] text-anchor-fog/84">
+                          Opened {formatExplicitEtTime(pos.opened_at)}
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -106,7 +108,7 @@ export default function PositionsPage() {
         )}
       </SectionCard>
 
-      <SectionCard title="Open Orders">
+      <SectionCard title="Orders" kicker="From broker">
         {(snapshot?.execution?.open_orders?.length ?? 0) > 0 ? (
           <div className="divide-y divide-white/8">
             {snapshot?.execution?.open_orders?.map((order) => (
@@ -123,8 +125,8 @@ export default function PositionsPage() {
           </div>
         ) : (
           <div className="px-5 py-6 sm:px-6">
-            <p className="text-sm text-anchor-fog">No open broker orders.</p>
-            {nextRebalance && <p className="mt-1 text-xs text-anchor-fog/78">Next rebalance: {formatScheduledTime(nextRebalance, nowMs)}</p>}
+            <p className="text-sm text-anchor-fog">No open orders.</p>
+            {nextRebalance && <p className="mt-1 text-xs text-anchor-fog/78">Bot checks again: {formatScheduledTime(nextRebalance, nowMs)}</p>}
           </div>
         )}
       </SectionCard>
