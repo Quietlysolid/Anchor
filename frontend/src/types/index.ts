@@ -315,6 +315,25 @@ export interface HomepageSnapshot {
       detail: string
     }>
   }
+  trade_plan: {
+    generated_at: string
+    next_rebalance_at: string
+    blocked_reason: string | null
+    auto_execute: boolean
+    actions: Array<{
+      action: string
+      market: string
+      instrument: string
+      contracts: number
+      direction: string
+      reason: string
+      entry_note: string
+      reference_price: number | null
+      emergency_stop: number | null
+      hold_note: string
+      exit_note: string
+    }>
+  } | null
   alerts: Array<{
     severity: 'info' | 'warning' | 'critical'
     title: string

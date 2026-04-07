@@ -1,16 +1,17 @@
 import { NavLink } from 'react-router-dom'
-import { Activity, BookOpen, Zap } from 'lucide-react'
+import { Activity, BarChart3, ClipboardList, Wallet } from 'lucide-react'
 
 const TABS = [
-  { to: '/',             label: 'Now',   end: true,  Icon: Activity },
-  { to: '/trades',       label: 'Log',   end: false, Icon: BookOpen },
-  { to: '/intelligence', label: 'Intel', end: false, Icon: Zap      },
+  { to: '/', label: 'Now', end: true, Icon: Activity },
+  { to: '/positions', label: 'Positions', end: false, Icon: Wallet },
+  { to: '/activity', label: 'Activity', end: false, Icon: ClipboardList },
+  { to: '/performance', label: 'Performance', end: false, Icon: BarChart3 },
 ]
 
 export function BottomNav() {
   return (
     <nav className="fixed bottom-0 inset-x-0 z-30 bg-anchor-spine border-t border-white/[0.06] md:hidden">
-      <div className="flex items-center justify-around h-[60px]">
+      <div className="flex items-center justify-around h-[64px]">
         {TABS.map(({ to, label, end, Icon }) => (
           <NavLink
             key={to}
@@ -25,7 +26,7 @@ export function BottomNav() {
             {({ isActive }) => (
               <>
                 <Icon size={16} strokeWidth={isActive ? 2.2 : 1.5} />
-                <span className="font-mono text-[8px] tracking-[0.2em] uppercase">{label}</span>
+                <span className="font-mono text-[8px] tracking-[0.12em] uppercase">{label}</span>
               </>
             )}
           </NavLink>

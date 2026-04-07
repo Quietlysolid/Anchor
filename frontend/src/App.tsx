@@ -2,7 +2,11 @@ import { useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { DisconnectedBanner } from './components/layout/DisconnectedBanner'
+import { BottomNav } from './components/layout/BottomNav'
 import Home from './pages/Home'
+import PositionsPage from './pages/PositionsPage'
+import ActivityPage from './pages/ActivityPage'
+import PerformancePage from './pages/PerformancePage'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { wsClient } from './api/websocket'
 import { usePositions } from './api/hooks'
@@ -67,9 +71,13 @@ function Layout() {
       <main className="min-h-screen">
         <Routes>
           <Route path="/" element={<ErrorBoundary label="Home"><Home /></ErrorBoundary>} />
+          <Route path="/positions" element={<ErrorBoundary label="Positions"><PositionsPage /></ErrorBoundary>} />
+          <Route path="/activity" element={<ErrorBoundary label="Activity"><ActivityPage /></ErrorBoundary>} />
+          <Route path="/performance" element={<ErrorBoundary label="Performance"><PerformancePage /></ErrorBoundary>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      <BottomNav />
     </div>
   )
 }

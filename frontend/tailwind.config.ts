@@ -15,8 +15,8 @@ export default {
           brass:     '#c9a84c',   // display headings — brass / amber
           chartblue: '#60a5fa',   // accent — links, active states
           rule:      '#1c2f4a',   // chart grid lines / dividers
-          slate:     '#8899ae',   // secondary body text
-          fog:       '#5e6e82',   // muted / placeholder
+          slate:     '#a2afbf',   // secondary body text
+          fog:       '#8896a7',   // muted / placeholder
           // ── Signal ────────────────────────────────────────────────
           win:       '#4ade80',   // profit / positive — bright green
           loss:      '#f87171',   // loss / negative — coral red

@@ -19,6 +19,7 @@ from anchor.api.schemas import (
 )
 from anchor.database.models import Fill, Order, Position, Signal, SystemEvent, Trade
 from anchor.execution.broker_client import BrokerClient
+from anchor.futures.io import load_daily_market_closes
 from anchor.futures.strategy import build_futures_v1_targets
 from anchor.utils.time_utils import utcnow
 
@@ -297,12 +298,24 @@ async def _readiness_snapshot(session: AsyncSession, performance: dict, now_utc:
     max_drawdown_pct = performance.get("drawdown", {}).get("max_pct")
     since_start_return_pct = performance.get("returns", {}).get("since_start_pct")
     incident_cutoff = _readiness_incident_cutoff(now_utc)
-    rebalance_count = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(SystemEvent)
+    rebalance_events = (
+        await session.execute(
+            select(SystemEvent.event_at, SystemEvent.metadata_)
             .where(SystemEvent.event_type == "FUTURES_V1_REBALANCE_PLAN")
-        ) or 0
+        )
+    ).all()
+    order_times = (
+        await session.execute(select(Order.created_at).order_by(Order.created_at))
+    ).scalars().all()
+    fill_times = (
+        await session.execute(select(Fill.fill_at).order_by(Fill.fill_at))
+    ).scalars().all()
+    rebalance_count = sum(
+        1
+        for event_at, metadata in rebalance_events
+        if isinstance(metadata, dict)
+        and _is_successful_auto_rebalance(metadata)
+        and _has_rebalance_execution_evidence(event_at, order_times, fill_times)
     )
     margin_incidents = int(
         await session.scalar(
@@ -335,7 +348,7 @@ async def _readiness_snapshot(session: AsyncSession, performance: dict, now_utc:
         },
         {
             "key": "rebalances",
-            "label": "Rebalances",
+            "label": "Automated rebalance cycles",
             "value": str(rebalance_count),
             "target": f">= {settings.futures_readiness_min_rebalances}",
             "passed": rebalance_count >= settings.futures_readiness_min_rebalances,
@@ -375,7 +388,7 @@ async def _readiness_snapshot(session: AsyncSession, performance: dict, now_utc:
     if track_record_days < 14 or rebalance_count < 1:
         state = "observe"
         label = "Observe"
-        recommendation = "Keep paper trading until the bot has more history and at least one full rebalance cycle."
+        recommendation = "Keep paper trading until the bot has more history and at least one successful automated rebalance cycle."
     elif operational_incidents > settings.futures_readiness_max_operational_incidents_30d or margin_incidents > settings.futures_readiness_max_margin_incidents_30d:
         state = "not_ready"
         label = "Not ready"
@@ -424,6 +437,41 @@ def _event_metadata(event: SystemEvent) -> dict:
     return metadata
 
 
+def _is_successful_auto_rebalance(metadata: dict) -> bool:
+    auto_execute = bool(metadata.get("auto_execute"))
+    blocked_reason = metadata.get("blocked_reason")
+    execution_errors = metadata.get("execution_errors")
+    actions = metadata.get("actions")
+
+    if isinstance(actions, list):
+        action_count = len(actions)
+    else:
+        action_count = int(actions or 0)
+
+    if not auto_execute or blocked_reason:
+        return False
+    if action_count <= 0:
+        return False
+    if isinstance(execution_errors, list) and execution_errors:
+        return False
+    return True
+
+
+def _has_rebalance_execution_evidence(
+    event_at: datetime,
+    order_times: list[datetime],
+    fill_times: list[datetime],
+) -> bool:
+    window_end = event_at + timedelta(minutes=30)
+    for ts in order_times:
+        if event_at <= ts <= window_end:
+            return True
+    for ts in fill_times:
+        if event_at <= ts <= window_end:
+            return True
+    return False
+
+
 def _rebalance_event_detail(event: SystemEvent) -> tuple[str, str]:
     metadata = _event_metadata(event)
     actions = metadata.get("actions")
@@ -440,13 +488,127 @@ def _rebalance_event_detail(event: SystemEvent) -> tuple[str, str]:
     if blocked_reason:
         detail_bits.append(f"blocked: {blocked_reason}")
     elif auto_execute:
-        detail_bits.append("auto-executing")
+        detail_bits.append("recorded for automatic execution")
     else:
-        detail_bits.append("awaiting execution")
+        detail_bits.append("plan recorded")
     markets = metadata.get("markets")
     if isinstance(markets, list) and markets:
         detail_bits.append(", ".join(str(market) for market in markets[:4]))
     return title, " · ".join(detail_bits)
+
+
+def _trade_plan_snapshot(event: SystemEvent | None) -> dict | None:
+    if event is None:
+        return None
+
+    metadata = event.metadata_ if isinstance(event.metadata_, dict) else {}
+    actions = metadata.get("actions")
+    action_rows = actions if isinstance(actions, list) else []
+
+    return {
+        "generated_at": event.event_at.isoformat(),
+        "blocked_reason": metadata.get("blocked_reason"),
+        "auto_execute": bool(metadata.get("auto_execute")),
+        "actions": [
+            {
+                "action": str(action.get("action") or ""),
+                "market": str(action.get("market") or ""),
+                "instrument": str(action.get("instrument") or ""),
+                "contracts": int(action.get("contracts") or 0),
+                "direction": str(action.get("direction") or ""),
+                "reason": str(action.get("reason") or ""),
+            }
+            for action in action_rows
+            if isinstance(action, dict)
+        ],
+    }
+
+
+def _latest_market_close(instrument: str) -> float | None:
+    market_id = str(instrument).upper().split("-", 1)[0]
+    try:
+        closes = load_daily_market_closes(data_dir="/app/data", markets=[market_id])[market_id].dropna()
+    except Exception:
+        return None
+    if closes.empty:
+        return None
+    return float(closes.iloc[-1])
+
+
+def _manual_trade_stop_loss(instrument: str, direction: str, reference_price: float | None) -> float | None:
+    if reference_price is None or reference_price <= 0:
+        return None
+
+    market_id = str(instrument).upper().split("-", 1)[0]
+    try:
+        closes = load_daily_market_closes(data_dir="/app/data", markets=[market_id])[market_id].dropna()
+    except Exception:
+        return None
+    returns = closes.pct_change(fill_method=None).dropna()
+    history = returns.tail(max(settings.futures_vol_lookback_days, 5))
+    if history.empty:
+        return None
+
+    daily_vol = float(history.std(ddof=0) or 0.0)
+    if daily_vol <= 0:
+        return None
+
+    stop_distance = reference_price * daily_vol * 2.5
+    if direction == "LONG":
+        return max(0.0, reference_price - stop_distance)
+    return reference_price + stop_distance
+
+
+def _trade_plan_action_payload(action: dict, next_rebalance_at: datetime) -> dict:
+    instrument = str(action.get("instrument") or "")
+    direction = str(action.get("direction") or "")
+    reason = str(action.get("reason") or "")
+    action_type = str(action.get("action") or "")
+    reference_price = _latest_market_close(instrument)
+    emergency_stop = (
+        _manual_trade_stop_loss(instrument, direction, reference_price)
+        if action_type == "open"
+        else None
+    )
+
+    if action_type == "close":
+        entry_note = "Close now at market."
+        hold_note = "Exit this position now."
+        exit_note = "Position should be flat after you close it."
+    else:
+        entry_note = "Enter now at market."
+        hold_note = f"Hold until the next scheduled rebalance on {next_rebalance_at.isoformat()} unless a stop or guardrail triggers first."
+        exit_note = "Exit earlier if the emergency stop is hit or a guardrail forces de-risking."
+
+    return {
+        "action": action_type,
+        "market": str(action.get("market") or ""),
+        "instrument": instrument,
+        "contracts": int(action.get("contracts") or 0),
+        "direction": direction,
+        "reason": reason,
+        "entry_note": entry_note,
+        "reference_price": reference_price,
+        "emergency_stop": emergency_stop,
+        "hold_note": hold_note,
+        "exit_note": exit_note,
+    }
+
+
+def _manual_trade_plan_snapshot(event: SystemEvent | None, now_utc: datetime) -> dict | None:
+    base = _trade_plan_snapshot(event)
+    if base is None:
+        return None
+
+    next_rebalance_at = _next_futures_rebalance(now_utc)
+    return {
+        **base,
+        "next_rebalance_at": next_rebalance_at.isoformat(),
+        "actions": [
+            _trade_plan_action_payload(action, next_rebalance_at)
+            for action in base["actions"]
+        ],
+    }
 
 
 def _guardrail_event_detail(event: SystemEvent) -> tuple[str, str]:
@@ -479,6 +641,36 @@ def _guardrail_event_detail(event: SystemEvent) -> tuple[str, str]:
         return title, " · ".join(detail_bits) or event.message
 
     return event.message, event.event_type
+
+
+def _reconciliation_event_detail(event: SystemEvent) -> tuple[str, str]:
+    metadata = _event_metadata(event)
+    actions_taken = metadata.get("actions_taken")
+    missing_from_broker = metadata.get("missing_from_broker")
+    missing_from_db = metadata.get("missing_from_db")
+    audit_gaps = metadata.get("audit_gaps")
+
+    action_count = len(actions_taken) if isinstance(actions_taken, list) else int(actions_taken or 0)
+    missing_broker_count = len(missing_from_broker) if isinstance(missing_from_broker, list) else 0
+    missing_db_count = len(missing_from_db) if isinstance(missing_from_db, list) else 0
+    audit_gap_count = 0
+    if isinstance(audit_gaps, dict):
+        audit_gap_count = sum(int(bool(value)) for value in audit_gaps.values())
+
+    if action_count == 0 and missing_broker_count == 0 and missing_db_count == 0 and audit_gap_count == 0:
+        return "Reconciliation check passed", "Broker and database matched. No fixes were needed."
+
+    detail_bits: list[str] = []
+    if action_count:
+        detail_bits.append(f"{action_count} fix{'es' if action_count != 1 else ''} applied")
+    if missing_broker_count:
+        detail_bits.append(f"{missing_broker_count} position{'s' if missing_broker_count != 1 else ''} closed in Anchor")
+    if missing_db_count:
+        detail_bits.append(f"{missing_db_count} broker trade{'s' if missing_db_count != 1 else ''} restored")
+    if audit_gap_count:
+        detail_bits.append(f"{audit_gap_count} audit gap{'s' if audit_gap_count != 1 else ''} repaired")
+
+    return "Reconciliation applied fixes", " · ".join(detail_bits) or event.message
 
 
 def _drawdown_guard_snapshot(guardrail_events: list[SystemEvent], performance: dict) -> dict | None:
@@ -819,6 +1011,8 @@ def _system_event_activity(event: SystemEvent) -> dict:
     event_type = event.event_type.upper()
     if event_type == "FUTURES_V1_REBALANCE_PLAN":
         title, detail = _rebalance_event_detail(event)
+    elif event_type == "RECONCILIATION":
+        title, detail = _reconciliation_event_detail(event)
     elif event_type in {"FUTURES_MARGIN_GUARD", "FUTURES_DRAWDOWN_GUARD"}:
         title, detail = _guardrail_event_detail(event)
     else:
@@ -1211,6 +1405,7 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
             else "Closed-trade history still comes from Anchor's local audit database. Open positions and working orders come directly from IBKR futures paper."
         ),
         "status": status,
+        "trade_plan": _manual_trade_plan_snapshot(latest_rebalance, now_utc),
         "alerts": alerts,
         "activity": activity[:14],
         "decisions": _decision_rows(activity),

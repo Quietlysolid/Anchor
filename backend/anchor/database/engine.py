@@ -56,4 +56,7 @@ async def get_db() -> AsyncSession:
     if AsyncSessionFactory is None:
         raise RuntimeError("Database not initialized")
     async with AsyncSessionFactory() as session:
-        yield session
+        try:
+            yield session
+        finally:
+            await session.rollback()
