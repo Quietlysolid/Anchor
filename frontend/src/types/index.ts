@@ -281,10 +281,19 @@ export interface ManualTradeJournalEntry {
   anchor_exit_note: string | null
   taken: boolean
   closed: boolean
+  filled_on: string | null
+  closed_on: string | null
   fill_price: number | null
   stop_price: number | null
   exit_price: number | null
   notes: string | null
+}
+
+export interface ManualTradingProfile {
+  id: number
+  created_at: string
+  updated_at: string
+  starting_balance: number | null
 }
 
 export interface HomepageSnapshot {

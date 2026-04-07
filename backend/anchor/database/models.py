@@ -1,10 +1,10 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Enum, ForeignKey,
+    BigInteger, Boolean, Date, DateTime, Enum, ForeignKey,
     Integer, Numeric, String, Text, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -292,7 +292,18 @@ class ManualTradeJournal(Base):
     anchor_exit_note:       Mapped[str | None]       = mapped_column(Text)
     taken:                  Mapped[bool]             = mapped_column(Boolean, nullable=False, default=False)
     closed:                 Mapped[bool]             = mapped_column(Boolean, nullable=False, default=False)
+    filled_on:              Mapped[date | None]      = mapped_column(Date)
+    closed_on:              Mapped[date | None]      = mapped_column(Date)
     fill_price:             Mapped[Decimal | None]   = mapped_column(Numeric(18, 6))
     stop_price:             Mapped[Decimal | None]   = mapped_column(Numeric(18, 6))
     exit_price:             Mapped[Decimal | None]   = mapped_column(Numeric(18, 6))
     notes:                  Mapped[str | None]       = mapped_column(Text)
+
+
+class ManualTradingProfile(Base):
+    __tablename__ = "manual_trading_profile"
+
+    id:                     Mapped[int]              = mapped_column(Integer, primary_key=True, default=1)
+    created_at:             Mapped[datetime]         = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at:             Mapped[datetime]         = mapped_column(DateTime(timezone=True), server_default=func.now())
+    starting_balance:       Mapped[Decimal | None]   = mapped_column(Numeric(18, 2))

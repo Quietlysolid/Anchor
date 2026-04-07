@@ -27,6 +27,7 @@ from anchor.execution.ibkr_utils import (
     normalize_instrument_symbol,
     parse_ibkr_instrument,
 )
+from anchor.futures.contracts import get_futures_market
 
 if TYPE_CHECKING:
     from anchor.execution.order_types import OrderRequest
@@ -96,6 +97,13 @@ class _OrderState:
     error: str | None = None
 
 
+@dataclass
+class _MarketDataState:
+    done: threading.Event = field(default_factory=threading.Event)
+    data: dict[str, float] = field(default_factory=dict)
+    error: str | None = None
+
+
 class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
     def __init__(self) -> None:
         EClient.__init__(self, self)
@@ -110,8 +118,15 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
         self.contract_details_req: _RequestState | None = None
         self.order_states: dict[int, _OrderState] = {}
         self.market_data: dict[int, dict[str, Any]] = {}
+        self.market_data_reqs: dict[int, _MarketDataState] = {}
         self.tick_callback = None
         self.portfolio_rows: list[dict] = []
+        self.live_account_values: list[dict] = []
+        self.live_account_values_by_key: dict[tuple[str, str, str], dict] = {}
+        self.live_portfolio_by_instrument: dict[str, dict] = {}
+        self.live_account_download_complete = threading.Event()
+        self.live_account_updates_active = False
+        self.live_account_updates_account: str | None = None
         self.historical_data_reqs: dict[int, _RequestState] = {}
 
     def nextValidId(self, orderId: int) -> None:  # noqa: N802
@@ -128,6 +143,9 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
         if reqId in self.order_states:
             self.order_states[reqId].error = message
             self.order_states[reqId].done.set()
+        if reqId in self.market_data_reqs and errorCode not in ignored_codes:
+            self.market_data_reqs[reqId].error = message
+            self.market_data_reqs[reqId].done.set()
         if self.account_summary_req and errorCode not in ignored_codes:
             self.account_summary_req.error = message
         if self.account_updates_req and errorCode not in ignored_codes:
@@ -156,24 +174,42 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
             self.account_summary_req.done.set()
 
     def updateAccountValue(self, key: str, val: str, currency: str, accountName: str) -> None:  # noqa: N802
+        row = {"account": accountName, "tag": key, "value": val, "currency": currency}
+        cache_key = (accountName, key, currency)
+        self.live_account_values_by_key[cache_key] = row
+        self.live_account_values = list(self.live_account_values_by_key.values())
         if self.account_updates_req is not None:
-            self.account_updates_req.rows.append(
-                {"account": accountName, "tag": key, "value": val, "currency": currency}
-            )
+            self.account_updates_req.rows.append(row)
 
     def accountDownloadEnd(self, accountName: str) -> None:  # noqa: N802
+        if self.live_account_updates_account == accountName:
+            self.live_account_download_complete.set()
         if self.account_updates_req is not None:
             self.account_updates_req.done.set()
 
     def updatePortfolio(self, contract, position: float, marketPrice: float, marketValue: float, averageCost: float, unrealizedPNL: float, realizedPNL: float, accountName: str) -> None:  # noqa: N802,E501
-        self.portfolio_rows.append({
+        row = {
             "contract": contract,
             "position": position,
             "marketPrice": marketPrice,
             "averageCost": averageCost,
             "unrealizedPNL": unrealizedPNL,
             "realizedPNL": realizedPNL,
-        })
+        }
+        self.portfolio_rows.append(row)
+
+        if getattr(contract, "secType", None) == "FUT":
+            expiry = getattr(contract, "lastTradeDateOrContractMonth", "") or ""
+            instrument = normalize_instrument_symbol(f"{contract.symbol}-{expiry}" if expiry else contract.symbol)
+        else:
+            instrument = normalize_instrument_symbol(
+                f"{contract.symbol}_{contract.currency}" if getattr(contract, "secType", None) == "CASH" else contract.symbol
+            )
+
+        if abs(float(position or 0.0)) < 1e-9:
+            self.live_portfolio_by_instrument.pop(instrument, None)
+            return
+        self.live_portfolio_by_instrument[instrument] = row
 
     def position(self, account: str, contract, position: float, avgCost: float) -> None:  # noqa: N802
         if self.positions_req is not None:
@@ -262,6 +298,16 @@ class _IBKRApp(EWrapper, EClient):  # type: ignore[misc]
             data["ask"] = price
         elif tickType == 4:
             data["last"] = price
+        state = self.market_data_reqs.get(reqId)
+        if state is not None:
+            if tickType == 1:
+                state.data["bid"] = price
+            elif tickType == 2:
+                state.data["ask"] = price
+            elif tickType == 4:
+                state.data["last"] = price
+            if state.data.get("last") or ("bid" in state.data and "ask" in state.data):
+                state.done.set()
         if self.tick_callback:
             self.tick_callback(reqId, data)
 
@@ -285,6 +331,30 @@ class IBKRBrokerClient:
         # (_app.positions_req, _app.account_updates_req, etc.) is never
         # accessed by two threads simultaneously.
         self._api_lock = threading.Lock()
+
+    def _start_live_account_updates_sync(self) -> None:
+        if not self._account_id:
+            return
+        if self._app.live_account_updates_active and self._app.live_account_updates_account == self._account_id:
+            return
+
+        self._app.live_account_values = []
+        self._app.live_account_values_by_key = {}
+        self._app.live_portfolio_by_instrument = {}
+        self._app.live_account_download_complete.clear()
+        self._app.live_account_updates_account = self._account_id
+        self._app.live_account_updates_active = True
+        self._app.reqAccountUpdates(True, self._account_id)
+        self._app.live_account_download_complete.wait(timeout=8)
+
+    def _stop_live_account_updates_sync(self) -> None:
+        if not self._account_id:
+            return
+        if not self._app.live_account_updates_active:
+            return
+        self._app.reqAccountUpdates(False, self._account_id)
+        self._app.live_account_updates_active = False
+        self._app.live_account_updates_account = None
 
     @staticmethod
     def _wait_for_request(state: _RequestState, timeout: float, min_rows: int = 1) -> bool:
@@ -322,6 +392,7 @@ class IBKRBrokerClient:
                 client_id=self._client_id,
                 account_id=self._account_id,
             )
+            self._start_live_account_updates_sync()
 
     async def _run_blocking(self, fn, *args, **kwargs):
         def _locked():
@@ -403,18 +474,73 @@ class IBKRBrokerClient:
             "brokerDayPL": broker_day_pl,
         }
 
+    @staticmethod
+    def _position_mark_to_unrealized_pl(instrument: str, units: float, avg_entry_price: float, market_price: float) -> float:
+        root = normalize_instrument_symbol(instrument).split("-", 1)[0]
+        try:
+            market = get_futures_market(root)
+            multiplier = float(market.contract_multiplier or 1.0)
+        except Exception:
+            multiplier = 1.0
+        direction = 1.0 if units >= 0 else -1.0
+        return (market_price - avg_entry_price) * abs(units) * multiplier * direction
+
+    def _market_price_snapshot_sync(self, position: dict) -> float | None:
+        self._ensure_connected()
+        req_id = int(time.time() * 1000) % 2_000_000_000
+        con_id = position.get("conId")
+        if con_id:
+            contract = Contract()
+            contract.conId = int(con_id)
+            instrument = normalize_instrument_symbol(str(position.get("instrument") or ""))
+            root, expiry = (instrument.split("-", 1) + [None])[:2]
+            try:
+                market = get_futures_market(root)
+                contract.symbol = market.ibkr_symbol
+                contract.exchange = str(position.get("exchange") or market.exchange)
+                contract.currency = str(position.get("currency") or market.currency)
+                contract.secType = str(position.get("secType") or market.sec_type)
+                contract.tradingClass = market.trading_class
+                contract.multiplier = market.contract_multiplier
+                if expiry:
+                    contract.lastTradeDateOrContractMonth = expiry
+            except Exception:
+                exchange = position.get("exchange")
+                if exchange:
+                    contract.exchange = str(exchange)
+                if position.get("currency"):
+                    contract.currency = str(position.get("currency"))
+                if position.get("secType"):
+                    contract.secType = str(position.get("secType"))
+        else:
+            contract = self._build_contract(str(position.get("instrument") or ""))
+            if contract.secType == "FUT":
+                contract = self._resolve_contract_details_sync(contract)
+
+        state = _MarketDataState()
+        self._app.market_data_reqs[req_id] = state
+        self._app.reqMktData(req_id, contract, "", False, False, [])
+        state.done.wait(timeout=2.5)
+        self._app.cancelMktData(req_id)
+        self._app.market_data_reqs.pop(req_id, None)
+
+        if state.error:
+            raise RuntimeError(state.error)
+
+        last_price = float(state.data.get("last") or 0.0)
+        bid = float(state.data.get("bid") or 0.0)
+        ask = float(state.data.get("ask") or 0.0)
+        if last_price > 0:
+            return last_price
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+        return None
+
     def _account_summary_sync(self) -> dict:
         self._ensure_connected()
-        rows: list[dict] = []
-
-        if self._account_id:
-            updates_state = _RequestState()
-            self._app.account_updates_req = updates_state
-            self._app.reqAccountUpdates(True, self._account_id)
-            self._wait_for_request(updates_state, timeout=8)
-            self._app.reqAccountUpdates(False, self._account_id)
-            rows.extend(updates_state.rows)
-            self._app.account_updates_req = None
+        if self._account_id and not self._app.live_account_download_complete.is_set():
+            raise RuntimeError("IBKR live account subscription is not ready yet.")
+        rows: list[dict] = list(self._app.live_account_values)
 
         summary_state = _RequestState()
         self._app.account_summary_req = summary_state
@@ -451,43 +577,29 @@ class IBKRBrokerClient:
             rows = state.rows
             portfolio_map: dict[str, dict] = {}
         else:
-            # Use reqAccountUpdates which fires updatePortfolio with live
-            # price and unrealized P&L in addition to size/avgCost.
-            self._app.portfolio_rows = []
-            state = _RequestState()
-            self._app.account_updates_req = state
-            self._app.reqAccountUpdates(True, self._account_id)
-            self._wait_for_request(state, timeout=8)
-            self._app.reqAccountUpdates(False, self._account_id)
-            self._app.account_updates_req = None
-
-            # Build a lookup from symbol -> portfolio row for P&L/price
-            portfolio_map = {}
-            for pr in self._app.portfolio_rows:
-                c = pr["contract"]
-                if abs(float(pr["position"] or 0)) < 1e-9:
-                    continue
-                if c.secType == "FUT":
-                    expiry = getattr(c, "lastTradeDateOrContractMonth", "") or ""
-                    key = normalize_instrument_symbol(f"{c.symbol}-{expiry}" if expiry else c.symbol)
-                else:
-                    key = normalize_instrument_symbol(f"{c.symbol}_{c.currency}" if c.secType == "CASH" else c.symbol)
-                portfolio_map[key] = pr
+            if not self._app.live_account_download_complete.is_set():
+                raise RuntimeError("IBKR live position subscription is not ready yet.")
+            portfolio_map = dict(self._app.live_portfolio_by_instrument)
 
             # Convert portfolio rows to the standard position shape
             positions = []
             for instrument, pr in portfolio_map.items():
                 size = float(pr["position"])
+                contract = pr["contract"]
                 positions.append({
                     "id": ibkr_position_id(instrument),
                     "instrument": instrument,
                     "currentUnits": size,
                     "initialUnits": size,
-                    "price": _normalize_position_entry_price(pr["contract"], float(pr["averageCost"] or 0.0)),
+                    "price": _normalize_position_entry_price(contract, float(pr["averageCost"] or 0.0)),
                     "marketPrice": float(pr["marketPrice"] or 0.0),
                     "openTime": None,
                     "unrealizedPL": float(pr["unrealizedPNL"] or 0.0),
                     "realizedPL": float(pr["realizedPNL"] or 0.0),
+                    "conId": getattr(contract, "conId", None),
+                    "exchange": getattr(contract, "exchange", None),
+                    "currency": getattr(contract, "currency", None),
+                    "secType": getattr(contract, "secType", None),
                 })
             return positions
 
@@ -515,6 +627,10 @@ class IBKRBrokerClient:
                 "openTime": None,
                 "unrealizedPL": float(pr.get("unrealizedPNL") or 0.0),
                 "realizedPL": float(pr.get("realizedPNL") or 0.0),
+                "conId": getattr(contract, "conId", None),
+                "exchange": getattr(contract, "exchange", None),
+                "currency": getattr(contract, "currency", None),
+                "secType": getattr(contract, "secType", None),
             })
         return positions
 
@@ -523,6 +639,32 @@ class IBKRBrokerClient:
 
     async def get_open_positions(self) -> list[dict]:
         return await self.get_open_trades()
+
+    def _refresh_position_marks_sync(self, positions: list[dict]) -> list[dict]:
+        refreshed: list[dict] = []
+        for position in positions:
+            updated = dict(position)
+            try:
+                market_price = self._market_price_snapshot_sync(position)
+            except Exception:
+                market_price = None
+            if market_price is not None:
+                units = float(position.get("currentUnits", 0.0) or 0.0)
+                avg_entry_price = float(position.get("price", 0.0) or 0.0)
+                updated["marketPrice"] = float(market_price)
+                updated["unrealizedPL"] = float(
+                    self._position_mark_to_unrealized_pl(
+                        str(position.get("instrument") or ""),
+                        units,
+                        avg_entry_price,
+                        float(market_price),
+                    )
+                )
+            refreshed.append(updated)
+        return refreshed
+
+    async def refresh_position_marks(self, positions: list[dict]) -> list[dict]:
+        return await self._run_blocking(self._refresh_position_marks_sync, positions)
 
     def _pending_orders_sync(self) -> list[dict]:
         self._ensure_connected()
@@ -862,4 +1004,5 @@ class IBKRBrokerClient:
 
     async def disconnect(self) -> None:
         if self._app.isConnected():
+            await self._run_blocking(self._stop_live_account_updates_sync)
             await self._run_blocking(self._app.disconnect)

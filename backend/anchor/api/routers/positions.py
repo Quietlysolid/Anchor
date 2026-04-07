@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from anchor.api.routers.system import get_cached_positions
+from anchor.api.routers.system import broker_live_error, broker_live_ready, get_cached_positions
 from anchor.database.engine import get_db
 from anchor.database.models import Position
 from anchor.utils.time_utils import utcnow
@@ -15,6 +15,11 @@ router = APIRouter()
 @router.get("/positions")
 async def get_open_positions(session: AsyncSession = Depends(get_db)):
     del session
+    if not broker_live_ready():
+        raise HTTPException(
+            status_code=503,
+            detail=broker_live_error() or "Live IBKR position subscription is not ready.",
+        )
     return [_live_position_to_dict(p) for p in get_cached_positions()]
 
 
@@ -31,6 +36,11 @@ async def get_position_history(
 
 @router.get("/positions/{position_id}")
 async def get_position(position_id: str, session: AsyncSession = Depends(get_db)):
+    if not broker_live_ready():
+        raise HTTPException(
+            status_code=503,
+            detail=broker_live_error() or "Live IBKR position subscription is not ready.",
+        )
     positions = get_cached_positions()
     live_match = next((p for p in positions if str(p.get("id")) == position_id or str(p.get("instrument")) == position_id), None)
     if live_match:

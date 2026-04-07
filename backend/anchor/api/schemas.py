@@ -1,7 +1,7 @@
 """Pydantic response models for all API endpoints."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Optional
 from uuid import UUID
 
@@ -194,6 +194,8 @@ class ManualTradeJournalResponse(BaseModel):
     anchor_exit_note: Optional[str] = None
     taken: bool = False
     closed: bool = False
+    filled_on: Optional[date] = None
+    closed_on: Optional[date] = None
     fill_price: Optional[float] = None
     stop_price: Optional[float] = None
     exit_price: Optional[float] = None
@@ -215,10 +217,23 @@ class ManualTradeJournalUpsertRequest(BaseModel):
     anchor_exit_note: Optional[str] = None
     taken: bool = False
     closed: bool = False
+    filled_on: Optional[date] = None
+    closed_on: Optional[date] = None
     fill_price: Optional[float] = None
     stop_price: Optional[float] = None
     exit_price: Optional[float] = None
     notes: Optional[str] = None
+
+
+class ManualTradingProfileResponse(BaseModel):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    starting_balance: Optional[float] = None
+
+
+class ManualTradingProfileUpsertRequest(BaseModel):
+    starting_balance: Optional[float] = None
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────

@@ -40,6 +40,8 @@ _last_reconciliation: str | None = None
 _open_positions_count: int = 0
 _cached_positions: list = []
 _cached_orders: list = []
+_broker_live_ready: bool = False
+_broker_live_error: str | None = None
 _WORKING_ORDER_STATES = ("PENDING", "SUBMITTED", "ACKNOWLEDGED", "PARTIAL")
 
 
@@ -71,6 +73,19 @@ def set_account_info(
         _last_reconciliation = reconciled_at
 
 
+def clear_account_info() -> None:
+    global _account_balance, _account_equity, _last_reconciliation, _broker_day_pl
+    global _account_available_funds, _account_excess_liquidity, _account_init_margin_req, _account_maint_margin_req
+    _account_balance = 0.0
+    _account_equity = 0.0
+    _broker_day_pl = None
+    _account_available_funds = 0.0
+    _account_excess_liquidity = 0.0
+    _account_init_margin_req = 0.0
+    _account_maint_margin_req = 0.0
+    _last_reconciliation = None
+
+
 def set_open_positions_count(count: int) -> None:
     global _open_positions_count
     _open_positions_count = count
@@ -82,12 +97,26 @@ def set_cached_broker_state(positions: list, orders: list) -> None:
     _cached_orders = orders
 
 
+def set_broker_live_status(ready: bool, error: str | None = None) -> None:
+    global _broker_live_ready, _broker_live_error
+    _broker_live_ready = ready
+    _broker_live_error = error
+
+
 def get_cached_positions() -> list:
     return _cached_positions
 
 
 def get_cached_orders() -> list:
     return _cached_orders
+
+
+def broker_live_ready() -> bool:
+    return _broker_live_ready
+
+
+def broker_live_error() -> str | None:
+    return _broker_live_error
 
 
 def _window_payload(engine: str, label: str, starts_at: datetime, ends_at: datetime) -> dict:
@@ -550,13 +579,23 @@ def _trade_plan_action_payload(action: dict, next_rebalance_at: datetime) -> dic
     )
 
     if action_type == "close":
-        entry_note = "Close now at market."
-        hold_note = "Exit this position now."
-        exit_note = "Position should be flat after you close it."
+        if reason == "roll_or_contract_mismatch":
+            entry_note = "Close this older contract month now so you can move into the newer contract month."
+            hold_note = "This is a contract roll, not a new bearish trade."
+            exit_note = "After this closes, the plan expects you to open the replacement contract for the same market."
+        else:
+            entry_note = "Close now at market."
+            hold_note = "Exit this position now."
+            exit_note = "Position should be flat after you close it."
     else:
-        entry_note = "Enter now at market."
-        hold_note = f"Hold until the next scheduled rebalance on {next_rebalance_at.isoformat()} unless a stop or guardrail triggers first."
-        exit_note = "Exit earlier if the emergency stop is hit or a guardrail forces de-risking."
+        if reason == "roll_or_contract_mismatch":
+            entry_note = "Open the newer contract month now to keep your exposure to this market after the old contract is closed."
+            hold_note = f"This replaces the older contract month. Hold until the next scheduled rebalance on {next_rebalance_at.isoformat()} unless a stop or guardrail triggers first."
+            exit_note = "This is the replacement leg of the contract roll, not a second unrelated trade."
+        else:
+            entry_note = "Enter now at market."
+            hold_note = f"Hold until the next scheduled rebalance on {next_rebalance_at.isoformat()} unless a stop or guardrail triggers first."
+            exit_note = "Exit earlier if the emergency stop is hit or a guardrail forces de-risking."
 
     return {
         "action": action_type,
@@ -751,6 +790,8 @@ def _status_snapshot(
 
     return {
         "stream_connected": _stream_connected,
+        "broker_live_ready": _broker_live_ready,
+        "broker_live_error": _broker_live_error,
         "last_broker_sync": _last_reconciliation,
         "open_positions_count": open_positions_count,
         "open_orders_count": open_orders_count,
@@ -786,6 +827,13 @@ def _alert_rows(
             "severity": "critical",
             "title": "Broker stream disconnected",
             "detail": "Live broker updates are not flowing into Anchor right now.",
+        })
+
+    if not bool(status.get("broker_live_ready")):
+        alerts.append({
+            "severity": "critical",
+            "title": "Live broker subscription unavailable",
+            "detail": str(status.get("broker_live_error") or "Anchor is not receiving broker-live account and position updates right now."),
         })
 
     if market_data_mode != "live":
@@ -1113,6 +1161,8 @@ async def health_check(session: AsyncSession = Depends(get_db)):
         "account_mode":        settings.account_mode,
         "account_environment": settings.account_environment,
         "stream_connected":    _stream_connected,
+        "broker_live_ready":   _broker_live_ready,
+        "broker_live_error":   _broker_live_error,
         "account_balance":     _account_balance,
         "account_equity":      _account_equity,
         "broker_day_pl":       _broker_day_pl,
@@ -1218,7 +1268,11 @@ async def get_homepage_snapshot(session: AsyncSession = Depends(get_db)):
     operator = await get_operator_state(session)
 
     if settings.trading_domain == "futures":
-        runtime = {"positions": _cached_positions, "pending_orders": _cached_orders, "account": {}}
+        runtime = {
+            "positions": _cached_positions if _broker_live_ready else [],
+            "pending_orders": _cached_orders if _broker_live_ready else [],
+            "account": {},
+        }
     else:
         runtime = None
 
